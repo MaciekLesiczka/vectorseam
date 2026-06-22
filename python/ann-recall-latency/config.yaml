@@ -1,0 +1,46 @@
+model:
+  name: BAAI/bge-small-en-v1.5
+  revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a
+  embedding_dim: 384
+  batch_size: 256
+  device: mps
+  normalize_embeddings: true
+
+ground_truth:
+  device: mps
+  query_batch_size: 64
+
+sweep:
+  repeats: 3
+
+benchmark:
+  n_docs: 300000
+  n_queries: 2000
+  seed: 7
+  min_doc_chars: 80
+  min_query_chars: 15
+  k: 10
+  ef_search: [10, 20, 40, 60, 80, 100, 150, 200, 300, 400]
+  hnsw:
+    m: 16
+    ef_construction: 64
+
+datasets:
+  stackexchange:
+    source: archive.org
+    archive_item: stackexchange_20251231
+    archive_prefix: stackexchange_20251231
+    dump_date: "2025-12-31"
+    site: superuser
+    file_name: superuser.com.7z
+    url: https://archive.org/download/stackexchange_20251231/stackexchange_20251231/superuser.com.7z
+    sha1: 11e002ebb5a8d3920573ca98f7c2dc69cc250db5
+    md5: d4b50f794a56054e01d27c5c357e4213
+
+  reddit:
+    source: huggingface
+    repo_id: webis/tldr-17
+    revision: fa7f50e62d35aff41aa165ddbe6c10dfa01ff49c
+    repo_path: data/corpus-webis-tldr-17.zip
+    document_field: content
+    query_field: summary
