@@ -2,9 +2,12 @@
 
 CARGO  ?= cargo
 UV     ?= uv
+ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
+ANN_RECALL_LATENCY_POSTGRES_DATA := $(CURDIR)/python/ann-recall-latency/data/postgres
+ANN_RECALL_LATENCY_DOCKER_COMPOSE := ANN_RECALL_LATENCY_POSTGRES_DATA="$(ANN_RECALL_LATENCY_POSTGRES_DATA)" docker compose -f $(ANN_RECALL_LATENCY_COMPOSE)
 
 postgres:
-	docker compose up -d postgres
+	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) up -d postgres
 
 setup:
 	$(UV) venv --allow-existing
@@ -54,4 +57,4 @@ fmt:
 clean:
 	rm -rf .venv
 	$(CARGO) clean
-	docker compose down
+	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) down

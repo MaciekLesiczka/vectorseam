@@ -10,7 +10,7 @@ services:
       - "5432:5432"
     shm_size: "2gb"
     volumes:
-      - ./python/ann-recall-latency/data/postgres:/var/lib/postgresql/data
+      - ${ANN_RECALL_LATENCY_POSTGRES_DATA:-./data/postgres}:/var/lib/postgresql/data
     command:
       - postgres
       - -c
