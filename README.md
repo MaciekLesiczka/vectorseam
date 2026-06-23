@@ -1,8 +1,19 @@
-# Tests and benchmarks
+# Vectorseam
 
-# ef_search calibration
+Vectorseam currently contains vector search benchmarks and measurement code.
 
-Tests how different `hnsw.ef_search` values impact recall and latency for real-world datasets.
-Validates whether the parameter can be tuned to provide a predictable recall SLI.
+The main public artifact is an ANN recall/latency benchmark for calibrating
+`hnsw.ef_search` on real-world datasets:
 
-[Documentation](python/ann-recall-latency/README.md)
+- [ANN recall/latency benchmark](python/ann-recall-latency/README.md)
+
+Benchmark result files under `python/ann-recall-latency/results/` are checked in
+intentionally so external writeups can reference stable artifacts.
+
+Run local checks with:
+
+```sh
+make test
+```
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
