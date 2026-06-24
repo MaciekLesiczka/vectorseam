@@ -48,6 +48,7 @@ test-rust:
 
 test-python: setup
 	$(UV) run python -m compileall python
+	$(UV) run python -m unittest discover -s python/vectorseam/tests
 
 test: test-rust test-python
 
