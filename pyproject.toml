@@ -20,6 +20,11 @@ dependencies = [
     "tqdm>=4.68",
 ]
 
+[project.optional-dependencies]
+bench = [
+    "pyperf>=2.10",
+]
+
 [project.urls]
 Repository = "https://github.com/MaciekLesiczka/vectorseam"
 

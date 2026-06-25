@@ -1,0 +1,25 @@
+name: Python Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: "22 4 * * 1"
+
+jobs:
+  message-marshalling:
+    name: Message Marshalling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make bench-python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-message-benchmark
+          path: .benchmarks/message.json

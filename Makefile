@@ -1,7 +1,8 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency test-rust test-python test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency test-rust test-python bench-python bench-python-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
+PYTHON_BENCH_JSON ?= .benchmarks/message.json
 ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
 ANN_RECALL_LATENCY_POSTGRES_DATA := $(CURDIR)/python/ann-recall-latency/data/postgres
 ANN_RECALL_LATENCY_DOCKER_COMPOSE := ANN_RECALL_LATENCY_POSTGRES_DATA="$(ANN_RECALL_LATENCY_POSTGRES_DATA)" docker compose -f $(ANN_RECALL_LATENCY_COMPOSE)
@@ -49,6 +50,13 @@ test-rust:
 test-python: setup
 	$(UV) run python -m compileall python
 	$(UV) run python -m unittest discover -s python/vectorseam/tests
+
+bench-python:
+	mkdir -p .benchmarks
+	$(UV) run --extra bench python benchmarks/bench_message.py --output $(PYTHON_BENCH_JSON)
+
+bench-python-report:
+	$(UV) run --extra bench python -m pyperf stats $(PYTHON_BENCH_JSON)
 
 test: test-rust test-python
 
