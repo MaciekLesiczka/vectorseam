@@ -5,7 +5,6 @@ Protocol v1 encodes one vector query into a single binary frame:
   frame_len:   u32_le     number of bytes after this field
   magic:       4 bytes    ASCII "VQS1"
   version:     u32_le     1
-  crc32:       u32_le     CRC32 over all bytes after this crc32 field
   dtype:       u32_le
   name_len:    u32_le     UTF-8 byte length of name
   dimension:   u32_le
@@ -22,15 +21,12 @@ import array
 import enum
 import struct
 import sys
-import zlib
 from collections.abc import Iterable
-from typing import Literal, TypeAlias, overload
+from typing import TypeAlias
 
 BytesLike: TypeAlias = bytes | bytearray | memoryview
 
-_CRC32_OFFSET = 12
-_CRC_INPUT_OFFSET = 16
-_FIXED_FRAME_SIZE = 32
+_FIXED_FRAME_SIZE = 28
 _MAGIC = b"VQS1"
 _U32_MAX = 0xFFFFFFFF
 _U32 = struct.Struct("<I")
@@ -63,51 +59,37 @@ class DType(enum.IntEnum):
     array_typecode: str | None
 
 
-@overload
-def encode_vector_message(
-    name: str,
-    vector: Iterable[float],
-    dtype: Literal[DType.F32] = DType.F32,
-) -> bytes:
-    ...
-
-
-@overload
-def encode_vector_message(
-    name: str,
-    vector: Iterable[float],
-    dtype: Literal[DType.F64],
-) -> bytes:
-    ...
-
-
 def encode_vector_message(
     name: str,
     vector: Iterable[float],
     dtype: DType = DType.F32,
 ) -> bytes:
-    """Encodes one vector query into a protocol v1 binary frame.
+    """Encodes Python floats into a protocol v1 binary frame.
+
+    This convenience API is intended for experiments and small call sites. The
+    production-recommended API is `encode_vector_message_le_bytes`, which avoids
+    traversing boxed Python floats when callers already have packed vector
+    bytes.
 
     Args:
         name: Client-defined UTF-8 cohort or stratum name.
-        vector: Iterable of vector elements. F32 and F64 are supported from
-            native Python floats.
-        dtype: Element dtype to encode.
+        vector: Iterable of Python floats to encode as F32.
+        dtype: Element dtype to encode. Only DType.F32 is supported here.
 
     Returns:
-        A bytes object containing the complete binary frame.
+        An immutable bytes object containing the complete binary frame.
 
     Raises:
         TypeError: If an argument has an invalid type or vector cannot be
-            encoded as the requested dtype.
+            encoded as F32.
         ValueError: If vector is empty or a length field cannot fit in u32.
-        NotImplementedError: If dtype is recognized but not implemented.
+        NotImplementedError: If dtype is recognized but is not DType.F32.
     """
     dtype = _coerce_dtype(dtype)
+    _raise_for_non_f32_iterable_dtype(dtype)
     name_bytes = _encode_name(name)
-    _raise_for_unsupported_iterable_dtype(dtype)
 
-    vector_values = _to_array(vector, dtype)
+    vector_values = _to_f32_array(vector)
     if sys.byteorder != "little":
         vector_values.byteswap()
 
@@ -127,10 +109,10 @@ def encode_vector_message_le_bytes(
 ) -> bytes:
     """Encodes already-packed little-endian vector bytes into a v1 frame.
 
-    This API is useful when callers already have vector memory in the protocol's
-    little-endian representation, such as a memoryview from another library. The
-    returned frame is still an immutable bytes object, so one final copy into
-    the frame is unavoidable. No byte-order conversion is performed.
+    This is the production-recommended marshalling path. Callers that already
+    have little-endian vector memory avoid boxed-float traversal and conversion.
+    No byte-order conversion is performed. The returned object is immutable
+    bytes.
 
     Example with NumPy:
 
@@ -153,7 +135,7 @@ def encode_vector_message_le_bytes(
         vector: Raw little-endian vector bytes.
 
     Returns:
-        A bytes object containing the complete binary frame.
+        An immutable bytes object containing the complete binary frame.
 
     Raises:
         TypeError: If an argument has an invalid type.
@@ -183,7 +165,7 @@ def _encode_vector_message_from_view(
     dimension: int,
     vector: memoryview,
 ) -> bytes:
-    """Builds a frame from validated vector bytes."""
+    """Builds an immutable frame from validated vector bytes."""
     name_len = len(name_bytes)
     vector_len = vector.nbytes
 
@@ -194,39 +176,32 @@ def _encode_vector_message_from_view(
     _U32.pack_into(frame, 0, frame_len)
     frame[4:8] = _MAGIC
     _U32.pack_into(frame, 8, _VERSION)
-    _U32.pack_into(frame, _CRC32_OFFSET, 0)
-    _U32.pack_into(frame, 16, dtype.value)
-    _U32.pack_into(frame, 20, name_len)
-    _U32.pack_into(frame, 24, dimension)
-    _U32.pack_into(frame, 28, vector_len)
-    frame[32 : 32 + name_len] = name_bytes
-    frame[32 + name_len :] = vector
-
-    crc32 = zlib.crc32(memoryview(frame)[_CRC_INPUT_OFFSET:]) & _U32_MAX
-    _U32.pack_into(frame, _CRC32_OFFSET, crc32)
-
+    _U32.pack_into(frame, 12, dtype.value)
+    _U32.pack_into(frame, 16, name_len)
+    _U32.pack_into(frame, 20, dimension)
+    _U32.pack_into(frame, 24, vector_len)
+    frame[_FIXED_FRAME_SIZE : _FIXED_FRAME_SIZE + name_len] = name_bytes
+    frame[_FIXED_FRAME_SIZE + name_len :] = vector
     return bytes(frame)
 
 
-def _raise_for_unsupported_iterable_dtype(dtype: DType) -> None:
-    """Raises if dtype lacks native Python iterable encoding support."""
-    if dtype.array_typecode is None:
-        raise NotImplementedError(f"encoding {dtype.name} is not implemented")
+def _raise_for_non_f32_iterable_dtype(dtype: DType) -> None:
+    """Raises if dtype is not supported for Python float iterable encoding."""
+    if dtype is not DType.F32:
+        raise NotImplementedError("encode_vector_message only supports F32")
 
 
-def _to_array(vector: Iterable[float], dtype: DType) -> array.array:
-    """Converts a float iterable to an array for efficient binary export."""
+def _to_f32_array(vector: Iterable[float]) -> array.array:
+    """Converts a float iterable to an F32 array for binary export."""
     if not isinstance(vector, Iterable):
         raise TypeError("vector must be an iterable")
-    if dtype.array_typecode is None:
-        raise NotImplementedError(f"encoding {dtype.name} is not implemented")
 
     try:
-        vector_values = array.array(dtype.array_typecode, vector)
+        vector_values = array.array("f", vector)
     except TypeError as error:
-        raise TypeError(f"vector must contain {dtype.name} values") from error
-    if vector_values.itemsize != dtype.byte_size:
-        raise ValueError(f"{dtype.name} item size must be {dtype.byte_size} bytes")
+        raise TypeError("vector must contain F32 values") from error
+    if vector_values.itemsize != DType.F32.byte_size:
+        raise ValueError("F32 item size must be 4 bytes")
     if len(vector_values) == 0:
         raise ValueError("vector must not be empty")
     _validate_dimension(len(vector_values))

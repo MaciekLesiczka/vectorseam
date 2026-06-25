@@ -7,6 +7,7 @@ import dataclasses
 import pathlib
 import struct
 import sys
+import zlib
 from collections.abc import Sequence
 
 
@@ -27,10 +28,12 @@ from vectorseam.message import (  # noqa: E402
 _DEFAULT_DIMENSIONS = (384, 768, 1536, 3072, 4096)
 _DEFAULT_PROCESSES = 20
 _DEFAULT_VALUES = 7
-_FIXED_FRAME_SIZE = 32
+_FIXED_FRAME_SIZE = 28
+_CRC_FIXED_FRAME_SIZE = 32
 _MAGIC = b"VQS1"
 _NAME = "benchmark"
 _U32 = struct.Struct("<I")
+_U32_MAX = 0xFFFFFFFF
 _VERSION = 1
 
 
@@ -43,15 +46,6 @@ class BenchmarkInput:
     name_bytes: bytes
     vector_list: list[float]
     vector_view: memoryview
-
-
-@dataclasses.dataclass(frozen=True)
-class FrameParts:
-    """Prototype frame representation that keeps vector storage separate."""
-
-    header: bytes
-    name: bytes
-    vector: memoryview
 
 
 def _make_input(dimension: int) -> BenchmarkInput:
@@ -69,84 +63,78 @@ def _make_input(dimension: int) -> BenchmarkInput:
     )
 
 
-def _pack_header(
-    name_len: int,
-    dtype: DType,
-    dimension: int,
-    vector_len: int,
-) -> bytearray:
-    """Returns a v1 frame header with crc32 set to zero."""
-    frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
-    header = bytearray(_FIXED_FRAME_SIZE)
-    _U32.pack_into(header, 0, frame_len)
-    header[4:8] = _MAGIC
-    _U32.pack_into(header, 8, _VERSION)
-    _U32.pack_into(header, 12, 0)
-    _U32.pack_into(header, 16, dtype.value)
-    _U32.pack_into(header, 20, name_len)
-    _U32.pack_into(header, 24, dimension)
-    _U32.pack_into(header, 28, vector_len)
-    return header
-
-
-def _build_no_crc_frame(
+def _encode_bytearray(
     name_bytes: bytes,
     dtype: DType,
     dimension: int,
     vector: memoryview,
 ) -> bytearray:
-    """Builds a contiguous frame with crc32 set to zero."""
+    """Mirrors production marshalling but skips the final bytes() copy."""
     name_len = len(name_bytes)
     vector_len = vector.nbytes
+    frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
+
     frame = bytearray(_FIXED_FRAME_SIZE + name_len + vector_len)
-    frame[:_FIXED_FRAME_SIZE] = _pack_header(
-        name_len,
-        dtype,
-        dimension,
-        vector_len,
-    )
+    _U32.pack_into(frame, 0, frame_len)
+    frame[4:8] = _MAGIC
+    _U32.pack_into(frame, 8, _VERSION)
+    _U32.pack_into(frame, 12, dtype.value)
+    _U32.pack_into(frame, 16, name_len)
+    _U32.pack_into(frame, 20, dimension)
+    _U32.pack_into(frame, 24, vector_len)
     frame[_FIXED_FRAME_SIZE : _FIXED_FRAME_SIZE + name_len] = name_bytes
     frame[_FIXED_FRAME_SIZE + name_len :] = vector
     return frame
 
 
-def _encode_no_crc_bytes(
+def _encode_with_crc_bytes(
     name_bytes: bytes,
     dtype: DType,
     dimension: int,
     vector: memoryview,
 ) -> bytes:
-    """Builds a contiguous frame, skips crc32, and returns immutable bytes."""
-    return bytes(_build_no_crc_frame(name_bytes, dtype, dimension, vector))
+    """Historical comparison: contiguous bytes frame with crc32 scan."""
+    name_len = len(name_bytes)
+    vector_len = vector.nbytes
+    frame_len = _CRC_FIXED_FRAME_SIZE - 4 + name_len + vector_len
 
+    frame = bytearray(_CRC_FIXED_FRAME_SIZE + name_len + vector_len)
+    _U32.pack_into(frame, 0, frame_len)
+    frame[4:8] = _MAGIC
+    _U32.pack_into(frame, 8, _VERSION)
+    _U32.pack_into(frame, 12, 0)
+    _U32.pack_into(frame, 16, dtype.value)
+    _U32.pack_into(frame, 20, name_len)
+    _U32.pack_into(frame, 24, dimension)
+    _U32.pack_into(frame, 28, vector_len)
+    frame[_CRC_FIXED_FRAME_SIZE : _CRC_FIXED_FRAME_SIZE + name_len] = name_bytes
+    frame[_CRC_FIXED_FRAME_SIZE + name_len :] = vector
 
-def _encode_no_crc_bytearray(
-    name_bytes: bytes,
-    dtype: DType,
-    dimension: int,
-    vector: memoryview,
-) -> bytearray:
-    """Builds a contiguous frame, skips crc32, and returns the bytearray."""
-    return _build_no_crc_frame(name_bytes, dtype, dimension, vector)
-
-
-def _encode_frame_parts_no_vector_copy(
-    name_bytes: bytes,
-    dtype: DType,
-    dimension: int,
-    vector: memoryview,
-) -> FrameParts:
-    """Creates header/name only and retains the original vector memoryview."""
-    header = bytes(_pack_header(len(name_bytes), dtype, dimension, vector.nbytes))
-    return FrameParts(header=header, name=name_bytes, vector=vector)
+    crc32 = zlib.crc32(memoryview(frame)[16:]) & _U32_MAX
+    _U32.pack_into(frame, 12, crc32)
+    return bytes(frame)
 
 
 def _parse_header(frame: bytes | bytearray) -> dict[str, int | bytes]:
-    """Parses the fixed v1 header fields used by validation."""
+    """Parses the current fixed v1 header fields used by validation."""
     return {
         "frame_len": _U32.unpack_from(frame, 0)[0],
         "magic": bytes(frame[4:8]),
         "version": _U32.unpack_from(frame, 8)[0],
+        "dtype": _U32.unpack_from(frame, 12)[0],
+        "name_len": _U32.unpack_from(frame, 16)[0],
+        "dimension": _U32.unpack_from(frame, 20)[0],
+        "vector_len": _U32.unpack_from(frame, 24)[0],
+    }
+
+
+def _parse_crc_header(frame: bytes | bytearray) -> dict[str, int | bytes]:
+    """Parses the historical fixed header fields that included crc32."""
+    return {
+        "frame_len": _U32.unpack_from(frame, 0)[0],
+        "magic": bytes(frame[4:8]),
+        "version": _U32.unpack_from(frame, 8)[0],
+        "crc32": _U32.unpack_from(frame, 12)[0],
         "dtype": _U32.unpack_from(frame, 16)[0],
         "name_len": _U32.unpack_from(frame, 20)[0],
         "dimension": _U32.unpack_from(frame, 24)[0],
@@ -159,18 +147,16 @@ def _validate_frame(
     dtype: DType,
     dimension: int,
     name_bytes: bytes,
-    *,
-    require_contiguous: bool = True,
 ) -> None:
-    """Checks that a benchmark frame has the expected v1 structure."""
+    """Checks that a current v1 frame is structurally valid."""
     header = _parse_header(frame)
     expected_vector_len = dimension * dtype.byte_size
     expected_frame_len = _FIXED_FRAME_SIZE - 4 + len(name_bytes)
     expected_frame_len += expected_vector_len
+    if len(frame) - 4 != expected_frame_len:
+        raise ValueError("encoded frame length is inconsistent")
     if header["frame_len"] != expected_frame_len:
         raise ValueError("frame_len field is inconsistent")
-    if require_contiguous and len(frame) - 4 != expected_frame_len:
-        raise ValueError("encoded frame length is inconsistent")
     if header["magic"] != _MAGIC:
         raise ValueError("magic field is invalid")
     if header["version"] != _VERSION:
@@ -185,28 +171,35 @@ def _validate_frame(
         raise ValueError("vector_len field is invalid")
 
 
-def _validate_frame_parts(
-    frame_parts: FrameParts,
+def _validate_crc_frame(
+    frame: bytes,
     dtype: DType,
     dimension: int,
     name_bytes: bytes,
 ) -> None:
-    """Checks that frame-parts metadata describes a valid v1 frame."""
-    _validate_frame(
-        frame_parts.header,
-        dtype,
-        dimension,
-        name_bytes,
-        require_contiguous=False,
-    )
-    if frame_parts.name != name_bytes:
-        raise ValueError("frame-parts name is invalid")
-    if frame_parts.vector.nbytes != dimension * dtype.byte_size:
-        raise ValueError("frame-parts vector length is invalid")
-    total_len = len(frame_parts.header) + len(frame_parts.name)
-    total_len += frame_parts.vector.nbytes
-    if total_len - 4 != _U32.unpack_from(frame_parts.header, 0)[0]:
-        raise ValueError("frame-parts total length is inconsistent")
+    """Checks that the historical crc32 benchmark helper is well-formed."""
+    header = _parse_crc_header(frame)
+    expected_vector_len = dimension * dtype.byte_size
+    expected_frame_len = _CRC_FIXED_FRAME_SIZE - 4 + len(name_bytes)
+    expected_frame_len += expected_vector_len
+    if len(frame) - 4 != expected_frame_len:
+        raise ValueError("encoded crc frame length is inconsistent")
+    if header["frame_len"] != expected_frame_len:
+        raise ValueError("crc frame_len field is inconsistent")
+    if header["magic"] != _MAGIC:
+        raise ValueError("crc magic field is invalid")
+    if header["version"] != _VERSION:
+        raise ValueError("crc version field is invalid")
+    if header["dtype"] != dtype.value:
+        raise ValueError("crc dtype field is invalid")
+    if header["name_len"] != len(name_bytes):
+        raise ValueError("crc name_len field is invalid")
+    if header["dimension"] != dimension:
+        raise ValueError("crc dimension field is invalid")
+    if header["vector_len"] != expected_vector_len:
+        raise ValueError("crc vector_len field is invalid")
+    if header["crc32"] != (zlib.crc32(frame[16:]) & _U32_MAX):
+        raise ValueError("crc32 field is inconsistent")
 
 
 def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
@@ -226,19 +219,13 @@ def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
             dimension,
             benchmark_input.vector_view,
         )
-        no_crc_bytes = _encode_no_crc_bytes(
+        bytearray_frame = _encode_bytearray(
             name_bytes,
             dtype,
             dimension,
             benchmark_input.vector_view,
         )
-        no_crc_bytearray = _encode_no_crc_bytearray(
-            name_bytes,
-            dtype,
-            dimension,
-            benchmark_input.vector_view,
-        )
-        frame_parts = _encode_frame_parts_no_vector_copy(
+        with_crc = _encode_with_crc_bytes(
             name_bytes,
             dtype,
             dimension,
@@ -247,9 +234,8 @@ def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
 
         _validate_frame(production_list, dtype, dimension, name_bytes)
         _validate_frame(production_view, dtype, dimension, name_bytes)
-        _validate_frame(no_crc_bytes, dtype, dimension, name_bytes)
-        _validate_frame(no_crc_bytearray, dtype, dimension, name_bytes)
-        _validate_frame_parts(frame_parts, dtype, dimension, name_bytes)
+        _validate_frame(bytearray_frame, dtype, dimension, name_bytes)
+        _validate_crc_frame(with_crc, dtype, dimension, name_bytes)
 
 
 def _consume_frame(frame: bytes | bytearray) -> int:
@@ -257,19 +243,8 @@ def _consume_frame(frame: bytes | bytearray) -> int:
     return len(frame) ^ frame[0] ^ frame[-1]
 
 
-def _consume_frame_parts(frame_parts: FrameParts) -> int:
-    """Touches each frame part without joining vector bytes."""
-    return (
-        len(frame_parts.header)
-        ^ len(frame_parts.name)
-        ^ frame_parts.vector.nbytes
-        ^ frame_parts.header[0]
-        ^ frame_parts.vector[0]
-    )
-
-
 def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
-    """Current convenience path: traverses list[float] and packs values."""
+    """Experimental convenience path: traverses list[float] and packs F32."""
     frame = encode_vector_message(
         benchmark_input.name,
         benchmark_input.vector_list,
@@ -279,7 +254,7 @@ def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
 
 
 def _bench_memoryview_current(benchmark_input: BenchmarkInput) -> int:
-    """Current path: copies vector bytes, computes crc32, returns bytes."""
+    """Primary path: copies into an immutable contiguous bytes frame."""
     frame = encode_vector_message_le_bytes(
         benchmark_input.name,
         DType.F32,
@@ -289,9 +264,9 @@ def _bench_memoryview_current(benchmark_input: BenchmarkInput) -> int:
     return _consume_frame(frame)
 
 
-def _bench_memoryview_no_crc_bytes(benchmark_input: BenchmarkInput) -> int:
-    """Prototype: copies vector bytes and returns bytes, but skips crc32."""
-    frame = _encode_no_crc_bytes(
+def _bench_memoryview_bytearray(benchmark_input: BenchmarkInput) -> int:
+    """Benchmark-only proof of final bytes() conversion overhead."""
+    frame = _encode_bytearray(
         benchmark_input.name_bytes,
         DType.F32,
         benchmark_input.dimension,
@@ -300,26 +275,15 @@ def _bench_memoryview_no_crc_bytes(benchmark_input: BenchmarkInput) -> int:
     return _consume_frame(frame)
 
 
-def _bench_memoryview_no_crc_bytearray(benchmark_input: BenchmarkInput) -> int:
-    """Prototype: skips crc32 and the final bytearray-to-bytes copy."""
-    frame = _encode_no_crc_bytearray(
+def _bench_memoryview_with_crc(benchmark_input: BenchmarkInput) -> int:
+    """Historical comparison: current shape plus crc32 scan."""
+    frame = _encode_with_crc_bytes(
         benchmark_input.name_bytes,
         DType.F32,
         benchmark_input.dimension,
         benchmark_input.vector_view,
     )
     return _consume_frame(frame)
-
-
-def _bench_frame_parts_no_vector_copy(benchmark_input: BenchmarkInput) -> int:
-    """Prototype lower bound: creates header/name without copying vector bytes."""
-    frame_parts = _encode_frame_parts_no_vector_copy(
-        benchmark_input.name_bytes,
-        DType.F32,
-        benchmark_input.dimension,
-        benchmark_input.vector_view,
-    )
-    return _consume_frame_parts(frame_parts)
 
 
 def _add_cli_args(runner: pyperf.Runner) -> None:
@@ -392,23 +356,18 @@ def main() -> None:
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_current_dim_{dimension}",
+            f"message_memoryview_dim_{dimension}",
             _bench_memoryview_current,
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_no_crc_bytes_dim_{dimension}",
-            _bench_memoryview_no_crc_bytes,
+            f"message_memoryview_bytearray_dim_{dimension}",
+            _bench_memoryview_bytearray,
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_no_crc_bytearray_dim_{dimension}",
-            _bench_memoryview_no_crc_bytearray,
-            benchmark_input,
-        )
-        runner.bench_func(
-            f"message_frame_parts_no_vector_copy_dim_{dimension}",
-            _bench_frame_parts_no_vector_copy,
+            f"message_memoryview_dim_with_crc_dim_{dimension}",
+            _bench_memoryview_with_crc,
             benchmark_input,
         )
 

@@ -58,17 +58,14 @@ Benchmark families:
 
 ```text
 message_list_f32_*:
-  current convenience path using list[float]
+  experimental convenience path using list[float] encoded as F32
 
-message_memoryview_current_*:
-  current production-like bytes/memoryview path
+message_memoryview_dim_*:
+  production-recommended path using packed bytes/memoryview and returning bytes
 
-message_memoryview_no_crc_bytes_*:
-  prototype showing cost without CRC but still returning bytes
+message_memoryview_bytearray_*:
+  benchmark-only comparison showing the cost of final bytearray-to-bytes copy
 
-message_memoryview_no_crc_bytearray_*:
-  prototype showing cost without CRC and without final immutable bytes copy
-
-message_frame_parts_no_vector_copy_*:
-  prototype lower-bound for future no-copy frame-parts design
+message_memoryview_dim_with_crc_*:
+  historical comparison showing the cost of adding CRC32
 ```
