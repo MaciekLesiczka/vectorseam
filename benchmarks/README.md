@@ -67,5 +67,5 @@ message_memoryview_bytearray_*:
   benchmark-only comparison showing the cost of final bytearray-to-bytes copy
 
 message_memoryview_dim_with_crc_*:
-  historical comparison showing the cost of adding CRC32
+  production path plus a CRC32 scan over the returned bytes
 ```

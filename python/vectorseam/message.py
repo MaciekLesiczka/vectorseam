@@ -27,9 +27,9 @@ from typing import TypeAlias
 BytesLike: TypeAlias = bytes | bytearray | memoryview
 
 _FIXED_FRAME_SIZE = 28
+_HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
 _U32_MAX = 0xFFFFFFFF
-_U32 = struct.Struct("<I")
 _VERSION = 1
 
 
@@ -172,17 +172,16 @@ def _encode_vector_message_from_view(
     frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
     _validate_u32("frame_len", frame_len)
 
-    frame = bytearray(_FIXED_FRAME_SIZE + name_len + vector_len)
-    _U32.pack_into(frame, 0, frame_len)
-    frame[4:8] = _MAGIC
-    _U32.pack_into(frame, 8, _VERSION)
-    _U32.pack_into(frame, 12, dtype.value)
-    _U32.pack_into(frame, 16, name_len)
-    _U32.pack_into(frame, 20, dimension)
-    _U32.pack_into(frame, 24, vector_len)
-    frame[_FIXED_FRAME_SIZE : _FIXED_FRAME_SIZE + name_len] = name_bytes
-    frame[_FIXED_FRAME_SIZE + name_len :] = vector
-    return bytes(frame)
+    header = _HEADER.pack(
+        frame_len,
+        _MAGIC,
+        _VERSION,
+        dtype.value,
+        name_len,
+        dimension,
+        vector_len,
+    )
+    return b"".join((header, name_bytes, vector))
 
 
 def _raise_for_non_f32_iterable_dtype(dtype: DType) -> None:
