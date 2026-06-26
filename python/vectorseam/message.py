@@ -6,7 +6,7 @@ Protocol v1 encodes one vector query into a single binary frame:
   magic:       4 bytes    ASCII "VQS1"
   version:     u32_le     1
   dtype:       u32_le
-  name_len:    u32_le     UTF-8 byte length of name
+  name_len:    u32_le     UTF-8 byte length of name, max 1024
   dimension:   u32_le
   vector_len:  u32_le
   name:        name_len bytes, UTF-8, no padding
@@ -29,12 +29,13 @@ BytesLike: TypeAlias = bytes | bytearray | memoryview
 _FIXED_FRAME_SIZE = 28
 _HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
+_MAX_NAME_BYTES = 1024
 _U32_MAX = 0xFFFFFFFF
 _VERSION = 1
 
 
 class DType(enum.IntEnum):
-    """Supported vector element dtype values for protocol v1."""
+    """Protocol v1 vector element dtype values."""
 
     F32 = (1, 4, "f")
     F64 = (2, 8, "d")
@@ -61,18 +62,69 @@ class DType(enum.IntEnum):
 
 def encode_vector_message(
     name: str,
+    dtype: DType,
+    dimension: int,
+    vector: BytesLike,
+) -> bytes:
+    """Encodes already-packed little-endian vector bytes into a v1 frame.
+
+    This is the production marshalling path. Callers that already have
+    little-endian vector memory avoid boxed-float traversal and conversion.
+    No byte-order conversion is performed. The returned object is immutable
+    bytes.
+
+    Example with NumPy:
+
+      vector_le = numpy.ascontiguousarray(
+          numpy.asarray(vector, dtype=numpy.dtype("<f4"))
+      )
+      vector_le.setflags(write=False)
+      frame = encode_vector_message(
+          "prod", DType.F32, vector_le.size, memoryview(vector_le)
+      )
+
+    The caller is responsible for providing little-endian bytes. The passed
+    buffer must be treated as immutable while this function is encoding it; do
+    not mutate the array from another reference or thread during the call.
+
+    Args:
+        name: Client-defined UTF-8 cohort or stratum name, up to 1024 bytes.
+        dtype: Element dtype of the packed vector bytes.
+        dimension: Number of vector elements.
+        vector: Raw little-endian vector bytes.
+
+    Returns:
+        An immutable bytes object containing the complete binary frame.
+
+    Raises:
+        TypeError: If an argument has an invalid type.
+        ValueError: If name is too long, vector is empty, byte length does not
+            match dimension and dtype, or a length field cannot fit in u32.
+    """
+    dtype = _coerce_dtype(dtype)
+    name_bytes = _encode_name(name)
+    _validate_dimension(dimension)
+    vector_view = _byte_view(vector)
+    _validate_vector_len(dimension, dtype, vector_view.nbytes)
+    return _encode_vector_message_from_view(
+        name_bytes, dtype, dimension, vector_view
+    )
+
+
+def encode_vector_message_from_list(
+    name: str,
     vector: Iterable[float],
     dtype: DType = DType.F32,
 ) -> bytes:
-    """Encodes Python floats into a protocol v1 binary frame.
+    """Encodes a Python float iterable into a protocol v1 binary frame.
 
-    This convenience API is intended for experiments and small call sites. The
-    production-recommended API is `encode_vector_message_le_bytes`, which avoids
-    traversing boxed Python floats when callers already have packed vector
-    bytes.
+    This convenience API is intended for experiments, examples, and small call
+    sites. It traverses boxed Python floats and packs them into F32 bytes before
+    building the frame. Use `encode_vector_message` for production call sites
+    that already have packed vector memory.
 
     Args:
-        name: Client-defined UTF-8 cohort or stratum name.
+        name: Client-defined UTF-8 cohort or stratum name, up to 1024 bytes.
         vector: Iterable of Python floats to encode as F32.
         dtype: Element dtype to encode. Only DType.F32 is supported here.
 
@@ -82,11 +134,15 @@ def encode_vector_message(
     Raises:
         TypeError: If an argument has an invalid type or vector cannot be
             encoded as F32.
-        ValueError: If vector is empty or a length field cannot fit in u32.
+        ValueError: If name is too long, vector is empty, or a length field
+            cannot fit in u32.
         NotImplementedError: If dtype is recognized but is not DType.F32.
     """
     dtype = _coerce_dtype(dtype)
-    _raise_for_non_f32_iterable_dtype(dtype)
+    if dtype is not DType.F32:
+        raise NotImplementedError(
+            "encode_vector_message_from_list only supports F32"
+        )
     name_bytes = _encode_name(name)
 
     vector_values = _to_f32_array(vector)
@@ -98,57 +154,6 @@ def encode_vector_message(
         dtype=dtype,
         dimension=len(vector_values),
         vector=_byte_view(vector_values),
-    )
-
-
-def encode_vector_message_le_bytes(
-    name: str,
-    dtype: DType,
-    dimension: int,
-    vector: BytesLike,
-) -> bytes:
-    """Encodes already-packed little-endian vector bytes into a v1 frame.
-
-    This is the production-recommended marshalling path. Callers that already
-    have little-endian vector memory avoid boxed-float traversal and conversion.
-    No byte-order conversion is performed. The returned object is immutable
-    bytes.
-
-    Example with NumPy:
-
-      vector_le = numpy.ascontiguousarray(
-          numpy.asarray(vector, dtype=numpy.dtype("<f4"))
-      )
-      vector_le.setflags(write=False)
-      frame = encode_vector_message_le_bytes(
-          "prod", DType.F32, vector_le.size, memoryview(vector_le)
-      )
-
-    The caller is responsible for providing little-endian bytes. The passed
-    buffer must be treated as immutable while this function is encoding it; do
-    not mutate the array from another reference or thread during the call.
-
-    Args:
-        name: Client-defined UTF-8 cohort or stratum name.
-        dtype: Element dtype of the packed vector bytes.
-        dimension: Number of vector elements.
-        vector: Raw little-endian vector bytes.
-
-    Returns:
-        An immutable bytes object containing the complete binary frame.
-
-    Raises:
-        TypeError: If an argument has an invalid type.
-        ValueError: If vector is empty, byte length does not match dimension and
-            dtype, or a length field cannot fit in u32.
-    """
-    dtype = _coerce_dtype(dtype)
-    name_bytes = _encode_name(name)
-    _validate_dimension(dimension)
-    vector_view = _byte_view(vector)
-    _validate_vector_len(dimension, dtype, vector_view.nbytes)
-    return _encode_vector_message_from_view(
-        name_bytes, dtype, dimension, vector_view
     )
 
 
@@ -184,12 +189,6 @@ def _encode_vector_message_from_view(
     return b"".join((header, name_bytes, vector))
 
 
-def _raise_for_non_f32_iterable_dtype(dtype: DType) -> None:
-    """Raises if dtype is not supported for Python float iterable encoding."""
-    if dtype is not DType.F32:
-        raise NotImplementedError("encode_vector_message only supports F32")
-
-
 def _to_f32_array(vector: Iterable[float]) -> array.array:
     """Converts a float iterable to an F32 array for binary export."""
     if not isinstance(vector, Iterable):
@@ -220,6 +219,8 @@ def _encode_name(name: str) -> bytes:
     if not isinstance(name, str):
         raise TypeError("name must be a string")
     name_bytes = name.encode("utf-8")
+    if len(name_bytes) > _MAX_NAME_BYTES:
+        raise ValueError(f"name must be at most {_MAX_NAME_BYTES} UTF-8 bytes")
     _validate_u32("name_len", len(name_bytes))
     return name_bytes
 
@@ -251,5 +252,5 @@ __all__ = [
     "BytesLike",
     "DType",
     "encode_vector_message",
-    "encode_vector_message_le_bytes",
+    "encode_vector_message_from_list",
 ]

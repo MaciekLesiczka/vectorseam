@@ -21,7 +21,7 @@ import pyperf  # noqa: E402
 from vectorseam.message import (  # noqa: E402
     DType,
     encode_vector_message,
-    encode_vector_message_le_bytes,
+    encode_vector_message_from_list,
 )
 
 
@@ -134,12 +134,12 @@ def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
         dtype = DType.F32
         dimension = benchmark_input.dimension
         name_bytes = benchmark_input.name_bytes
-        production_list = encode_vector_message(
+        production_list = encode_vector_message_from_list(
             benchmark_input.name,
             benchmark_input.vector_list,
             dtype,
         )
-        production_view = encode_vector_message_le_bytes(
+        production_view = encode_vector_message(
             benchmark_input.name,
             dtype,
             dimension,
@@ -169,7 +169,7 @@ def _consume_frame_with_crc(frame: bytes, crc32: int) -> int:
 
 def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
     """Experimental convenience path: traverses list[float] and packs F32."""
-    frame = encode_vector_message(
+    frame = encode_vector_message_from_list(
         benchmark_input.name,
         benchmark_input.vector_list,
         DType.F32,
@@ -179,7 +179,7 @@ def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
 
 def _bench_memoryview_current(benchmark_input: BenchmarkInput) -> int:
     """Primary path: copies into an immutable contiguous bytes frame."""
-    frame = encode_vector_message_le_bytes(
+    frame = encode_vector_message(
         benchmark_input.name,
         DType.F32,
         benchmark_input.dimension,
@@ -201,7 +201,7 @@ def _bench_memoryview_bytearray(benchmark_input: BenchmarkInput) -> int:
 
 def _bench_memoryview_with_crc(benchmark_input: BenchmarkInput) -> int:
     """Primary path plus a CRC32 scan over the returned bytes."""
-    frame = encode_vector_message_le_bytes(
+    frame = encode_vector_message(
         benchmark_input.name,
         DType.F32,
         benchmark_input.dimension,

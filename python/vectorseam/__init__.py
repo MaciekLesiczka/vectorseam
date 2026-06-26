@@ -4,12 +4,12 @@ from vectorseam.message import (
     BytesLike,
     DType,
     encode_vector_message,
-    encode_vector_message_le_bytes,
+    encode_vector_message_from_list,
 )
 
 __all__ = [
     "BytesLike",
     "DType",
     "encode_vector_message",
-    "encode_vector_message_le_bytes",
+    "encode_vector_message_from_list",
 ]
