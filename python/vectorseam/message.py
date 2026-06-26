@@ -24,7 +24,7 @@ import sys
 from collections.abc import Iterable
 from typing import TypeAlias
 
-BytesLike: TypeAlias = bytes | bytearray | memoryview
+BufferLike: TypeAlias = bytes | bytearray | memoryview | array.array
 
 _FIXED_FRAME_SIZE = 28
 _HEADER = struct.Struct("<I4sIIIII")
@@ -64,7 +64,7 @@ def encode_vector_message(
     name: str,
     dtype: DType,
     dimension: int,
-    vector: BytesLike,
+    vector: BufferLike,
 ) -> bytes:
     """Encodes already-packed little-endian vector bytes into a v1 frame.
 
@@ -78,7 +78,6 @@ def encode_vector_message(
       vector_le = numpy.ascontiguousarray(
           numpy.asarray(vector, dtype=numpy.dtype("<f4"))
       )
-      vector_le.setflags(write=False)
       frame = encode_vector_message(
           "prod", DType.F32, vector_le.size, memoryview(vector_le)
       )
@@ -111,7 +110,7 @@ def encode_vector_message(
     )
 
 
-def encode_vector_message_from_list(
+def encode_vector_message_from_iterable(
     name: str,
     vector: Iterable[float],
     dtype: DType = DType.F32,
@@ -141,19 +140,18 @@ def encode_vector_message_from_list(
     dtype = _coerce_dtype(dtype)
     if dtype is not DType.F32:
         raise NotImplementedError(
-            "encode_vector_message_from_list only supports F32"
+            "encode_vector_message_from_iterable only supports F32"
         )
-    name_bytes = _encode_name(name)
 
     vector_values = _to_f32_array(vector)
     if sys.byteorder != "little":
         vector_values.byteswap()
 
-    return _encode_vector_message_from_view(
-        name_bytes=name_bytes,
-        dtype=dtype,
-        dimension=len(vector_values),
-        vector=_byte_view(vector_values),
+    return encode_vector_message(
+        name,
+        dtype,
+        len(vector_values),
+        vector_values,
     )
 
 
@@ -206,7 +204,7 @@ def _to_f32_array(vector: Iterable[float]) -> array.array:
     return vector_values
 
 
-def _byte_view(vector: BytesLike | array.array) -> memoryview:
+def _byte_view(vector: BufferLike) -> memoryview:
     """Returns a byte-oriented memoryview over contiguous vector data."""
     try:
         return memoryview(vector).cast("B")
@@ -249,8 +247,8 @@ def _validate_vector_len(dimension: int, dtype: DType, vector_len: int) -> None:
 
 
 __all__ = [
-    "BytesLike",
+    "BufferLike",
     "DType",
     "encode_vector_message",
-    "encode_vector_message_from_list",
+    "encode_vector_message_from_iterable",
 ]

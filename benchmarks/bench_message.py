@@ -21,7 +21,7 @@ import pyperf  # noqa: E402
 from vectorseam.message import (  # noqa: E402
     DType,
     encode_vector_message,
-    encode_vector_message_from_list,
+    encode_vector_message_from_iterable,
 )
 
 
@@ -134,7 +134,7 @@ def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
         dtype = DType.F32
         dimension = benchmark_input.dimension
         name_bytes = benchmark_input.name_bytes
-        production_list = encode_vector_message_from_list(
+        production_list = encode_vector_message_from_iterable(
             benchmark_input.name,
             benchmark_input.vector_list,
             dtype,
@@ -169,7 +169,7 @@ def _consume_frame_with_crc(frame: bytes, crc32: int) -> int:
 
 def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
     """Experimental convenience path: traverses list[float] and packs F32."""
-    frame = encode_vector_message_from_list(
+    frame = encode_vector_message_from_iterable(
         benchmark_input.name,
         benchmark_input.vector_list,
         DType.F32,

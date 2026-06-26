@@ -1,15 +1,15 @@
 """Client SDK."""
 
 from vectorseam.message import (
-    BytesLike,
+    BufferLike,
     DType,
     encode_vector_message,
-    encode_vector_message_from_list,
+    encode_vector_message_from_iterable,
 )
 
 __all__ = [
-    "BytesLike",
+    "BufferLike",
     "DType",
     "encode_vector_message",
-    "encode_vector_message_from_list",
+    "encode_vector_message_from_iterable",
 ]
