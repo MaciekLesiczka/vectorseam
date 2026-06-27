@@ -72,4 +72,7 @@ capture_sample_rate_0_01_*:
 
 capture_sample_rate_1_0_*:
   capture path with sampling always enabled
+
+capture_numpy_sample_rate_1_0_*:
+  convenience capture path using NumPy dimension and dtype metadata
 ```

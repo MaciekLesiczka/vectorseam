@@ -6,11 +6,14 @@ import struct
 import threading
 import unittest
 
+import numpy
+
 from vectorseam import (
     CaptureResult,
     DType,
     ProbabilitySampler,
     VectorCaptureProducer,
+    capture_vector,
     encode_vector_message,
     get_vector_capture_producer,
 )
@@ -251,6 +254,75 @@ class VectorCaptureProducerTest(unittest.TestCase):
         self.assertEqual(1, second.queued_frames)
         self.assertEqual(frame, second.try_dequeue())
         self.assertEqual(0, first.queued_bytes)
+
+    def test_capture_vector_uses_process_singleton(self) -> None:
+        producer = get_vector_capture_producer()
+        _clear_queue(producer)
+        vector = _packed_f32([1.0, 2.0])
+        frame = encode_vector_message("one_liner", DType.F32, 2, vector)
+
+        result = capture_vector("one_liner", vector, dimension=2)
+
+        self.assertEqual(CaptureResult.ENQUEUED, result)
+        self.assertEqual(frame, producer.try_dequeue())
+        self.assertEqual(0, producer.queued_bytes)
+
+    def test_capture_vector_infers_numpy_metadata(self) -> None:
+        producer = VectorCaptureProducer(max_queue_bytes=1024)
+        vector = numpy.asarray([1.0, 2.0], dtype=numpy.dtype("<f4"))
+        frame = encode_vector_message("numpy", DType.F32, 2, vector)
+
+        result = capture_vector("numpy", vector, producer=producer)
+
+        self.assertEqual(CaptureResult.ENQUEUED, result)
+        self.assertEqual(frame, producer.try_dequeue())
+
+    def test_capture_vector_accepts_non_contiguous_numpy_vector(self) -> None:
+        producer = VectorCaptureProducer(max_queue_bytes=1024)
+        source = numpy.asarray([1.0, 9.0, 2.0, 8.0], dtype=numpy.dtype("<f4"))
+        vector = source[::2]
+        expected = numpy.ascontiguousarray(vector)
+        frame = encode_vector_message("numpy_slice", DType.F32, 2, expected)
+
+        result = capture_vector("numpy_slice", vector, producer=producer)
+
+        self.assertEqual(CaptureResult.ENQUEUED, result)
+        self.assertEqual(frame, producer.try_dequeue())
+
+    def test_capture_vector_rejects_numpy_dimension_mismatch(self) -> None:
+        vector = numpy.asarray([1.0, 2.0], dtype=numpy.dtype("<f4"))
+
+        with self.assertRaises(ValueError):
+            capture_vector("bad_dimension", vector, dimension=3)
+
+    def test_capture_vector_rejects_numpy_dtype_mismatch(self) -> None:
+        vector = numpy.asarray([1.0, 2.0], dtype=numpy.dtype("<f8"))
+
+        with self.assertRaises(ValueError):
+            capture_vector("bad_dtype", vector, dtype=DType.F32)
+
+    def test_capture_vector_rejects_multidimensional_numpy_array(self) -> None:
+        vector = numpy.asarray([[1.0, 2.0]], dtype=numpy.dtype("<f4"))
+
+        with self.assertRaises(ValueError):
+            capture_vector("bad_shape", vector)
+
+    def test_capture_vector_requires_dimension_for_non_numpy(self) -> None:
+        vector = _packed_f32([1.0])
+
+        with self.assertRaises(TypeError):
+            capture_vector("raw_without_dimension", vector)
+
+    def test_capture_vector_rejects_invalid_producer(self) -> None:
+        vector = _packed_f32([1.0])
+
+        with self.assertRaises(TypeError):
+            capture_vector(
+                "bad_producer",
+                vector,
+                dimension=1,
+                producer=object(),  # type: ignore[arg-type]
+            )
 
 
 if __name__ == "__main__":

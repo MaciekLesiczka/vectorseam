@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import enum
 import random
+import sys
 import threading
 from collections import deque
 from typing import Protocol
+
+import numpy
 
 from vectorseam.message import BufferLike, DType, encode_vector_message
 
@@ -229,10 +232,128 @@ def get_vector_capture_producer() -> VectorCaptureProducer:
     return _PROCESS_PRODUCER
 
 
+def capture_vector(
+    name: str,
+    vector: BufferLike | numpy.ndarray,
+    *,
+    dimension: int | None = None,
+    dtype: DType | None = None,
+    producer: VectorCaptureProducer | None = None,
+) -> CaptureResult:
+    """Captures a vector with the process-wide producer by default.
+
+    This is the paste-friendly SDK API for application call sites. For a
+    one-dimensional ``numpy.ndarray``, dimension and dtype are inferred from
+    array metadata. Non-NumPy buffers still require an explicit ``dimension``.
+    Lower-level marshalling validates name, dimension, dtype, and vector
+    length.
+
+    Args:
+        name: Client-defined UTF-8 cohort or stratum name.
+        vector: One-dimensional NumPy array or already-packed little-endian
+            vector bytes.
+        dimension: Number of vector elements. Required for non-NumPy buffers.
+        dtype: Element dtype of the packed vector bytes. Inferred for NumPy
+            arrays when omitted. Defaults to F32 for non-NumPy buffers.
+        producer: Optional producer. When omitted, the process-wide producer is
+            used.
+
+    Returns:
+        Capture result indicating whether the frame was enqueued, skipped by
+        sampling, or dropped because the queue was full.
+
+    Raises:
+        TypeError: If producer is invalid, or marshalling rejects an argument.
+        ValueError: If marshalling rejects the name, dimension, or vector.
+    """
+    if producer is None:
+        producer = get_vector_capture_producer()
+    if not isinstance(producer, VectorCaptureProducer):
+        raise TypeError("producer must be a VectorCaptureProducer")
+
+    if isinstance(vector, numpy.ndarray):
+        vector, dimension, dtype = _normalize_numpy_vector(
+            vector,
+            dimension=dimension,
+            dtype=dtype,
+        )
+    else:
+        if dimension is None:
+            raise TypeError("dimension is required for non-NumPy vectors")
+        dtype = DType.F32 if dtype is None else _validate_dtype(dtype)
+
+    return producer.capture_vector(
+        name,
+        vector,
+        dimension=dimension,
+        dtype=dtype,
+    )
+
+
+def _normalize_numpy_vector(
+    vector: numpy.ndarray,
+    *,
+    dimension: int | None,
+    dtype: DType | None,
+) -> tuple[numpy.ndarray, int, DType]:
+    """Returns a contiguous little-endian NumPy vector and SDK metadata."""
+    if vector.ndim != 1:
+        raise ValueError("NumPy vector must be one-dimensional")
+    if dimension is not None and dimension != vector.size:
+        raise ValueError("dimension must match NumPy vector size")
+
+    inferred_dtype = _dtype_from_numpy(vector.dtype)
+    dtype = inferred_dtype if dtype is None else _validate_dtype(dtype)
+    if dtype is not inferred_dtype:
+        raise ValueError("dtype must match NumPy vector dtype")
+
+    target_dtype = _little_endian_numpy_dtype(vector.dtype)
+    if vector.dtype != target_dtype:
+        vector = vector.astype(target_dtype, copy=False)
+    if not vector.flags.c_contiguous:
+        vector = numpy.ascontiguousarray(vector)
+
+    return vector, vector.size, dtype
+
+
+def _dtype_from_numpy(dtype: numpy.dtype) -> DType:
+    """Returns the SDK dtype for a supported NumPy dtype."""
+    dtype = numpy.dtype(dtype)
+    if dtype.kind == "f" and dtype.itemsize == DType.F32.byte_size:
+        return DType.F32
+    if dtype.kind == "f" and dtype.itemsize == DType.F64.byte_size:
+        return DType.F64
+    if dtype.kind == "f" and dtype.itemsize == DType.F16.byte_size:
+        return DType.F16
+    if dtype.kind == "i" and dtype.itemsize == DType.I8.byte_size:
+        return DType.I8
+    if dtype.kind == "u" and dtype.itemsize == DType.U8.byte_size:
+        return DType.U8
+    raise TypeError("NumPy vector dtype must be F16, F32, F64, I8, or U8")
+
+
+def _little_endian_numpy_dtype(dtype: numpy.dtype) -> numpy.dtype:
+    """Returns the little-endian equivalent of dtype."""
+    dtype = numpy.dtype(dtype)
+    if dtype.byteorder in ("<", "|"):
+        return dtype
+    if dtype.byteorder == "=" and sys.byteorder == "little":
+        return dtype
+    return dtype.newbyteorder("<")
+
+
+def _validate_dtype(dtype: DType) -> DType:
+    """Raises if dtype is not a DType."""
+    if not isinstance(dtype, DType):
+        raise TypeError("dtype must be a DType")
+    return dtype
+
+
 __all__ = [
     "CaptureResult",
     "ProbabilitySampler",
     "SamplingPolicy",
     "VectorCaptureProducer",
+    "capture_vector",
     "get_vector_capture_producer",
 ]

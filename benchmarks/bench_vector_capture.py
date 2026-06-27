@@ -15,12 +15,14 @@ if str(_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(_PYTHON_DIR))
 
 import pyperf  # noqa: E402
+import numpy  # noqa: E402
 
 from vectorseam.message import DType  # noqa: E402
 from vectorseam.vector_capture import (  # noqa: E402
     CaptureResult,
     ProbabilitySampler,
     VectorCaptureProducer,
+    capture_vector,
 )
 
 
@@ -37,9 +39,11 @@ class BenchmarkInput:
 
     dimension: int
     name: str
+    numpy_vector: numpy.ndarray
     vector_view: memoryview
     capture_rate_001: VectorCaptureProducer
     capture_rate_1: VectorCaptureProducer
+    capture_numpy_rate_1: VectorCaptureProducer
 
 
 def _make_input(dimension: int) -> BenchmarkInput:
@@ -50,17 +54,22 @@ def _make_input(dimension: int) -> BenchmarkInput:
     )
     if sys.byteorder != "little":
         vector_array.byteswap()
+    numpy_vector = numpy.frombuffer(vector_array, dtype=numpy.dtype("<f4"))
     frame_bytes = _FIXED_FRAME_SIZE + len(_NAME.encode("utf-8"))
     frame_bytes += dimension * DType.F32.byte_size
     return BenchmarkInput(
         dimension=dimension,
         name=_NAME,
+        numpy_vector=numpy_vector,
         vector_view=memoryview(vector_array).cast("B"),
         capture_rate_001=VectorCaptureProducer(
             sampler=ProbabilitySampler(0.01, rng=random.Random(dimension)),
             max_queue_bytes=frame_bytes,
         ),
         capture_rate_1=VectorCaptureProducer(max_queue_bytes=frame_bytes),
+        capture_numpy_rate_1=VectorCaptureProducer(
+            max_queue_bytes=frame_bytes
+        ),
     )
 
 
@@ -104,6 +113,24 @@ def _bench_capture_sample_rate_1(benchmark_input: BenchmarkInput) -> int:
         benchmark_input,
         benchmark_input.capture_rate_1,
     )
+
+
+def _bench_capture_numpy_sample_rate_1(
+    benchmark_input: BenchmarkInput,
+) -> int:
+    """Convenience capture path with NumPy metadata inference."""
+    result = capture_vector(
+        benchmark_input.name,
+        benchmark_input.numpy_vector,
+        producer=benchmark_input.capture_numpy_rate_1,
+    )
+    if result is CaptureResult.QUEUE_FULL:
+        raise RuntimeError("capture benchmark queue unexpectedly filled")
+
+    frame = benchmark_input.capture_numpy_rate_1.try_dequeue()
+    if frame is None:
+        raise RuntimeError("capture benchmark enqueue produced no frame")
+    return _consume_frame(frame)
 
 
 def _add_cli_args(runner: pyperf.Runner) -> None:
@@ -165,7 +192,9 @@ def main() -> None:
     if args.output:
         pathlib.Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
-    inputs = [_make_input(dimension) for dimension in _selected_dimensions(args)]
+    inputs = [
+        _make_input(dimension) for dimension in _selected_dimensions(args)
+    ]
 
     for benchmark_input in inputs:
         dimension = benchmark_input.dimension
@@ -177,6 +206,11 @@ def main() -> None:
         runner.bench_func(
             f"capture_sample_rate_1_0_dim_{dimension}",
             _bench_capture_sample_rate_1,
+            benchmark_input,
+        )
+        runner.bench_func(
+            f"capture_numpy_sample_rate_1_0_dim_{dimension}",
+            _bench_capture_numpy_sample_rate_1,
             benchmark_input,
         )
 
