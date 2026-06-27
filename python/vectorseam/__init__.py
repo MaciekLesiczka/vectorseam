@@ -13,6 +13,7 @@ from vectorseam.vector_capture import (
     VectorCaptureProducer,
     get_vector_capture_producer,
 )
+from vectorseam.vector_sender import VectorSocketSender
 
 __all__ = [
     "BufferLike",
@@ -21,6 +22,7 @@ __all__ = [
     "ProbabilitySampler",
     "SamplingPolicy",
     "VectorCaptureProducer",
+    "VectorSocketSender",
     "encode_vector_message",
     "encode_vector_message_from_iterable",
     "get_vector_capture_producer",
