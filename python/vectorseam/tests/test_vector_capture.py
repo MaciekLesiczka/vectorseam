@@ -30,8 +30,7 @@ def _unpack_u32(frame: bytes, offset: int) -> int:
 
 
 def _clear_queue(producer: VectorCaptureProducer) -> None:
-    while producer.try_dequeue() is not None:
-        pass
+    producer.drain()
 
 
 class ProbabilitySamplerTest(unittest.TestCase):
@@ -113,7 +112,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
         self.assertEqual(0, producer.queued_bytes)
         self.assertEqual(0, producer.queued_frames)
 
-    def test_multiple_try_dequeue_calls_reduce_queued_byte_count(self) -> None:
+    def test_drain_reduces_queued_byte_count(self) -> None:
         vector = _packed_f32([1.0, 2.0])
         raw_frame = encode_vector_message("raw", DType.F32, 2, vector)
         alt_frame = encode_vector_message("alt", DType.F32, 2, vector)
@@ -124,13 +123,35 @@ class VectorCaptureProducerTest(unittest.TestCase):
         producer.capture_vector("raw", vector, dimension=2)
         producer.capture_vector("alt", vector, dimension=2)
 
-        first = producer.try_dequeue()
+        drained = producer.drain(max_bytes=len(raw_frame))
 
-        self.assertEqual(raw_frame, first)
+        self.assertEqual([raw_frame], drained)
         self.assertEqual(len(alt_frame), producer.queued_bytes)
         self.assertEqual(1, producer.queued_frames)
-        self.assertEqual(alt_frame, producer.try_dequeue())
+        self.assertEqual([alt_frame], producer.drain())
         self.assertEqual(0, producer.queued_bytes)
+        self.assertEqual(0, producer.queued_frames)
+
+    def test_drain_returns_empty_when_next_frame_exceeds_budget(self) -> None:
+        vector = _packed_f32([1.0, 2.0])
+        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        producer = VectorCaptureProducer(max_queue_bytes=len(frame))
+
+        producer.capture_vector("raw", vector, dimension=2)
+
+        self.assertEqual([], producer.drain(max_bytes=len(frame) - 1))
+        self.assertEqual(len(frame), producer.queued_bytes)
+        self.assertEqual(1, producer.queued_frames)
+
+    def test_drain_rejects_invalid_max_bytes(self) -> None:
+        producer = VectorCaptureProducer(max_queue_bytes=1024)
+
+        with self.assertRaises(TypeError):
+            producer.drain(max_bytes=1.5)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            producer.drain(max_bytes=True)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            producer.drain(max_bytes=-1)
 
     def test_queue_full_drops_without_enqueuing_second_frame(self) -> None:
         vector = _packed_f32([1.0, 2.0])
@@ -213,10 +234,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
         self.assertEqual(expected_captures, producer.queued_frames)
         self.assertEqual(expected_captures * len(frame), producer.queued_bytes)
-        dequeued_count = 0
-        while producer.try_dequeue() is not None:
-            dequeued_count += 1
-        self.assertEqual(expected_captures, dequeued_count)
+        self.assertEqual(expected_captures, len(producer.drain()))
         self.assertEqual(0, producer.queued_bytes)
 
     def test_get_vector_capture_producer_returns_process_singleton(self) -> None:

@@ -184,6 +184,42 @@ class VectorCaptureProducer:
             self._queued_bytes -= len(frame)
             return frame
 
+    def drain(self, max_bytes: int | None = None) -> list[bytes]:
+        """Dequeues queued frames without blocking.
+
+        Args:
+            max_bytes: Optional byte budget. Frames are never split; if the
+                next frame would exceed the budget, draining stops.
+
+        Returns:
+            A list of immutable frame bytes.
+
+        Raises:
+            TypeError: If max_bytes is not an integer or None.
+            ValueError: If max_bytes is negative.
+        """
+        if max_bytes is not None:
+            if not isinstance(max_bytes, int) or isinstance(max_bytes, bool):
+                raise TypeError("max_bytes must be an integer or None")
+            if max_bytes < 0:
+                raise ValueError("max_bytes must be non-negative")
+
+        frames: list[bytes] = []
+        drained_bytes = 0
+        with self._lock:
+            while self._queue:
+                next_frame = self._queue[0]
+                next_frame_bytes = len(next_frame)
+                if (
+                    max_bytes is not None
+                    and drained_bytes + next_frame_bytes > max_bytes
+                ):
+                    break
+                frames.append(self._queue.popleft())
+                drained_bytes += next_frame_bytes
+                self._queued_bytes -= next_frame_bytes
+        return frames
+
 
 _PROCESS_PRODUCER = VectorCaptureProducer()
 
