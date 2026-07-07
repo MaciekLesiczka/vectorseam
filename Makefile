@@ -1,7 +1,9 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency test-rust test-python test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency test-rust test-python bench-python bench-python-message bench-python-vector-capture bench-python-report bench-python-message-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
+PYTHON_BENCH_JSON ?= .benchmarks/message.json
+PYTHON_VECTOR_CAPTURE_BENCH_JSON ?= .benchmarks/vector_capture.json
 ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
 ANN_RECALL_LATENCY_POSTGRES_DATA := $(CURDIR)/python/ann-recall-latency/data/postgres
 ANN_RECALL_LATENCY_DOCKER_COMPOSE := ANN_RECALL_LATENCY_POSTGRES_DATA="$(ANN_RECALL_LATENCY_POSTGRES_DATA)" docker compose -f $(ANN_RECALL_LATENCY_COMPOSE)
@@ -48,6 +50,33 @@ test-rust:
 
 test-python: setup
 	$(UV) run python -m compileall python
+	$(UV) run python -m unittest discover -s python/vectorseam/tests
+
+bench-python: bench-python-message bench-python-vector-capture
+
+bench-python-message:
+	mkdir -p .benchmarks
+	$(UV) run --extra bench python benchmarks/bench_message.py --output $(PYTHON_BENCH_JSON)
+
+bench-python-vector-capture:
+	mkdir -p .benchmarks
+	$(UV) run --extra bench python benchmarks/bench_vector_capture.py --output $(PYTHON_VECTOR_CAPTURE_BENCH_JSON)
+
+bench-python-report: bench-python-message-report bench-python-vector-capture-report
+
+bench-python-message-report:
+	@if [ -f "$(PYTHON_BENCH_JSON)" ]; then \
+		$(UV) run --extra bench python -m pyperf stats "$(PYTHON_BENCH_JSON)"; \
+	else \
+		echo "Missing $(PYTHON_BENCH_JSON); run make bench-python-message"; \
+	fi
+
+bench-python-vector-capture-report:
+	@if [ -f "$(PYTHON_VECTOR_CAPTURE_BENCH_JSON)" ]; then \
+		$(UV) run --extra bench python -m pyperf stats "$(PYTHON_VECTOR_CAPTURE_BENCH_JSON)"; \
+	else \
+		echo "Missing $(PYTHON_VECTOR_CAPTURE_BENCH_JSON); run make bench-python-vector-capture"; \
+	fi
 
 test: test-rust test-python
 
