@@ -9,6 +9,7 @@ import unittest
 import numpy
 
 from vectorseam import (
+    AdaptiveSampler,
     CaptureResult,
     DType,
     ProbabilitySampler,
@@ -17,6 +18,31 @@ from vectorseam import (
     encode_vector_message,
     get_vector_capture_producer,
 )
+
+
+class _CountingRandom(random.Random):
+    """Random generator that records random() calls."""
+
+    def __init__(self, seed: int) -> None:
+        super().__init__(seed)
+        self.calls = 0
+
+    def random(self) -> float:
+        self.calls += 1
+        return super().random()
+
+
+class _FakeClock:
+    """Mutable monotonic clock for adaptive sampler tests."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now = round(self.now + seconds, 10)
 
 
 def _packed_f32(values: list[float]) -> array.array:
@@ -67,8 +93,238 @@ class ProbabilitySamplerTest(unittest.TestCase):
         self.assertEqual(first_decisions, second_decisions)
 
 
+class AdaptiveSamplerTest(unittest.TestCase):
+    """Verifies adaptive sampler behavior."""
+
+    def test_constructor_rejects_invalid_target(self) -> None:
+        for target in (True, "1.0"):
+            with self.subTest(target=target):
+                with self.assertRaises(TypeError):
+                    AdaptiveSampler(target)  # type: ignore[arg-type]
+        for target in (-1.0, 0.0, float("nan")):
+            with self.subTest(target=target):
+                with self.assertRaises(ValueError):
+                    AdaptiveSampler(target)
+
+    def test_constructor_rejects_invalid_clock(self) -> None:
+        with self.assertRaises(TypeError):
+            AdaptiveSampler(clock=object())  # type: ignore[arg-type]
+
+    def test_constructor_rejects_invalid_rng(self) -> None:
+        with self.assertRaises(TypeError):
+            AdaptiveSampler(rng=object())  # type: ignore[arg-type]
+
+    def test_cold_start_samples_everything_without_rng(self) -> None:
+        clock = _FakeClock()
+        rng = _CountingRandom(1234)
+        sampler = AdaptiveSampler(rng=rng, clock=clock)
+
+        decisions = [sampler.should_sample("raw") for _ in range(10)]
+
+        self.assertEqual([True] * 10, decisions)
+        self.assertEqual(0, rng.calls)
+        self.assertEqual(1.0, sampler.cohort_probability("raw"))
+
+    def test_steady_high_traffic_converges_to_target_fraction(self) -> None:
+        clock = _FakeClock()
+        sampler = AdaptiveSampler(
+            target_samples_per_second=1.0,
+            rng=random.Random(5678),
+            clock=clock,
+        )
+        interval_seconds = 0.01
+
+        self._drive_calls(
+            sampler,
+            "hot",
+            clock,
+            call_count=500 * 10,
+            interval_seconds=interval_seconds,
+        )
+        sampled = self._drive_calls(
+            sampler,
+            "hot",
+            clock,
+            call_count=50_000,
+            interval_seconds=interval_seconds,
+        )
+
+        self.assertAlmostEqual(
+            0.01,
+            sampler.cohort_probability("hot"),
+            delta=0.002,
+        )
+        self.assertAlmostEqual(0.01, sampled / 50_000, delta=0.003)
+
+    def test_probability_is_constant_within_bucket(self) -> None:
+        clock = _FakeClock()
+        sampler = AdaptiveSampler(
+            target_samples_per_second=1.0,
+            rng=random.Random(9),
+            clock=clock,
+        )
+        self._drive_calls(
+            sampler,
+            "hot",
+            clock,
+            call_count=500,
+            interval_seconds=0.01,
+        )
+
+        sampler.should_sample("hot")
+        clock.advance(0.01)
+        probability = sampler.cohort_probability("hot")
+        self._drive_calls(
+            sampler,
+            "hot",
+            clock,
+            call_count=200,
+            interval_seconds=0.01,
+        )
+
+        self.assertLess(probability, 1.0)
+        self.assertEqual(probability, sampler.cohort_probability("hot"))
+
+    def test_low_traffic_stays_at_probability_one(self) -> None:
+        clock = _FakeClock()
+        rng = _CountingRandom(1234)
+        sampler = AdaptiveSampler(
+            target_samples_per_second=1.0,
+            rng=rng,
+            clock=clock,
+        )
+
+        for _ in range(20):
+            self.assertTrue(sampler.should_sample("slow"))
+            self.assertEqual(1.0, sampler.cohort_probability("slow"))
+            clock.advance(5.0)
+
+        self.assertEqual(0, rng.calls)
+
+    def test_quiet_period_recovers_probability(self) -> None:
+        clock = _FakeClock()
+        rng = _CountingRandom(1234)
+        sampler = AdaptiveSampler(
+            target_samples_per_second=1.0,
+            rng=rng,
+            clock=clock,
+        )
+        self._drive_calls(
+            sampler,
+            "hot",
+            clock,
+            call_count=500 * 10,
+            interval_seconds=0.01,
+        )
+        self.assertLess(sampler.cohort_probability("hot"), 0.02)
+
+        clock.advance(1_000.0)
+
+        self.assertTrue(sampler.should_sample("hot"))
+        self.assertEqual(1.0, sampler.cohort_probability("hot"))
+
+    def test_independent_cohorts_get_independent_probabilities(self) -> None:
+        clock = _FakeClock()
+        sampler = AdaptiveSampler(
+            target_samples_per_second=1.0,
+            rng=random.Random(4321),
+            clock=clock,
+        )
+
+        self._drive_calls(
+            sampler,
+            "fast",
+            clock,
+            call_count=500 * 10,
+            interval_seconds=0.01,
+        )
+        self._drive_calls(
+            sampler,
+            "medium",
+            clock,
+            call_count=50 * 10,
+            interval_seconds=0.1,
+        )
+
+        fast_probability = sampler.cohort_probability("fast")
+        medium_probability = sampler.cohort_probability("medium")
+        self.assertLess(fast_probability, medium_probability)
+        self.assertAlmostEqual(0.01, fast_probability, delta=0.002)
+        self.assertAlmostEqual(0.1, medium_probability, delta=0.02)
+
+    def test_concurrent_sampling_is_thread_safe(self) -> None:
+        sampler = AdaptiveSampler(rng=random.Random(1234))
+        thread_count = 8
+        samples_per_thread = 200
+        errors: list[BaseException] = []
+        errors_lock = threading.Lock()
+        sampled_counts: list[int] = []
+        sampled_counts_lock = threading.Lock()
+
+        def sample_many(cohort: str) -> None:
+            sampled = 0
+            try:
+                for _ in range(samples_per_thread):
+                    if sampler.should_sample(cohort):
+                        sampled += 1
+            except BaseException as error:  # pylint: disable=broad-exception-caught
+                with errors_lock:
+                    errors.append(error)
+            with sampled_counts_lock:
+                sampled_counts.append(sampled)
+
+        threads = [
+            threading.Thread(
+                target=sample_many,
+                args=("even" if index % 2 == 0 else "odd",),
+            )
+            for index in range(thread_count)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        if errors:
+            raise errors[0]
+
+        self.assertEqual(thread_count, len(sampled_counts))
+        self.assertEqual(
+            thread_count * samples_per_thread,
+            sum(sampled_counts),
+        )
+        self.assertEqual(1.0, sampler.cohort_probability("even"))
+        self.assertEqual(1.0, sampler.cohort_probability("odd"))
+
+    def _drive_calls(
+        self,
+        sampler: AdaptiveSampler,
+        name: str,
+        clock: _FakeClock,
+        *,
+        call_count: int,
+        interval_seconds: float,
+    ) -> int:
+        """Drives should_sample calls at a simulated interval."""
+        sampled = 0
+        for _ in range(call_count):
+            if sampler.should_sample(name):
+                sampled += 1
+            clock.advance(interval_seconds)
+        return sampled
+
+
 class VectorCaptureProducerTest(unittest.TestCase):
     """Verifies capture, queueing, draining, and occupancy behavior."""
+
+    def test_default_sampler_is_adaptive(self) -> None:
+        producer = VectorCaptureProducer()
+
+        self.assertIsInstance(
+            producer._sampler,  # pylint: disable=protected-access
+            AdaptiveSampler,
+        )
+
 
     def test_sample_rate_zero_does_not_enqueue(self) -> None:
         producer = VectorCaptureProducer(
