@@ -314,7 +314,13 @@ class VectorCaptureProducer:
         """Samples, marshals, and attempts to enqueue a vector frame.
 
         Args:
-            name: Client-defined UTF-8 cohort or stratum name.
+            name: Client-defined cohort name. Must be 1 to 8
+                '/'-separated segments; each segment must be either
+                [a-z0-9][a-z0-9_-]* or key=value where key and value
+                independently match that same plain segment rule; each segment
+                must be 1 to 63 bytes including '=' and the whole name must be
+                at most 255 bytes. Pair keys `window`, `part`, and `cohorts`
+                are reserved.
             vector: Already-packed little-endian vector bytes.
             dimension: Number of vector elements.
             dtype: Element dtype of the packed vector bytes.
@@ -412,7 +418,12 @@ def capture_vector(
     length.
 
     Args:
-        name: Client-defined UTF-8 cohort or stratum name.
+        name: Client-defined cohort name. Must be 1 to 8 '/'-separated
+            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
+            key=value where key and value independently match that same plain
+            segment rule; each segment must be 1 to 63 bytes including '='
+            and the whole name must be at most 255 bytes. Pair keys `window`,
+            `part`, and `cohorts` are reserved.
         vector: One-dimensional NumPy array or already-packed little-endian
             vector bytes.
         dimension: Number of vector elements. Required for non-NumPy buffers.

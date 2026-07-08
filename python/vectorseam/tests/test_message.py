@@ -125,33 +125,74 @@ class MessagePackingTest(unittest.TestCase):
             parsed["vector_bytes"],
         )
 
-    def test_encodes_non_ascii_name_as_utf8(self) -> None:
-        name = "caf\u00e9"
-        frame = encode_vector_message_from_iterable(name, [0.5])
-        parsed = _parse_frame(frame)
+    def test_accepts_names_matching_cohort_grammar(self) -> None:
+        segment_63_bytes = "a" * 63
+        pair_segment_63_bytes = f"{'k' * 31}={'v' * 31}"
+        name_255_bytes = "/".join((segment_63_bytes,) * 4)
+        cases = (
+            "prod",
+            "prod/tenant-a/products",
+            "a1/b_2/c-3",
+            name_255_bytes,
+            "env=prod",
+            "env=prod/tenant=a/index=products",
+            "prod/tenant=a",
+            "e=p",
+            pair_segment_63_bytes,
+        )
 
-        self.assertEqual(name.encode("utf-8"), parsed["name_bytes"])
-        self.assertEqual(len(name.encode("utf-8")), parsed["name_len"])
+        for name in cases:
+            with self.subTest(name=name):
+                frame = encode_vector_message(name, DType.U8, 1, b"\x01")
+                parsed = _parse_frame(frame)
 
-    def test_accepts_name_at_1024_byte_limit(self) -> None:
-        name = "x" * 1024
-        frame = encode_vector_message(name, DType.U8, 1, b"\x01")
-        parsed = _parse_frame(frame)
+                self.assertEqual(len(name), parsed["name_len"])
+                self.assertEqual(name.encode("utf-8"), parsed["name_bytes"])
 
-        self.assertEqual(1024, parsed["name_len"])
-        self.assertEqual(name.encode("utf-8"), parsed["name_bytes"])
+    def test_rejects_names_outside_cohort_grammar(self) -> None:
+        segment_64_bytes = "a" * 64
+        pair_segment_64_bytes = f"{'k' * 32}={'v' * 31}"
+        name_256_bytes = "/".join(
+            ("a" * 63, "b" * 63, "c" * 63, "d" * 62, "e")
+        )
+        cases = (
+            "Prod",
+            "",
+            "prod//tenant",
+            "/prod",
+            "prod/",
+            "-prod",
+            "_prod",
+            "a/a/a/a/a/a/a/a/a",
+            segment_64_bytes,
+            pair_segment_64_bytes,
+            name_256_bytes,
+            "caf\u00e9",
+            "prod tenant",
+            "prod.tenant",
+            "window=x",
+            "part=x",
+            "cohorts=x",
+            "prod/window=x",
+            "prod/part=x",
+            "prod/cohorts=x",
+            "env==prod",
+            "=prod",
+            "env=",
+            "env=Prod",
+            "env=te.nant",
+            "env=-a",
+            "a=b=c",
+        )
 
-    def test_rejects_name_over_1024_bytes(self) -> None:
-        with self.assertRaises(ValueError):
-            encode_vector_message("x" * 1025, DType.U8, 1, b"\x01")
+        for name in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "cohort grammar"):
+                    encode_vector_message(name, DType.U8, 1, b"\x01")
 
-    def test_rejects_multibyte_name_over_1024_bytes(self) -> None:
-        with self.assertRaises(ValueError):
-            encode_vector_message("\u00e9" * 513, DType.U8, 1, b"\x01")
-
-    def test_iterable_path_rejects_name_over_1024_bytes(self) -> None:
-        with self.assertRaises(ValueError):
-            encode_vector_message_from_iterable("x" * 1025, [1.0])
+    def test_iterable_path_rejects_name_outside_cohort_grammar(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cohort grammar"):
+            encode_vector_message_from_iterable("Prod", [1.0])
 
     def test_dtype_tracks_byte_size(self) -> None:
         self.assertEqual(4, DType.F32.byte_size)
