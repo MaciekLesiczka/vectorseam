@@ -7,6 +7,7 @@ from vectorseam.message import (
     encode_vector_message_from_iterable,
 )
 from vectorseam.vector_capture import (
+    AdaptiveSampler,
     CaptureResult,
     ProbabilitySampler,
     SamplingPolicy,
@@ -17,6 +18,7 @@ from vectorseam.vector_capture import (
 from vectorseam.vector_sender import VectorSocketSender
 
 __all__ = [
+    "AdaptiveSampler",
     "BufferLike",
     "CaptureResult",
     "DType",

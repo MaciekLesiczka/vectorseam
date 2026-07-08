@@ -19,6 +19,7 @@ import numpy  # noqa: E402
 
 from vectorseam.message import DType  # noqa: E402
 from vectorseam.vector_capture import (  # noqa: E402
+    AdaptiveSampler,
     CaptureResult,
     ProbabilitySampler,
     VectorCaptureProducer,
@@ -33,6 +34,19 @@ _FIXED_FRAME_SIZE = 28
 _NAME = "benchmark"
 
 
+class _BenchmarkClock:
+    """Mutable clock used to pre-warm adaptive sampler state."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now = round(self.now + seconds, 10)
+
+
 @dataclasses.dataclass(frozen=True)
 class BenchmarkInput:
     """Pre-created inputs for one benchmark dimension."""
@@ -41,9 +55,31 @@ class BenchmarkInput:
     name: str
     numpy_vector: numpy.ndarray
     vector_view: memoryview
+    capture_adaptive_rate_001: VectorCaptureProducer
+    capture_adaptive_rate_1: VectorCaptureProducer
     capture_rate_001: VectorCaptureProducer
     capture_rate_1: VectorCaptureProducer
     capture_numpy_rate_1: VectorCaptureProducer
+
+
+def _make_adaptive_sampler(
+    *,
+    dimension: int,
+    target_samples_per_second: float,
+    calls_per_second: float,
+) -> AdaptiveSampler:
+    """Creates an adaptive sampler pre-warmed at a fixed arrival rate."""
+    clock = _BenchmarkClock()
+    sampler = AdaptiveSampler(
+        target_samples_per_second=target_samples_per_second,
+        rng=random.Random(dimension),
+        clock=clock,
+    )
+    interval_seconds = 1.0 / calls_per_second
+    for _ in range(int(calls_per_second * 50)):
+        sampler.should_sample(_NAME)
+        clock.advance(interval_seconds)
+    return sampler
 
 
 def _make_input(dimension: int) -> BenchmarkInput:
@@ -62,11 +98,29 @@ def _make_input(dimension: int) -> BenchmarkInput:
         name=_NAME,
         numpy_vector=numpy_vector,
         vector_view=memoryview(vector_array).cast("B"),
+        capture_adaptive_rate_001=VectorCaptureProducer(
+            sampler=_make_adaptive_sampler(
+                dimension=dimension,
+                target_samples_per_second=1.0,
+                calls_per_second=100.0,
+            ),
+            max_queue_bytes=frame_bytes,
+        ),
+        capture_adaptive_rate_1=VectorCaptureProducer(
+            sampler=AdaptiveSampler(
+                target_samples_per_second=1.0,
+                rng=random.Random(dimension),
+            ),
+            max_queue_bytes=frame_bytes,
+        ),
         capture_rate_001=VectorCaptureProducer(
             sampler=ProbabilitySampler(0.01, rng=random.Random(dimension)),
             max_queue_bytes=frame_bytes,
         ),
-        capture_rate_1=VectorCaptureProducer(max_queue_bytes=frame_bytes),
+        capture_rate_1=VectorCaptureProducer(
+            sampler=ProbabilitySampler(1.0),
+            max_queue_bytes=frame_bytes,
+        ),
         capture_numpy_rate_1=VectorCaptureProducer(
             max_queue_bytes=frame_bytes
         ),
@@ -104,6 +158,22 @@ def _bench_capture_sample_rate_001(benchmark_input: BenchmarkInput) -> int:
     return _bench_capture(
         benchmark_input,
         benchmark_input.capture_rate_001,
+    )
+
+
+def _bench_capture_adaptive_rate_001(benchmark_input: BenchmarkInput) -> int:
+    """Hot path with adaptive sampling warmed to 1%."""
+    return _bench_capture(
+        benchmark_input,
+        benchmark_input.capture_adaptive_rate_001,
+    )
+
+
+def _bench_capture_adaptive_rate_1(benchmark_input: BenchmarkInput) -> int:
+    """Hot path with adaptive sampling at probability 1."""
+    return _bench_capture(
+        benchmark_input,
+        benchmark_input.capture_adaptive_rate_1,
     )
 
 
@@ -198,6 +268,16 @@ def main() -> None:
 
     for benchmark_input in inputs:
         dimension = benchmark_input.dimension
+        runner.bench_func(
+            f"capture_adaptive_rate_0_01_dim_{dimension}",
+            _bench_capture_adaptive_rate_001,
+            benchmark_input,
+        )
+        runner.bench_func(
+            f"capture_adaptive_rate_1_0_dim_{dimension}",
+            _bench_capture_adaptive_rate_1,
+            benchmark_input,
+        )
         runner.bench_func(
             f"capture_sample_rate_0_01_dim_{dimension}",
             _bench_capture_sample_rate_001,

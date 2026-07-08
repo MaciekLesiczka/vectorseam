@@ -19,14 +19,18 @@ import enum
 import random
 import sys
 import threading
+import time
 from collections import deque
-from typing import Protocol
+from typing import Callable, Protocol
 
 import numpy
 
 from vectorseam.message import BufferLike, DType, encode_vector_message
 
 _DEFAULT_MAX_QUEUE_BYTES = 16 * 1024 * 1024
+_RATE_BUCKET_SECONDS = 5.0
+_RATE_EWMA_ALPHA = 0.5
+_MAX_IDLE_ZERO_UPDATES = 10
 
 
 class SamplingPolicy(Protocol):
@@ -84,6 +88,165 @@ class ProbabilitySampler(SamplingPolicy):
             return self._rng.random() < self._sample_rate
 
 
+class _AdaptiveCohortState:
+    """Mutable per-cohort rate-estimation state."""
+
+    __slots__ = (
+        "bucket_start",
+        "bucket_count",
+        "rate_estimate",
+        "probability",
+    )
+
+    def __init__(self, bucket_start: float) -> None:
+        self.bucket_start = bucket_start
+        self.bucket_count = 0
+        self.rate_estimate = 0.0
+        self.probability = 1.0
+
+
+class AdaptiveSampler(SamplingPolicy):
+    """Adapts per-cohort sampling probability toward a target sample rate.
+
+    The sampler is thread-safe for concurrent ``should_sample`` calls. Cohort
+    state and random number generation are protected by an OS-level mutex.
+    """
+
+    def __init__(
+        self,
+        target_samples_per_second: float = 1.0,
+        *,
+        rng: random.Random | None = None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        """Initializes an adaptive sampler.
+
+        Args:
+            target_samples_per_second: Desired sampled throughput per cohort.
+            rng: Optional random number generator.
+            clock: Optional monotonic clock for deterministic tests.
+
+        Raises:
+            TypeError: If target_samples_per_second is not numeric, rng is
+                invalid, or clock is not callable.
+            ValueError: If target_samples_per_second is not positive.
+        """
+        if isinstance(target_samples_per_second, bool) or not isinstance(
+            target_samples_per_second, int | float
+        ):
+            raise TypeError("target_samples_per_second must be a number")
+        target_samples_per_second = float(target_samples_per_second)
+        if not target_samples_per_second > 0.0:
+            raise ValueError(
+                "target_samples_per_second must be greater than 0.0"
+            )
+        if rng is not None and not isinstance(rng, random.Random):
+            raise TypeError("rng must be a random.Random instance")
+        if clock is not None and not callable(clock):
+            raise TypeError("clock must be callable")
+
+        self._target_samples_per_second = target_samples_per_second
+        self._rng = rng if rng is not None else random.Random()
+        self._clock = clock if clock is not None else time.monotonic
+        self._cohorts: dict[str, _AdaptiveCohortState] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def target_samples_per_second(self) -> float:
+        """Configured target sampled throughput per cohort.
+
+        Returns:
+            Target samples per second.
+        """
+        return self._target_samples_per_second
+
+    def should_sample(self, name: str) -> bool:
+        """Returns whether a capture should be sampled.
+
+        Args:
+            name: Client-defined cohort or stratum name.
+
+        Returns:
+            True when the capture should be sampled.
+        """
+        with self._lock:
+            now = self._clock()
+            state = self._cohorts.get(name)
+            if state is None:
+                state = _AdaptiveCohortState(now)
+                self._cohorts[name] = state
+            self._roll_over_if_needed(state, now)
+            state.bucket_count += 1
+            probability = state.probability
+            if probability == 1.0:
+                return True
+            return self._rng.random() < probability
+
+    def cohort_probability(self, name: str) -> float:
+        """Returns the current sampling probability for a cohort.
+
+        This method is intended for tests and debugging, not for the capture
+        hot path.
+
+        Args:
+            name: Client-defined cohort or stratum name.
+
+        Returns:
+            The current probability, or 1.0 for unknown cohorts.
+        """
+        with self._lock:
+            state = self._cohorts.get(name)
+            if state is None:
+                return 1.0
+            return state.probability
+
+    def _roll_over_if_needed(
+        self,
+        state: _AdaptiveCohortState,
+        now: float,
+    ) -> None:
+        """Rolls completed buckets into the cohort's rate estimate."""
+        elapsed_buckets = int(
+            (now - state.bucket_start) // _RATE_BUCKET_SECONDS
+        )
+        if elapsed_buckets <= 0:
+            return
+
+        bucket_rate = state.bucket_count / _RATE_BUCKET_SECONDS
+        state.rate_estimate = self._updated_rate_estimate(
+            state.rate_estimate,
+            bucket_rate,
+        )
+
+        empty_buckets = elapsed_buckets - 1
+        if empty_buckets > _MAX_IDLE_ZERO_UPDATES:
+            state.rate_estimate = 0.0
+        else:
+            for _ in range(empty_buckets):
+                state.rate_estimate = self._updated_rate_estimate(
+                    state.rate_estimate,
+                    0.0,
+                )
+
+        state.bucket_start += elapsed_buckets * _RATE_BUCKET_SECONDS
+        state.bucket_count = 0
+        state.probability = self._probability_for_rate(state.rate_estimate)
+
+    @staticmethod
+    def _updated_rate_estimate(estimate: float, bucket_rate: float) -> float:
+        """Returns an EWMA-updated rate estimate."""
+        return (
+            _RATE_EWMA_ALPHA * bucket_rate
+            + (1.0 - _RATE_EWMA_ALPHA) * estimate
+        )
+
+    def _probability_for_rate(self, rate_estimate: float) -> float:
+        """Returns the probability for a rate estimate."""
+        if rate_estimate <= self._target_samples_per_second:
+            return 1.0
+        return self._target_samples_per_second / rate_estimate
+
+
 class CaptureResult(enum.Enum):
     """Outcome of a capture attempt."""
 
@@ -104,7 +267,7 @@ class VectorCaptureProducer:
         """Initializes a vector capture producer.
 
         Args:
-            sampler: Sampling policy. When omitted, all captures are sampled.
+            sampler: Sampling policy. When omitted, adaptive sampling is used.
             max_queue_bytes: Maximum total bytes allowed in the queue.
 
         Raises:
@@ -122,7 +285,7 @@ class VectorCaptureProducer:
         if max_queue_bytes <= 0:
             raise ValueError("max_queue_bytes must be greater than 0")
 
-        self._sampler = sampler if sampler is not None else ProbabilitySampler()
+        self._sampler = sampler if sampler is not None else AdaptiveSampler()
         self._max_queue_bytes = max_queue_bytes
         self._queue: deque[bytes] = deque()
         self._lock = threading.Lock()
@@ -350,6 +513,7 @@ def _validate_dtype(dtype: DType) -> DType:
 
 
 __all__ = [
+    "AdaptiveSampler",
     "CaptureResult",
     "ProbabilitySampler",
     "SamplingPolicy",
