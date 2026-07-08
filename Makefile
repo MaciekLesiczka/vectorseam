@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency test-rust test-python bench-python bench-python-message bench-python-vector-capture bench-python-report bench-python-message-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-message bench-python-vector-capture bench-python-report bench-python-message-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -45,8 +45,18 @@ all-ann-recall-latency: setup postgres
 	$(UV) run python python/ann-recall-latency/sweep.py --dataset all
 	$(UV) run python python/ann-recall-latency/analyze.py
 
+build-rust:
+	$(CARGO) build --workspace
+
 test-rust:
 	$(CARGO) test --workspace
+
+lint-rust:
+	$(CARGO) fmt --all -- --check
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
+
+doc-rust:
+	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps
 
 test-python: setup
 	$(UV) run python -m compileall python

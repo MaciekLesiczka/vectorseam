@@ -1,6 +1,8 @@
 /target/
 /.venv/
 /.benchmarks/
+*.vseam
+*.profraw
 __pycache__/
 *.py[cod]
 .pytest_cache/
