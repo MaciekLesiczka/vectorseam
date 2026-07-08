@@ -17,7 +17,7 @@ if str(_PYTHON_DIR) not in sys.path:
 import pyperf  # noqa: E402
 import numpy  # noqa: E402
 
-from vectorseam.message import DType  # noqa: E402
+from vectorseam.frame import DType  # noqa: E402
 from vectorseam.vector_capture import (  # noqa: E402
     AdaptiveSampler,
     CaptureResult,
@@ -30,7 +30,7 @@ from vectorseam.vector_capture import (  # noqa: E402
 _DEFAULT_DIMENSIONS = (384, 768, 1536, 3072, 4096)
 _DEFAULT_PROCESSES = 20
 _DEFAULT_VALUES = 7
-_FIXED_FRAME_SIZE = 28
+_FIXED_FRAME_HEADER_LEN = 28
 _NAME = "benchmark"
 
 
@@ -91,7 +91,7 @@ def _make_input(dimension: int) -> BenchmarkInput:
     if sys.byteorder != "little":
         vector_array.byteswap()
     numpy_vector = numpy.frombuffer(vector_array, dtype=numpy.dtype("<f4"))
-    frame_bytes = _FIXED_FRAME_SIZE + len(_NAME.encode("utf-8"))
+    frame_bytes = _FIXED_FRAME_HEADER_LEN + len(_NAME.encode("utf-8"))
     frame_bytes += dimension * DType.F32.byte_size
     return BenchmarkInput(
         dimension=dimension,

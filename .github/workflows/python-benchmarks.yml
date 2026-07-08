@@ -9,8 +9,8 @@ on:
     - cron: "22 4 * * 1"
 
 jobs:
-  message-marshalling:
-    name: Message Marshalling
+  frame-marshalling:
+    name: Frame Marshalling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,5 +21,5 @@ jobs:
       - run: make bench-python
       - uses: actions/upload-artifact@v4
         with:
-          name: python-message-benchmark
-          path: .benchmarks/message.json
+          name: python-frame-benchmark
+          path: .benchmarks/frame.json

@@ -1,4 +1,4 @@
-"""Binary message packing for vector queries.
+"""Binary frame packing for vector queries.
 
 Protocol v1 encodes one vector query into a single binary frame:
 
@@ -27,7 +27,7 @@ from typing import TypeAlias
 
 BufferLike: TypeAlias = bytes | bytearray | memoryview | array.array
 
-_FIXED_FRAME_SIZE = 28
+_FIXED_FRAME_HEADER_LEN = 28
 _HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
 _MAX_NAME_BYTES = 255
@@ -84,7 +84,7 @@ class DType(enum.IntEnum):
     array_typecode: str | None
 
 
-def encode_vector_message(
+def encode_vector_frame(
     name: str,
     dtype: DType,
     dimension: int,
@@ -102,7 +102,7 @@ def encode_vector_message(
       vector_le = numpy.ascontiguousarray(
           numpy.asarray(vector, dtype=numpy.dtype("<f4"))
       )
-      frame = encode_vector_message(
+      frame = encode_vector_frame(
           "prod", DType.F32, vector_le.size, memoryview(vector_le)
       )
 
@@ -135,12 +135,12 @@ def encode_vector_message(
     _validate_dimension(dimension)
     vector_view = _byte_view(vector)
     _validate_vector_len(dimension, dtype, vector_view.nbytes)
-    return _encode_vector_message_from_view(
+    return _encode_vector_frame_from_view(
         name_bytes, dtype, dimension, vector_view
     )
 
 
-def encode_vector_message_from_iterable(
+def encode_vector_frame_from_iterable(
     name: str,
     vector: Iterable[float],
     dtype: DType = DType.F32,
@@ -149,7 +149,7 @@ def encode_vector_message_from_iterable(
 
     This convenience API is intended for experiments, examples, and small call
     sites. It traverses boxed Python floats and packs them into F32 bytes before
-    building the frame. Use `encode_vector_message` for production call sites
+    building the frame. Use `encode_vector_frame` for production call sites
     that already have packed vector memory.
 
     Args:
@@ -175,14 +175,14 @@ def encode_vector_message_from_iterable(
     dtype = _coerce_dtype(dtype)
     if dtype is not DType.F32:
         raise NotImplementedError(
-            "encode_vector_message_from_iterable only supports F32"
+            "encode_vector_frame_from_iterable only supports F32"
         )
 
     vector_values = _to_f32_array(vector)
     if sys.byteorder != "little":
         vector_values.byteswap()
 
-    return encode_vector_message(
+    return encode_vector_frame(
         name,
         dtype,
         len(vector_values),
@@ -197,7 +197,7 @@ def _coerce_dtype(dtype: DType) -> DType:
     return dtype
 
 
-def _encode_vector_message_from_view(
+def _encode_vector_frame_from_view(
     name_bytes: bytes,
     dtype: DType,
     dimension: int,
@@ -207,7 +207,7 @@ def _encode_vector_message_from_view(
     name_len = len(name_bytes)
     vector_len = vector.nbytes
 
-    frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
+    frame_len = _FIXED_FRAME_HEADER_LEN - 4 + name_len + vector_len
     _validate_u32("frame_len", frame_len)
 
     header = _HEADER.pack(
@@ -248,7 +248,7 @@ def _byte_view(vector: BufferLike) -> memoryview:
 
 
 def _encode_name(name: str) -> bytes:
-    """Encodes and validates a message name."""
+    """Encodes and validates a frame name."""
     if not isinstance(name, str):
         raise TypeError("name must be a string")
     if len(name) > _MAX_NAME_BYTES or _NAME_PATTERN.fullmatch(name) is None:
@@ -284,6 +284,6 @@ def _validate_vector_len(dimension: int, dtype: DType, vector_len: int) -> None:
 __all__ = [
     "BufferLike",
     "DType",
-    "encode_vector_message",
-    "encode_vector_message_from_iterable",
+    "encode_vector_frame",
+    "encode_vector_frame_from_iterable",
 ]

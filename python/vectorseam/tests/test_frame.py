@@ -1,4 +1,4 @@
-"""Tests for vector query binary message packing."""
+"""Tests for vector query binary frame packing."""
 
 import array
 import struct
@@ -6,8 +6,8 @@ import unittest
 
 from vectorseam import (
     DType,
-    encode_vector_message,
-    encode_vector_message_from_iterable,
+    encode_vector_frame,
+    encode_vector_frame_from_iterable,
 )
 
 
@@ -34,12 +34,12 @@ def _parse_frame(frame: bytes) -> dict[str, object]:
     }
 
 
-class MessagePackingTest(unittest.TestCase):
+class FramePackingTest(unittest.TestCase):
     """Verifies protocol v1 frame encoding."""
 
     def test_encodes_packed_f32_memoryview(self) -> None:
         vector = memoryview(struct.pack("<ff", 4.0, 8.0))
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         parsed = _parse_frame(frame)
 
         self.assertIsInstance(frame, bytes)
@@ -65,7 +65,7 @@ class MessagePackingTest(unittest.TestCase):
 
         for dtype, dimension, vector_bytes in cases:
             with self.subTest(dtype=dtype):
-                frame = encode_vector_message(
+                frame = encode_vector_frame(
                     "raw",
                     dtype,
                     dimension,
@@ -80,7 +80,7 @@ class MessagePackingTest(unittest.TestCase):
 
     def test_encoded_frame_is_immutable_after_source_mutation(self) -> None:
         vector = bytearray(struct.pack("<ff", 4.0, 8.0))
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         vector[-1] ^= 0x01
         parsed = _parse_frame(frame)
 
@@ -103,13 +103,13 @@ class MessagePackingTest(unittest.TestCase):
 
         for vector in cases:
             with self.subTest(vector_type=type(vector).__name__):
-                frame = encode_vector_message("raw", DType.F32, 2, vector)
+                frame = encode_vector_frame("raw", DType.F32, 2, vector)
                 parsed = _parse_frame(frame)
 
                 self.assertEqual(vector_bytes, parsed["vector_bytes"])
 
     def test_encodes_small_f32_vector_from_iterable(self) -> None:
-        frame = encode_vector_message_from_iterable("prod", [1.0, -2.5, 3.25])
+        frame = encode_vector_frame_from_iterable("prod", [1.0, -2.5, 3.25])
         parsed = _parse_frame(frame)
 
         self.assertEqual(len(frame) - 4, parsed["frame_len"])
@@ -143,7 +143,7 @@ class MessagePackingTest(unittest.TestCase):
 
         for name in cases:
             with self.subTest(name=name):
-                frame = encode_vector_message(name, DType.U8, 1, b"\x01")
+                frame = encode_vector_frame(name, DType.U8, 1, b"\x01")
                 parsed = _parse_frame(frame)
 
                 self.assertEqual(len(name), parsed["name_len"])
@@ -188,11 +188,11 @@ class MessagePackingTest(unittest.TestCase):
         for name in cases:
             with self.subTest(name=name):
                 with self.assertRaisesRegex(ValueError, "cohort grammar"):
-                    encode_vector_message(name, DType.U8, 1, b"\x01")
+                    encode_vector_frame(name, DType.U8, 1, b"\x01")
 
     def test_iterable_path_rejects_name_outside_cohort_grammar(self) -> None:
         with self.assertRaisesRegex(ValueError, "cohort grammar"):
-            encode_vector_message_from_iterable("Prod", [1.0])
+            encode_vector_frame_from_iterable("Prod", [1.0])
 
     def test_dtype_tracks_byte_size(self) -> None:
         self.assertEqual(4, DType.F32.byte_size)
@@ -204,31 +204,31 @@ class MessagePackingTest(unittest.TestCase):
 
     def test_iterable_path_rejects_empty_vector(self) -> None:
         with self.assertRaises(ValueError):
-            encode_vector_message_from_iterable("empty", [])
+            encode_vector_frame_from_iterable("empty", [])
 
     def test_rejects_non_string_name(self) -> None:
         with self.assertRaises(TypeError):
-            encode_vector_message(123, DType.U8, 1, b"\x01")  # type: ignore[arg-type]
+            encode_vector_frame(123, DType.U8, 1, b"\x01")  # type: ignore[arg-type]
 
     def test_rejects_non_dtype(self) -> None:
         with self.assertRaises(TypeError):
-            encode_vector_message("bad", 1, 1, b"\x01")  # type: ignore[arg-type]
+            encode_vector_frame("bad", 1, 1, b"\x01")  # type: ignore[arg-type]
 
     def test_iterable_path_rejects_non_dtype(self) -> None:
         with self.assertRaises(TypeError):
-            encode_vector_message_from_iterable("bad", [1.0], dtype=1)  # type: ignore[arg-type]
+            encode_vector_frame_from_iterable("bad", [1.0], dtype=1)  # type: ignore[arg-type]
 
     def test_iterable_path_rejects_unsupported_dtype(self) -> None:
         with self.assertRaises(NotImplementedError):
-            encode_vector_message_from_iterable("future", [1.0], dtype=DType.F16)
+            encode_vector_frame_from_iterable("future", [1.0], dtype=DType.F16)
 
     def test_iterable_path_rejects_f64_dtype(self) -> None:
         with self.assertRaises(NotImplementedError):
-            encode_vector_message_from_iterable("future", [1.0], dtype=DType.F64)
+            encode_vector_frame_from_iterable("future", [1.0], dtype=DType.F64)
 
     def test_rejects_wrong_bytes_length(self) -> None:
         with self.assertRaises(ValueError):
-            encode_vector_message("raw", DType.F32, 2, b"\x00\x00\x00\x00")
+            encode_vector_frame("raw", DType.F32, 2, b"\x00\x00\x00\x00")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""pyperf benchmarks for vector message marshalling."""
+"""pyperf benchmarks for vector frame marshalling."""
 
 from __future__ import annotations
 
@@ -18,17 +18,17 @@ if str(_PYTHON_DIR) not in sys.path:
 
 import pyperf  # noqa: E402
 
-from vectorseam.message import (  # noqa: E402
+from vectorseam.frame import (  # noqa: E402
     DType,
-    encode_vector_message,
-    encode_vector_message_from_iterable,
+    encode_vector_frame,
+    encode_vector_frame_from_iterable,
 )
 
 
 _DEFAULT_DIMENSIONS = (384, 768, 1536, 3072, 4096)
 _DEFAULT_PROCESSES = 20
 _DEFAULT_VALUES = 7
-_FIXED_FRAME_SIZE = 28
+_FIXED_FRAME_HEADER_LEN = 28
 _MAGIC = b"VQS1"
 _NAME = "benchmark"
 _U32 = struct.Struct("<I")
@@ -71,9 +71,9 @@ def _encode_bytearray(
     """Mirrors production marshalling but skips the final bytes() copy."""
     name_len = len(name_bytes)
     vector_len = vector.nbytes
-    frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
+    frame_len = _FIXED_FRAME_HEADER_LEN - 4 + name_len + vector_len
 
-    frame = bytearray(_FIXED_FRAME_SIZE + name_len + vector_len)
+    frame = bytearray(_FIXED_FRAME_HEADER_LEN + name_len + vector_len)
     _U32.pack_into(frame, 0, frame_len)
     frame[4:8] = _MAGIC
     _U32.pack_into(frame, 8, _VERSION)
@@ -81,8 +81,8 @@ def _encode_bytearray(
     _U32.pack_into(frame, 16, name_len)
     _U32.pack_into(frame, 20, dimension)
     _U32.pack_into(frame, 24, vector_len)
-    frame[_FIXED_FRAME_SIZE : _FIXED_FRAME_SIZE + name_len] = name_bytes
-    frame[_FIXED_FRAME_SIZE + name_len :] = vector
+    frame[_FIXED_FRAME_HEADER_LEN : _FIXED_FRAME_HEADER_LEN + name_len] = name_bytes
+    frame[_FIXED_FRAME_HEADER_LEN + name_len :] = vector
     return frame
 
 
@@ -108,7 +108,7 @@ def _validate_frame(
     """Checks that a current v1 frame is structurally valid."""
     header = _parse_header(frame)
     expected_vector_len = dimension * dtype.byte_size
-    expected_frame_len = _FIXED_FRAME_SIZE - 4 + len(name_bytes)
+    expected_frame_len = _FIXED_FRAME_HEADER_LEN - 4 + len(name_bytes)
     expected_frame_len += expected_vector_len
     if len(frame) - 4 != expected_frame_len:
         raise ValueError("encoded frame length is inconsistent")
@@ -134,12 +134,12 @@ def _validate_inputs(inputs: Sequence[BenchmarkInput]) -> None:
         dtype = DType.F32
         dimension = benchmark_input.dimension
         name_bytes = benchmark_input.name_bytes
-        production_list = encode_vector_message_from_iterable(
+        production_list = encode_vector_frame_from_iterable(
             benchmark_input.name,
             benchmark_input.vector_list,
             dtype,
         )
-        production_view = encode_vector_message(
+        production_view = encode_vector_frame(
             benchmark_input.name,
             dtype,
             dimension,
@@ -169,7 +169,7 @@ def _consume_frame_with_crc(frame: bytes, crc32: int) -> int:
 
 def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
     """Experimental convenience path: traverses list[float] and packs F32."""
-    frame = encode_vector_message_from_iterable(
+    frame = encode_vector_frame_from_iterable(
         benchmark_input.name,
         benchmark_input.vector_list,
         DType.F32,
@@ -179,7 +179,7 @@ def _bench_list_current(benchmark_input: BenchmarkInput) -> int:
 
 def _bench_memoryview_current(benchmark_input: BenchmarkInput) -> int:
     """Primary path: copies into an immutable contiguous bytes frame."""
-    frame = encode_vector_message(
+    frame = encode_vector_frame(
         benchmark_input.name,
         DType.F32,
         benchmark_input.dimension,
@@ -201,7 +201,7 @@ def _bench_memoryview_bytearray(benchmark_input: BenchmarkInput) -> int:
 
 def _bench_memoryview_with_crc(benchmark_input: BenchmarkInput) -> int:
     """Primary path plus a CRC32 scan over the returned bytes."""
-    frame = encode_vector_message(
+    frame = encode_vector_frame(
         benchmark_input.name,
         DType.F32,
         benchmark_input.dimension,
@@ -259,7 +259,7 @@ def _selected_dimensions(args: object) -> tuple[int, ...]:
 
 
 def main() -> None:
-    """Runs pyperf benchmarks for vector message marshalling."""
+    """Runs pyperf benchmarks for vector frame marshalling."""
     runner = pyperf.Runner(
         processes=_DEFAULT_PROCESSES,
         values=_DEFAULT_VALUES,
@@ -276,22 +276,22 @@ def main() -> None:
     for benchmark_input in inputs:
         dimension = benchmark_input.dimension
         runner.bench_func(
-            f"message_list_f32_dim_{dimension}",
+            f"frame_list_f32_dim_{dimension}",
             _bench_list_current,
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_dim_{dimension}",
+            f"frame_memoryview_dim_{dimension}",
             _bench_memoryview_current,
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_bytearray_dim_{dimension}",
+            f"frame_memoryview_bytearray_dim_{dimension}",
             _bench_memoryview_bytearray,
             benchmark_input,
         )
         runner.bench_func(
-            f"message_memoryview_dim_with_crc_dim_{dimension}",
+            f"frame_memoryview_dim_with_crc_dim_{dimension}",
             _bench_memoryview_with_crc,
             benchmark_input,
         )

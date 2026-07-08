@@ -1,6 +1,6 @@
 # Python Benchmarks
 
-These benchmarks measure Python vector message marshalling and capture hot
+These benchmarks measure Python vector frame marshalling and capture hot
 paths only. They do not cover batching, sockets, sender workers, collector
 behavior, or end-to-end IPC.
 
@@ -19,15 +19,15 @@ make bench-python
 Run one module:
 
 ```bash
-uv run --extra bench python benchmarks/bench_message.py
+uv run --extra bench python benchmarks/bench_frame.py
 uv run --extra bench python benchmarks/bench_vector_capture.py
 ```
 
 Save results:
 
 ```bash
-uv run --extra bench python benchmarks/bench_message.py --output before.json
-uv run --extra bench python benchmarks/bench_message.py --output after.json
+uv run --extra bench python benchmarks/bench_frame.py --output before.json
+uv run --extra bench python benchmarks/bench_frame.py --output after.json
 uv run --extra bench python -m pyperf compare_to before.json after.json
 ```
 
@@ -55,16 +55,16 @@ command to generate them.
 Benchmark families:
 
 ```text
-message_list_f32_*:
+frame_list_f32_*:
   experimental convenience path using list[float] encoded as F32
 
-message_memoryview_dim_*:
+frame_memoryview_dim_*:
   production-recommended path using packed bytes/memoryview and returning bytes
 
-message_memoryview_bytearray_*:
+frame_memoryview_bytearray_*:
   benchmark-only comparison showing the cost of final bytearray-to-bytes copy
 
-message_memoryview_dim_with_crc_*:
+frame_memoryview_dim_with_crc_*:
   production path plus a CRC32 scan over the returned bytes
 
 capture_sample_rate_0_01_*:

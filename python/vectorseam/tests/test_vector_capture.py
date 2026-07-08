@@ -15,7 +15,7 @@ from vectorseam import (
     ProbabilitySampler,
     VectorCaptureProducer,
     capture_vector,
-    encode_vector_message,
+    encode_vector_frame,
     get_vector_capture_producer,
 )
 
@@ -346,7 +346,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
             max_queue_bytes=1024,
         )
         vector = _packed_f32([1.0, 2.0])
-        expected_frame = encode_vector_message("raw", DType.F32, 2, vector)
+        expected_frame = encode_vector_frame("raw", DType.F32, 2, vector)
 
         result = producer.capture_vector("raw", vector, dimension=2)
 
@@ -359,7 +359,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_try_dequeue_reduces_queued_byte_count(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame) * 2)
 
         producer.capture_vector("raw", vector, dimension=2)
@@ -373,8 +373,8 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_drain_reduces_queued_byte_count(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        raw_frame = encode_vector_message("raw", DType.F32, 2, vector)
-        alt_frame = encode_vector_message("alt", DType.F32, 2, vector)
+        raw_frame = encode_vector_frame("raw", DType.F32, 2, vector)
+        alt_frame = encode_vector_frame("alt", DType.F32, 2, vector)
         producer = VectorCaptureProducer(
             max_queue_bytes=len(raw_frame) + len(alt_frame)
         )
@@ -393,7 +393,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_drain_returns_empty_when_next_frame_exceeds_budget(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame))
 
         producer.capture_vector("raw", vector, dimension=2)
@@ -414,7 +414,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_queue_full_drops_without_enqueuing_second_frame(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame))
 
         first = producer.capture_vector("raw", vector, dimension=2)
@@ -427,7 +427,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_single_frame_larger_than_queue_capacity_is_queue_full(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame) - 1)
 
         result = producer.capture_vector("raw", vector, dimension=2)
@@ -457,7 +457,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
 
     def test_concurrent_capture_keeps_occupancy_consistent(self) -> None:
         vector = _packed_f32([1.0])
-        frame = encode_vector_message("threaded", DType.F32, 1, vector)
+        frame = encode_vector_frame("threaded", DType.F32, 1, vector)
         producer = VectorCaptureProducer(max_queue_bytes=1_000_000)
         thread_count = 8
         captures_per_thread = 50
@@ -501,7 +501,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
         second = get_vector_capture_producer()
         _clear_queue(first)
         vector = _packed_f32([1.0])
-        frame = encode_vector_message("singleton", DType.F32, 1, vector)
+        frame = encode_vector_frame("singleton", DType.F32, 1, vector)
 
         result = first.capture_vector("singleton", vector, dimension=1)
 
@@ -515,7 +515,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
         producer = get_vector_capture_producer()
         _clear_queue(producer)
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("one_liner", DType.F32, 2, vector)
+        frame = encode_vector_frame("one_liner", DType.F32, 2, vector)
 
         result = capture_vector("one_liner", vector, dimension=2)
 
@@ -526,7 +526,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
     def test_capture_vector_infers_numpy_metadata(self) -> None:
         producer = VectorCaptureProducer(max_queue_bytes=1024)
         vector = numpy.asarray([1.0, 2.0], dtype=numpy.dtype("<f4"))
-        frame = encode_vector_message("numpy", DType.F32, 2, vector)
+        frame = encode_vector_frame("numpy", DType.F32, 2, vector)
 
         result = capture_vector("numpy", vector, producer=producer)
 
@@ -538,7 +538,7 @@ class VectorCaptureProducerTest(unittest.TestCase):
         source = numpy.asarray([1.0, 9.0, 2.0, 8.0], dtype=numpy.dtype("<f4"))
         vector = source[::2]
         expected = numpy.ascontiguousarray(vector)
-        frame = encode_vector_message("numpy_slice", DType.F32, 2, expected)
+        frame = encode_vector_frame("numpy_slice", DType.F32, 2, expected)
 
         result = capture_vector("numpy_slice", vector, producer=producer)
 

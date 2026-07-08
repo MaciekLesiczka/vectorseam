@@ -15,7 +15,7 @@ from vectorseam import (
     DType,
     VectorCaptureProducer,
     VectorSocketSender,
-    encode_vector_message,
+    encode_vector_frame,
 )
 from vectorseam import vector_sender
 
@@ -211,7 +211,7 @@ class VectorSocketSenderTest(unittest.TestCase):
     def test_successful_send(self) -> None:
         with _TempSocketPath() as socket_path:
             vector = _packed_f32([1.0, 2.0])
-            expected = encode_vector_message("raw", DType.F32, 2, vector)
+            expected = encode_vector_frame("raw", DType.F32, 2, vector)
             producer = VectorCaptureProducer(max_queue_bytes=len(expected))
             self.assertEqual(
                 CaptureResult.ENQUEUED,
@@ -240,8 +240,8 @@ class VectorSocketSenderTest(unittest.TestCase):
     def test_micro_batching_sends_concatenated_stream(self) -> None:
         with _TempSocketPath() as socket_path:
             vector = _packed_f32([1.0, 2.0])
-            first = encode_vector_message("first", DType.F32, 2, vector)
-            second = encode_vector_message("second", DType.F32, 2, vector)
+            first = encode_vector_frame("first", DType.F32, 2, vector)
+            second = encode_vector_frame("second", DType.F32, 2, vector)
             expected = first + second
             producer = VectorCaptureProducer(max_queue_bytes=len(expected))
             self.assertEqual(
@@ -306,7 +306,7 @@ class VectorSocketSenderTest(unittest.TestCase):
 
     def test_send_failure_drops_batch(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame))
         self.assertEqual(
             CaptureResult.ENQUEUED,
@@ -336,7 +336,7 @@ class VectorSocketSenderTest(unittest.TestCase):
 
     def test_partial_send_timeout_closes_connection(self) -> None:
         vector = _packed_f32([1.0, 2.0])
-        frame = encode_vector_message("raw", DType.F32, 2, vector)
+        frame = encode_vector_frame("raw", DType.F32, 2, vector)
         producer = VectorCaptureProducer(max_queue_bytes=len(frame))
         self.assertEqual(
             CaptureResult.ENQUEUED,
@@ -406,7 +406,7 @@ class VectorSocketSenderTest(unittest.TestCase):
     def test_oversized_frame_is_sent_alone(self) -> None:
         with _TempSocketPath() as socket_path:
             vector = _packed_f32([1.0, 2.0])
-            frame = encode_vector_message("raw", DType.F32, 2, vector)
+            frame = encode_vector_frame("raw", DType.F32, 2, vector)
             producer = VectorCaptureProducer(max_queue_bytes=len(frame))
             self.assertEqual(
                 CaptureResult.ENQUEUED,
