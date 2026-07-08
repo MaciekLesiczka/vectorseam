@@ -6,7 +6,7 @@ Protocol v1 encodes one vector query into a single binary frame:
   magic:       4 bytes    ASCII "VQS1"
   version:     u32_le     1
   dtype:       u32_le
-  name_len:    u32_le     UTF-8 byte length of name, max 1024
+  name_len:    u32_le     UTF-8 byte length of validated cohort name
   dimension:   u32_le
   vector_len:  u32_le
   name:        name_len bytes, UTF-8, no padding
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import array
 import enum
+import re
 import struct
 import sys
 from collections.abc import Iterable
@@ -29,7 +30,30 @@ BufferLike: TypeAlias = bytes | bytearray | memoryview | array.array
 _FIXED_FRAME_SIZE = 28
 _HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
-_MAX_NAME_BYTES = 1024
+_MAX_NAME_BYTES = 255
+_PLAIN_NAME_SEGMENT = r"[a-z0-9][a-z0-9_-]*"
+# Must stay in sync with vectorseam-core's reserved cohort keys.
+_RESERVED_COHORT_KEYS = ("window", "part", "cohorts")
+_RESERVED_COHORT_KEYS_PATTERN = "|".join(_RESERVED_COHORT_KEYS)
+_NAME_SEGMENT_PATTERN = (
+    r"(?=[^/]{1,63}(?:/|\Z))(?:"
+    rf"{_PLAIN_NAME_SEGMENT}|"
+    rf"(?!(?:{_RESERVED_COHORT_KEYS_PATTERN})=)"
+    rf"{_PLAIN_NAME_SEGMENT}={_PLAIN_NAME_SEGMENT}"
+    r")"
+)
+_NAME_GRAMMAR_ERROR = (
+    "name must match cohort grammar: 1 to 8 '/'-separated segments; each "
+    "segment must be either [a-z0-9][a-z0-9_-]* or key=value where key and "
+    "value each match [a-z0-9][a-z0-9_-]*; each segment must be 1 to 63 "
+    "bytes including '='; whole name must be at most 255 bytes; no empty "
+    "segments, leading '/', trailing '/', multiple '=', or reserved keys "
+    "window, part, or cohorts"
+)
+_NAME_PATTERN = re.compile(
+    rf"\A{_NAME_SEGMENT_PATTERN}(?:/{_NAME_SEGMENT_PATTERN}){{0,7}}\Z",
+    re.ASCII,
+)
 _U32_MAX = 0xFFFFFFFF
 _VERSION = 1
 
@@ -87,7 +111,12 @@ def encode_vector_message(
     not mutate the array from another reference or thread during the call.
 
     Args:
-        name: Client-defined UTF-8 cohort or stratum name, up to 1024 bytes.
+        name: Client-defined cohort name. Must be 1 to 8 '/'-separated
+            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
+            key=value where key and value independently match that same plain
+            segment rule; each segment must be 1 to 63 bytes including '='
+            and the whole name must be at most 255 bytes. Pair keys `window`,
+            `part`, and `cohorts` are reserved.
         dtype: Element dtype of the packed vector bytes.
         dimension: Number of vector elements.
         vector: Raw little-endian vector bytes.
@@ -97,8 +126,9 @@ def encode_vector_message(
 
     Raises:
         TypeError: If an argument has an invalid type.
-        ValueError: If name is too long, vector is empty, byte length does not
-            match dimension and dtype, or a length field cannot fit in u32.
+        ValueError: If name does not match the cohort grammar, vector is
+            empty, byte length does not match dimension and dtype, or a length
+            field cannot fit in u32.
     """
     dtype = _coerce_dtype(dtype)
     name_bytes = _encode_name(name)
@@ -123,7 +153,12 @@ def encode_vector_message_from_iterable(
     that already have packed vector memory.
 
     Args:
-        name: Client-defined UTF-8 cohort or stratum name, up to 1024 bytes.
+        name: Client-defined cohort name. Must be 1 to 8 '/'-separated
+            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
+            key=value where key and value independently match that same plain
+            segment rule; each segment must be 1 to 63 bytes including '='
+            and the whole name must be at most 255 bytes. Pair keys `window`,
+            `part`, and `cohorts` are reserved.
         vector: Iterable of Python floats to encode as F32.
         dtype: Element dtype to encode. Only DType.F32 is supported here.
 
@@ -133,8 +168,8 @@ def encode_vector_message_from_iterable(
     Raises:
         TypeError: If an argument has an invalid type or vector cannot be
             encoded as F32.
-        ValueError: If name is too long, vector is empty, or a length field
-            cannot fit in u32.
+        ValueError: If name does not match the cohort grammar, vector is
+            empty, or a length field cannot fit in u32.
         NotImplementedError: If dtype is recognized but is not DType.F32.
     """
     dtype = _coerce_dtype(dtype)
@@ -216,9 +251,9 @@ def _encode_name(name: str) -> bytes:
     """Encodes and validates a message name."""
     if not isinstance(name, str):
         raise TypeError("name must be a string")
+    if len(name) > _MAX_NAME_BYTES or _NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError(_NAME_GRAMMAR_ERROR)
     name_bytes = name.encode("utf-8")
-    if len(name_bytes) > _MAX_NAME_BYTES:
-        raise ValueError(f"name must be at most {_MAX_NAME_BYTES} UTF-8 bytes")
     _validate_u32("name_len", len(name_bytes))
     return name_bytes
 
