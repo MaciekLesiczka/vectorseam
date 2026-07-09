@@ -13,4 +13,4 @@ mod binary;
 pub mod cohort;
 pub mod frame;
 pub mod segment;
-// pub mod window;
+pub mod window;
