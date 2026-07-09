@@ -133,10 +133,22 @@ class FramePackingTest(unittest.TestCase):
             "prod",
             "prod/tenant-a/products",
             "a1/b_2/c-3",
+            "Prod",
+            "prod.tenant",
             name_255_bytes,
             "env=prod",
             "env=prod/tenant=a/index=products",
             "prod/tenant=a",
+            "env=Prod",
+            "env=te.nant",
+            "env==prod",
+            "=prod",
+            "env=",
+            "a=b=c",
+            "-prod",
+            "_prod",
+            "part=x",
+            "cohorts=x",
             "e=p",
             pair_segment_63_bytes,
         )
@@ -156,33 +168,23 @@ class FramePackingTest(unittest.TestCase):
             ("a" * 63, "b" * 63, "c" * 63, "d" * 62, "e")
         )
         cases = (
-            "Prod",
             "",
             "prod//tenant",
             "/prod",
             "prod/",
-            "-prod",
-            "_prod",
             "a/a/a/a/a/a/a/a/a",
             segment_64_bytes,
             pair_segment_64_bytes,
             name_256_bytes,
             "caf\u00e9",
             "prod tenant",
-            "prod.tenant",
             "window=x",
-            "part=x",
-            "cohorts=x",
             "prod/window=x",
-            "prod/part=x",
-            "prod/cohorts=x",
-            "env==prod",
-            "=prod",
-            "env=",
-            "env=Prod",
-            "env=te.nant",
-            "env=-a",
-            "a=b=c",
+            ".",
+            "..",
+            "prod/.",
+            "prod/..",
+            "prod+tenant",
         )
 
         for name in cases:
@@ -192,7 +194,7 @@ class FramePackingTest(unittest.TestCase):
 
     def test_iterable_path_rejects_name_outside_cohort_grammar(self) -> None:
         with self.assertRaisesRegex(ValueError, "cohort grammar"):
-            encode_vector_frame_from_iterable("Prod", [1.0])
+            encode_vector_frame_from_iterable("window=prod", [1.0])
 
     def test_dtype_tracks_byte_size(self) -> None:
         self.assertEqual(4, DType.F32.byte_size)

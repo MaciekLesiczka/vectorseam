@@ -31,24 +31,18 @@ _FIXED_FRAME_HEADER_LEN = 28
 _HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
 _MAX_NAME_BYTES = 255
-_PLAIN_NAME_SEGMENT = r"[a-z0-9][a-z0-9_-]*"
-# Must stay in sync with vectorseam-core's reserved cohort keys.
-_RESERVED_COHORT_KEYS = ("window", "part", "cohorts")
-_RESERVED_COHORT_KEYS_PATTERN = "|".join(_RESERVED_COHORT_KEYS)
 _NAME_SEGMENT_PATTERN = (
-    r"(?=[^/]{1,63}(?:/|\Z))(?:"
-    rf"{_PLAIN_NAME_SEGMENT}|"
-    rf"(?!(?:{_RESERVED_COHORT_KEYS_PATTERN})=)"
-    rf"{_PLAIN_NAME_SEGMENT}={_PLAIN_NAME_SEGMENT}"
-    r")"
+    r"(?=[A-Za-z0-9._=-]{1,63}(?:/|\Z))"
+    r"(?!(?:\.{1,2})(?:/|\Z))"
+    r"(?!window=)"
+    r"[A-Za-z0-9._=-]+"
 )
 _NAME_GRAMMAR_ERROR = (
     "name must match cohort grammar: 1 to 8 '/'-separated segments; each "
-    "segment must be either [a-z0-9][a-z0-9_-]* or key=value where key and "
-    "value each match [a-z0-9][a-z0-9_-]*; each segment must be 1 to 63 "
-    "bytes including '='; whole name must be at most 255 bytes; no empty "
-    "segments, leading '/', trailing '/', multiple '=', or reserved keys "
-    "window, part, or cohorts"
+    "segment must be 1 to 63 ASCII bytes containing only letters, digits, "
+    "'.', '_', '-', or '='; whole name must be at most 255 bytes; no empty "
+    "segments, leading '/', trailing '/', '.' or '..' segments, or segments "
+    "starting with 'window='"
 )
 _NAME_PATTERN = re.compile(
     rf"\A{_NAME_SEGMENT_PATTERN}(?:/{_NAME_SEGMENT_PATTERN}){{0,7}}\Z",
@@ -112,11 +106,10 @@ def encode_vector_frame(
 
     Args:
         name: Client-defined cohort name. Must be 1 to 8 '/'-separated
-            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
-            key=value where key and value independently match that same plain
-            segment rule; each segment must be 1 to 63 bytes including '='
-            and the whole name must be at most 255 bytes. Pair keys `window`,
-            `part`, and `cohorts` are reserved.
+            segments; each segment must be 1 to 63 ASCII bytes containing
+            only letters, digits, `.`, `_`, `-`, or `=` and the whole name
+            must be at most 255 bytes. Segments `.` and `..`, and segments
+            starting with `window=`, are reserved.
         dtype: Element dtype of the packed vector bytes.
         dimension: Number of vector elements.
         vector: Raw little-endian vector bytes.
@@ -154,11 +147,10 @@ def encode_vector_frame_from_iterable(
 
     Args:
         name: Client-defined cohort name. Must be 1 to 8 '/'-separated
-            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
-            key=value where key and value independently match that same plain
-            segment rule; each segment must be 1 to 63 bytes including '='
-            and the whole name must be at most 255 bytes. Pair keys `window`,
-            `part`, and `cohorts` are reserved.
+            segments; each segment must be 1 to 63 ASCII bytes containing
+            only letters, digits, `.`, `_`, `-`, or `=` and the whole name
+            must be at most 255 bytes. Segments `.` and `..`, and segments
+            starting with `window=`, are reserved.
         vector: Iterable of Python floats to encode as F32.
         dtype: Element dtype to encode. Only DType.F32 is supported here.
 

@@ -76,7 +76,7 @@ pub struct FrameHeader<'a> {
 ///
 /// The buffer must contain exactly one complete frame. The vector payload is
 /// left untouched; only length fields and the cohort name bytes are inspected.
-pub fn parse_frame(buffer: &[u8]) -> Result<FrameHeader<'_>, FrameError> {
+pub fn parse_frame_header(buffer: &[u8]) -> Result<FrameHeader<'_>, FrameError> {
     if buffer.len() < FIXED_FRAME_HEADER_LEN {
         return Err(FrameError::Truncated {
             needed: FIXED_FRAME_HEADER_LEN,
@@ -202,7 +202,7 @@ mod tests {
         let vector = [1.0_f32.to_le_bytes(), 2.0_f32.to_le_bytes()].concat();
         let bytes = frame("prod", &vector);
 
-        let parsed = parse_frame(&bytes).unwrap();
+        let parsed = parse_frame_header(&bytes).unwrap();
 
         assert_eq!(parsed.frame_len, 36);
         assert_eq!(parsed.dtype, 1);
@@ -217,7 +217,7 @@ mod tests {
         let mut bytes = frame("prod", &[0, 1, 2, 3]);
         bytes[4..8].copy_from_slice(b"NOPE");
 
-        assert_eq!(parse_frame(&bytes), Err(FrameError::BadMagic));
+        assert_eq!(parse_frame_header(&bytes), Err(FrameError::BadMagic));
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
         let mut bytes = frame("prod", &[0, 1, 2, 3]);
         bytes[8..12].copy_from_slice(&2_u32.to_le_bytes());
 
-        assert_eq!(parse_frame(&bytes), Err(FrameError::BadVersion(2)));
+        assert_eq!(parse_frame_header(&bytes), Err(FrameError::BadVersion(2)));
     }
 
     #[test]
@@ -233,7 +233,7 @@ mod tests {
         let bytes = vec![0; FIXED_FRAME_HEADER_LEN - 1];
 
         assert_eq!(
-            parse_frame(&bytes),
+            parse_frame_header(&bytes),
             Err(FrameError::Truncated {
                 needed: FIXED_FRAME_HEADER_LEN,
                 actual: FIXED_FRAME_HEADER_LEN - 1,
@@ -246,7 +246,10 @@ mod tests {
         let mut bytes = frame("prod", &[0, 1, 2, 3]);
         bytes[16..20].copy_from_slice(&99_u32.to_le_bytes());
 
-        assert_eq!(parse_frame(&bytes), Err(FrameError::NameLenExceedsFrame));
+        assert_eq!(
+            parse_frame_header(&bytes),
+            Err(FrameError::NameLenExceedsFrame)
+        );
     }
 
     #[test]
@@ -255,7 +258,7 @@ mod tests {
         bytes[0..4].copy_from_slice(&99_u32.to_le_bytes());
 
         assert_eq!(
-            parse_frame(&bytes),
+            parse_frame_header(&bytes),
             Err(FrameError::FrameLenMismatch {
                 declared_total: 103,
                 actual: bytes.len(),
