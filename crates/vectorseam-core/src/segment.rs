@@ -4,7 +4,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use thiserror::Error;
 
 use crate::binary::{ByteReadError, read_u16_le, read_u32_le, read_u64_le};
-use crate::cohort::{CohortNameError, MAX_COHORT_NAME_BYTES, validate_cohort_name};
+use crate::cohort::{CohortName, CohortNameError, MAX_COHORT_NAME_BYTES};
 use crate::frame::{FrameError, parse_frame_header, total_frame_len};
 
 /// The `.vseam` segment magic bytes.
@@ -33,8 +33,8 @@ pub struct SegmentHeader {
     pub received_frame_count: u64,
     /// Records stored in this segment part.
     pub record_count: u64,
-    /// Validated cohort name.
-    pub cohort: String,
+    /// Cohort name.
+    pub cohort: CohortName,
 }
 
 /// A borrowed record to serialize into a segment.
@@ -115,8 +115,8 @@ pub fn write_segment(
     header: &SegmentHeader,
     records: &[SegmentRecordRef<'_>],
 ) -> Result<Bytes, SegmentError> {
-    validate_cohort_name(&header.cohort)?;
-    let cohort_len = u16::try_from(header.cohort.len()).map_err(|_| SegmentError::CohortTooLong)?;
+    let cohort = header.cohort.as_str();
+    let cohort_len = u16::try_from(cohort.len()).map_err(|_| SegmentError::CohortTooLong)?;
     let header_len = u32::try_from(BASE_HEADER_LEN + usize::from(cohort_len))
         .map_err(|_| SegmentError::LengthOverflow)?;
 
@@ -141,7 +141,7 @@ pub fn write_segment(
     out.put_u64_le(header.received_frame_count);
     out.put_u64_le(header.record_count);
     out.put_u16_le(cohort_len);
-    out.put_slice(header.cohort.as_bytes());
+    out.put_slice(cohort.as_bytes());
 
     for record in records {
         out.put_u64_le(record.receive_time);
@@ -201,9 +201,8 @@ pub fn read_segment(buffer: &[u8]) -> Result<Segment, SegmentError> {
         return Err(SegmentError::HeaderTooShort);
     }
     let cohort = std::str::from_utf8(&buffer[offset..cohort_end])
-        .map_err(|_| SegmentError::InvalidCohortUtf8)?
-        .to_owned();
-    validate_cohort_name(&cohort)?;
+        .map_err(|_| SegmentError::InvalidCohortUtf8)?;
+    let cohort = CohortName::try_from(cohort)?;
 
     let mut records = Vec::new();
     let mut record_offset = header_end;
@@ -280,7 +279,7 @@ mod tests {
             last_receive: 2_000_000,
             received_frame_count: 5,
             record_count: 2,
-            cohort: "prod/tenant-a".to_owned(),
+            cohort: CohortName::try_from("prod/tenant-a").unwrap(),
         }
     }
 

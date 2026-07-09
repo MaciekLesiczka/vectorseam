@@ -1,5 +1,8 @@
 //! Cohort name validation.
 
+use std::fmt;
+use std::str::FromStr;
+
 use thiserror::Error;
 
 /// Maximum UTF-8 byte length of a cohort name.
@@ -41,6 +44,67 @@ pub enum CohortNameError {
     /// A segment contains a byte outside the path-safe cohort alphabet.
     #[error("cohort segment contains invalid characters")]
     InvalidSegment,
+}
+
+/// A valid Cohort name.
+///
+/// `CohortName` is constructed only after applying the VectorSeam cohort
+/// grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CohortName(String);
+
+impl CohortName {
+    /// Validates and stores an owned cohort name.
+    pub fn new(name: String) -> Result<Self, CohortNameError> {
+        validate_cohort_name(&name)?;
+        Ok(Self(name))
+    }
+
+    /// Returns the validated cohort name as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Converts the cohort name back into its owned string.
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl AsRef<str> for CohortName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl fmt::Display for CohortName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for CohortName {
+    type Err = CohortNameError;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::try_from(name)
+    }
+}
+
+impl TryFrom<String> for CohortName {
+    type Error = CohortNameError;
+
+    fn try_from(name: String) -> Result<Self, Self::Error> {
+        Self::new(name)
+    }
+}
+
+impl TryFrom<&str> for CohortName {
+    type Error = CohortNameError;
+
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        Self::new(name.to_owned())
+    }
 }
 
 /// Validates a cohort name against the VectorSeam grammar.
@@ -146,6 +210,7 @@ mod tests {
             name_255_bytes.as_str(),
         ] {
             assert!(is_valid_cohort_name(name), "{name}");
+            assert_eq!(CohortName::try_from(name).unwrap().as_str(), name);
         }
     }
 
