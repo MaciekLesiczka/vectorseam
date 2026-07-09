@@ -4,6 +4,8 @@ use std::str;
 
 use thiserror::Error;
 
+use crate::binary::{ByteReadError, read_u32_le};
+
 /// The protocol v1 magic bytes.
 pub const FRAME_MAGIC: [u8; 4] = *b"VQS1";
 
@@ -52,6 +54,15 @@ pub enum FrameError {
     LengthOverflow,
 }
 
+impl From<ByteReadError> for FrameError {
+    fn from(error: ByteReadError) -> Self {
+        match error {
+            ByteReadError::Truncated { needed, actual } => Self::Truncated { needed, actual },
+            ByteReadError::LengthOverflow => Self::LengthOverflow,
+        }
+    }
+}
+
 /// A protocol v1 frame header and cohort name.
 ///
 /// The parser validates the self-delimiting frame envelope and exposes the
@@ -84,7 +95,7 @@ pub fn parse_frame_header(buffer: &[u8]) -> Result<FrameHeader<'_>, FrameError> 
         });
     }
 
-    let frame_len = read_u32(buffer, 0)?;
+    let frame_len = read_u32_le(buffer, 0)?;
     let declared_total = usize::try_from(frame_len)
         .map_err(|_| FrameError::LengthOverflow)?
         .checked_add(FRAME_LEN_FIELD_LEN)
@@ -108,15 +119,15 @@ pub fn parse_frame_header(buffer: &[u8]) -> Result<FrameHeader<'_>, FrameError> 
         return Err(FrameError::BadMagic);
     }
 
-    let version = read_u32(buffer, 8)?;
+    let version = read_u32_le(buffer, 8)?;
     if version != FRAME_VERSION {
         return Err(FrameError::BadVersion(version));
     }
 
-    let dtype = read_u32(buffer, 12)?;
-    let name_len = read_u32(buffer, 16)?;
-    let dimension = read_u32(buffer, 20)?;
-    let vector_len = read_u32(buffer, 24)?;
+    let dtype = read_u32_le(buffer, 12)?;
+    let name_len = read_u32_le(buffer, 16)?;
+    let dimension = read_u32_le(buffer, 20)?;
+    let vector_len = read_u32_le(buffer, 24)?;
 
     let name_len_usize = usize::try_from(name_len).map_err(|_| FrameError::LengthOverflow)?;
     let vector_len_usize = usize::try_from(vector_len).map_err(|_| FrameError::LengthOverflow)?;
@@ -160,21 +171,10 @@ pub fn total_frame_len(buffer: &[u8]) -> Result<usize, FrameError> {
             actual: buffer.len(),
         });
     }
-    usize::try_from(read_u32(buffer, 0)?)
+    usize::try_from(read_u32_le(buffer, 0)?)
         .map_err(|_| FrameError::LengthOverflow)?
         .checked_add(FRAME_LEN_FIELD_LEN)
         .ok_or(FrameError::LengthOverflow)
-}
-
-fn read_u32(buffer: &[u8], offset: usize) -> Result<u32, FrameError> {
-    let end = offset
-        .checked_add(FRAME_LEN_FIELD_LEN)
-        .ok_or(FrameError::LengthOverflow)?;
-    let bytes = buffer.get(offset..end).ok_or(FrameError::Truncated {
-        needed: end,
-        actual: buffer.len(),
-    })?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 #[cfg(test)]

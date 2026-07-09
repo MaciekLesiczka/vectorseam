@@ -8,7 +8,9 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 #![forbid(unsafe_code)]
 
+mod binary;
+
 pub mod cohort;
 pub mod frame;
-// pub mod segment;
-// pub mod window;
+//pub mod segment;
+//pub mod window;
