@@ -1,8 +1,10 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
 use vectorseam_core::frame::FIXED_FRAME_HEADER_LEN;
+use vectorseam_core::segment::MAX_SEGMENT_OVERHEAD_BYTES;
 
 const DEFAULT_WINDOW_SECONDS: u32 = 600;
 const DEFAULT_PER_COHORT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
@@ -10,14 +12,27 @@ const DEFAULT_GLOBAL_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE_BYTES: usize = 32 * 1024;
 const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7737";
 
 /// Command-line and environment configuration for the collector.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "vectorseam-collector")]
 pub struct Config {
-    /// Unix socket path to listen on.
-    #[arg(long = "socket", env = "VECTORSEAM_SOCKET", value_name = "PATH")]
-    pub socket: PathBuf,
+    /// TCP address to listen on when no Unix socket is configured.
+    #[arg(
+        long = "listen",
+        env = "VECTORSEAM_LISTEN",
+        default_value = DEFAULT_LISTEN_ADDR,
+        value_name = "ADDR"
+    )]
+    pub listen: SocketAddr,
+    /// Optional Unix socket path for same-host demos and tests.
+    #[arg(
+        long = "unix-socket",
+        env = "VECTORSEAM_UNIX_SOCKET",
+        value_name = "PATH"
+    )]
+    pub unix_socket: Option<PathBuf>,
     /// Local object-store root directory.
     #[arg(
         long = "storage-root",
@@ -107,6 +122,24 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
             "max frame size must be at least {FIXED_FRAME_HEADER_LEN} bytes"
         ));
     }
+    let max_record_bytes = config
+        .max_frame_size
+        .checked_add(8)
+        .ok_or_else(|| anyhow!("max frame size is too large"))?;
+    if max_record_bytes > config.per_cohort_memory_bytes {
+        return Err(anyhow!(
+            "per-cohort memory cap must fit one max-size record"
+        ));
+    }
+    let min_global_memory_bytes = max_record_bytes
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(MAX_SEGMENT_OVERHEAD_BYTES))
+        .ok_or_else(|| anyhow!("max frame size is too large"))?;
+    if min_global_memory_bytes > config.global_memory_bytes {
+        return Err(anyhow!(
+            "global memory cap must fit one max-size record plus serialization reserve"
+        ));
+    }
     if config.channel_capacity == 0 {
         return Err(anyhow!("channel capacity must be greater than zero"));
     }
@@ -114,4 +147,46 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         return Err(anyhow!("max connections must be greater than zero"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_config() -> Config {
+        Config {
+            listen: "127.0.0.1:7737".parse().unwrap(),
+            unix_socket: None,
+            storage_root: PathBuf::from("/tmp/vseam"),
+            window_seconds: DEFAULT_WINDOW_SECONDS,
+            per_cohort_memory_bytes: DEFAULT_PER_COHORT_MEMORY_BYTES,
+            global_memory_bytes: DEFAULT_GLOBAL_MEMORY_BYTES,
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE_BYTES,
+            channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+        }
+    }
+
+    #[test]
+    fn rejects_memory_caps_that_cannot_fit_one_max_size_record() {
+        let mut config = valid_config();
+        config.max_frame_size = 1024;
+        config.per_cohort_memory_bytes = 1024 + 7;
+
+        let error = validate_config(&config).unwrap_err();
+
+        assert!(error.to_string().contains("per-cohort memory cap"));
+    }
+
+    #[test]
+    fn rejects_global_cap_that_cannot_fit_serialization_reserve() {
+        let mut config = valid_config();
+        config.max_frame_size = 1024;
+        config.per_cohort_memory_bytes = 1024 + 8;
+        config.global_memory_bytes = (1024 + 8) * 2 + MAX_SEGMENT_OVERHEAD_BYTES - 1;
+
+        let error = validate_config(&config).unwrap_err();
+
+        assert!(error.to_string().contains("global memory cap"));
+    }
 }
