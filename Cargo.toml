@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/vectorseam-core"]
+members = ["crates/vectorseam-core", "crates/vectorseam-collector"]
 resolver = "3"
 
 [workspace.package]
