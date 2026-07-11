@@ -1,9 +1,10 @@
-"""Best-effort Unix socket sender for captured vector frames.
+"""Best-effort socket sender for captured vector frames.
 
 ``VectorSocketSender`` drains already-marshalled immutable ``bytes`` frames
 from ``VectorCaptureProducer`` on a daemon background thread and sends them to
-a collector over a Unix-domain ``SOCK_STREAM`` socket. Delivery is best-effort:
-frames in a batch are dropped if sending fails.
+a collector over TCP by default, or over a Unix-domain ``SOCK_STREAM`` socket
+when ``socket_path`` is provided. Delivery is best-effort: frames in a batch
+are dropped if sending fails.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from vectorseam.vector_capture import (
 
 
 class VectorSocketSender:
-    """Background Unix-domain stream sender for captured vector frames.
+    """Background stream sender for captured vector frames.
 
     The sender is safe to start and stop from multiple threads. Lifecycle state
     is protected by a ``threading.Lock``. Queue state remains owned by
@@ -30,7 +31,9 @@ class VectorSocketSender:
     def __init__(
         self,
         *,
-        socket_path: str,
+        host: str = "127.0.0.1",
+        port: int = 7737,
+        socket_path: str | None = None,
         producer: VectorCaptureProducer | None = None,
         flush_interval_seconds: float = 0.01,
         max_batch_bytes: int = 128 * 1024,
@@ -41,7 +44,10 @@ class VectorSocketSender:
         """Initializes a background sender.
 
         Args:
-            socket_path: Unix-domain socket path used by the collector.
+            host: TCP host used by the collector when socket_path is None.
+            port: TCP port used by the collector when socket_path is None.
+            socket_path: Optional Unix-domain socket path. When provided, the
+                sender uses a Unix socket instead of TCP.
             producer: Capture producer to drain. Defaults to the process-wide
                 producer.
             flush_interval_seconds: Debounce window used after the first frame
@@ -53,13 +59,22 @@ class VectorSocketSender:
 
         Raises:
             TypeError: If an argument has an invalid type.
-            ValueError: If a numeric argument is not positive or socket_path is
-                empty.
+            ValueError: If a numeric argument is not positive, host is empty,
+                socket_path is empty, or port is out of range.
         """
-        if not isinstance(socket_path, str):
-            raise TypeError("socket_path must be a string")
-        if not socket_path:
-            raise ValueError("socket_path must be non-empty")
+        if not isinstance(host, str):
+            raise TypeError("host must be a string")
+        if not host:
+            raise ValueError("host must be non-empty")
+        if not isinstance(port, int) or isinstance(port, bool):
+            raise TypeError("port must be an integer")
+        if not 0 < port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if socket_path is not None:
+            if not isinstance(socket_path, str):
+                raise TypeError("socket_path must be a string or None")
+            if not socket_path:
+                raise ValueError("socket_path must be non-empty")
 
         if producer is None:
             producer = get_vector_capture_producer()
@@ -84,6 +99,8 @@ class VectorSocketSender:
         if max_batch_bytes <= 0:
             raise ValueError("max_batch_bytes must be greater than 0")
 
+        self._host = host
+        self._port = port
         self._socket_path = socket_path
         self._producer = producer
         self._flush_interval_seconds = float(flush_interval_seconds)
@@ -180,8 +197,14 @@ class VectorSocketSender:
 
         sock: socket.socket | None = None
         try:
-            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.connect(self._socket_path)
+            if self._socket_path is None:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(self._send_timeout_seconds)
+                sock.connect((self._host, self._port))
+            else:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.settimeout(self._send_timeout_seconds)
+                sock.connect(self._socket_path)
         except OSError:
             if sock is not None:
                 sock.close()

@@ -1,4 +1,4 @@
-"""Tests for background Unix socket vector sender."""
+"""Tests for background socket vector sender."""
 
 import array
 import os
@@ -131,6 +131,114 @@ class _UnixStreamServer:
             pass
 
 
+class _TcpStreamServer:
+    """Small TCP server used by sender tests."""
+
+    def __init__(
+        self,
+        *,
+        expected_bytes: int | None = None,
+    ) -> None:
+        self.received = bytearray()
+        self.done = threading.Event()
+        self.errors: list[BaseException] = []
+        self._expected_bytes = expected_bytes
+        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server.bind(("127.0.0.1", 0))
+        self.address = self._server.getsockname()
+        self._server.listen(1)
+        self._server.settimeout(0.05)
+        self._conn: socket.socket | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self.done.set()
+        if self._conn is not None:
+            try:
+                self._conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._conn.close()
+        self._server.close()
+        self._thread.join(1.0)
+
+    def _run(self) -> None:
+        try:
+            self._serve()
+        except BaseException as error:  # pylint: disable=broad-exception-caught
+            self.errors.append(error)
+            self.done.set()
+
+    def _serve(self) -> None:
+        while not self.done.is_set():
+            try:
+                conn, _ = self._server.accept()
+                break
+            except TimeoutError:
+                continue
+            except OSError:
+                return
+        else:
+            return
+
+        self._conn = conn
+        conn.settimeout(0.01)
+        while not self.done.is_set():
+            if (
+                self._expected_bytes is not None
+                and len(self.received) >= self._expected_bytes
+            ):
+                self.done.set()
+                break
+
+            try:
+                chunk = conn.recv(4096)
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            self.received.extend(chunk)
+
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+class VectorSocketSenderTcpTest(unittest.TestCase):
+    """Verifies the default TCP sender path."""
+
+    def test_successful_tcp_send(self) -> None:
+        vector = _packed_f32([1.0, 2.0])
+        expected = encode_vector_frame("raw", DType.F32, 2, vector)
+        producer = VectorCaptureProducer(max_queue_bytes=len(expected))
+        self.assertEqual(
+            CaptureResult.ENQUEUED,
+            producer.capture_vector("raw", vector, dimension=2),
+        )
+        server = _TcpStreamServer(expected_bytes=len(expected))
+        server.start()
+        sender = _new_fast_tcp_sender(server.address, producer)
+
+        try:
+            sender.start()
+            self.assertTrue(
+                _wait_until(lambda: bytes(server.received) == expected)
+            )
+        finally:
+            sender.stop()
+            server.stop()
+
+        self.assertEqual([], server.errors)
+        self.assertEqual(0, producer.queued_frames)
+        self.assertEqual(0, producer.queued_bytes)
+
+
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "requires Unix sockets")
 class VectorSocketSenderTest(unittest.TestCase):
     """Verifies sender validation, lifecycle, batching, and failures."""
@@ -145,6 +253,17 @@ class VectorSocketSenderTest(unittest.TestCase):
                 socket_path=123,  # type: ignore[arg-type]
                 producer=producer,
             )
+        with self.assertRaises(ValueError):
+            VectorSocketSender(host="", producer=producer)
+        with self.assertRaises(TypeError):
+            VectorSocketSender(
+                host=123,  # type: ignore[arg-type]
+                producer=producer,
+            )
+        with self.assertRaises(ValueError):
+            VectorSocketSender(port=0, producer=producer)
+        with self.assertRaises(TypeError):
+            VectorSocketSender(port=True, producer=producer)  # type: ignore[arg-type]
 
         for timing_name in (
             "flush_interval_seconds",
@@ -518,6 +637,9 @@ class _FakeConnectedSocket:
     def connect(self, socket_path: str) -> None:
         pass
 
+    def settimeout(self, timeout: float) -> None:
+        pass
+
     def close(self) -> None:
         self.closed = True
 
@@ -541,6 +663,22 @@ def _new_fast_sender(
         producer=producer,
         flush_interval_seconds=flush_interval_seconds,
         max_batch_bytes=max_batch_bytes,
+        idle_sleep_seconds=0.001,
+        reconnect_interval_seconds=0.01,
+        send_timeout_seconds=0.01,
+    )
+
+
+def _new_fast_tcp_sender(
+    address: tuple[str, int],
+    producer: VectorCaptureProducer,
+) -> VectorSocketSender:
+    host, port = address
+    return VectorSocketSender(
+        host=host,
+        port=port,
+        producer=producer,
+        flush_interval_seconds=0.001,
         idle_sleep_seconds=0.001,
         reconnect_interval_seconds=0.01,
         send_timeout_seconds=0.01,

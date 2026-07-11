@@ -18,6 +18,7 @@ pub(crate) struct CollectorCounters {
     pub(crate) invalid_names: AtomicU64,
     pub(crate) oversized_frames: AtomicU64,
     pub(crate) channel_dropped_frames: AtomicU64,
+    pub(crate) memory_dropped_frames: AtomicU64,
     pub(crate) writer_dropped_frames: AtomicU64,
     pub(crate) kept_frames: AtomicU64,
     pub(crate) flushed_parts: AtomicU64,
@@ -29,6 +30,15 @@ pub(crate) struct CollectorCounters {
 impl CollectorCounters {
     pub(crate) fn record_channel_drop(&self, cohort: &CohortName) {
         self.channel_dropped_frames.fetch_add(1, Ordering::Relaxed);
+        self.record_pending_cohort_drop(cohort);
+    }
+
+    pub(crate) fn record_memory_drop(&self, cohort: &CohortName) {
+        self.memory_dropped_frames.fetch_add(1, Ordering::Relaxed);
+        self.record_pending_cohort_drop(cohort);
+    }
+
+    fn record_pending_cohort_drop(&self, cohort: &CohortName) {
         match self.pending_cohort_drops.lock() {
             Ok(mut drops) => {
                 let entry = drops.entry(cohort.clone()).or_default();
@@ -69,6 +79,7 @@ impl CollectorCounters {
             invalid_names: self.invalid_names.load(Ordering::Relaxed),
             oversized_frames: self.oversized_frames.load(Ordering::Relaxed),
             channel_dropped_frames: self.channel_dropped_frames.load(Ordering::Relaxed),
+            memory_dropped_frames: self.memory_dropped_frames.load(Ordering::Relaxed),
             writer_dropped_frames: self.writer_dropped_frames.load(Ordering::Relaxed),
             kept_frames: self.kept_frames.load(Ordering::Relaxed),
             flushed_parts: self.flushed_parts.load(Ordering::Relaxed),
@@ -86,6 +97,7 @@ struct CounterSnapshot {
     invalid_names: u64,
     oversized_frames: u64,
     channel_dropped_frames: u64,
+    memory_dropped_frames: u64,
     writer_dropped_frames: u64,
     kept_frames: u64,
     flushed_parts: u64,
@@ -109,6 +121,7 @@ pub(crate) async fn summary_loop(
                     invalid_names = snapshot.invalid_names,
                     oversized_frames = snapshot.oversized_frames,
                     channel_dropped_frames = snapshot.channel_dropped_frames,
+                    memory_dropped_frames = snapshot.memory_dropped_frames,
                     writer_dropped_frames = snapshot.writer_dropped_frames,
                     kept_frames = snapshot.kept_frames,
                     flushed_parts = snapshot.flushed_parts,
