@@ -1,7 +1,8 @@
 use anyhow::Result;
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use vectorseam_collector::run;
+use vectorseam_collector::{Config, run};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -11,5 +12,5 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    run().await
+    run(Config::parse()).await
 }
