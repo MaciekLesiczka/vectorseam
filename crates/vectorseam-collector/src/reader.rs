@@ -11,6 +11,7 @@ use vectorseam_core::frame::parse_frame_header;
 
 use crate::config::ReaderConfig;
 use crate::counters::CollectorCounters;
+use crate::memory::{MemoryGuard, MemoryTracker};
 use crate::time::unix_micros_now;
 
 #[derive(Debug)]
@@ -18,12 +19,14 @@ pub(crate) struct FrameEvent {
     pub(crate) cohort: CohortName,
     pub(crate) receive_time: u64,
     pub(crate) frame: Bytes,
+    pub(crate) memory: MemoryGuard,
 }
 
 pub(crate) async fn handle_connection<S>(
     mut stream: S,
     tx: mpsc::Sender<FrameEvent>,
     counters: Arc<CollectorCounters>,
+    memory: Arc<MemoryTracker>,
     config: ReaderConfig,
     mut shutdown: watch::Receiver<bool>,
 ) where
@@ -101,10 +104,23 @@ pub(crate) async fn handle_connection<S>(
         counters
             .valid_frames_received
             .fetch_add(1, Ordering::Relaxed);
+        let memory_bytes = match frame.len().checked_add(8) {
+            Some(value) => value,
+            None => {
+                counters.record_memory_drop(&cohort);
+                continue;
+            }
+        };
+        let Some(memory_guard) = memory.try_reserve(memory_bytes, config.global_memory_bytes)
+        else {
+            counters.record_memory_drop(&cohort);
+            continue;
+        };
         let event = FrameEvent {
             cohort,
             receive_time,
             frame: Bytes::from(frame),
+            memory: memory_guard,
         };
         match tx.try_send(event) {
             Ok(()) => {}
