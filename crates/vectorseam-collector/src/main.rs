@@ -2,6 +2,7 @@ use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 
 use vectorseam_collector::run;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()

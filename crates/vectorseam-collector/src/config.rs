@@ -10,7 +10,7 @@ const DEFAULT_WINDOW_SECONDS: u32 = 600;
 const DEFAULT_PER_COHORT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_GLOBAL_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE_BYTES: usize = 32 * 1024;
-const DEFAULT_CHANNEL_CAPACITY: usize = 1024;
+const DEFAULT_CHANNEL_CAPACITY: usize = 2048;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7737";
 
@@ -57,10 +57,10 @@ pub struct Config {
         default_value_t = DEFAULT_PER_COHORT_MEMORY_BYTES
     )]
     pub per_cohort_memory_bytes: usize,
-    /// Maximum writer memory for buffered records plus serialization reserve.
+    /// Maximum live frame memory plus serialization reserve.
     ///
-    /// The writer accounts for all cohort buffers and enough reserve to build
-    /// one contiguous `.vseam` segment before sending it to the object store.
+    /// This includes frames in the reader-to-writer channel, writer cohort
+    /// buffers, and enough reserve to build one contiguous `.vseam` segment.
     #[arg(
         long = "global-memory-bytes",
         env = "VECTORSEAM_GLOBAL_MEMORY_BYTES",
@@ -98,6 +98,7 @@ pub struct Config {
 #[derive(Clone, Copy)]
 pub(crate) struct ReaderConfig {
     pub(crate) max_frame_size: usize,
+    pub(crate) global_memory_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
