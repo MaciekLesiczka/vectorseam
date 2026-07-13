@@ -109,8 +109,8 @@ Header:
 | header_len | u32 | byte length of the remaining header fields |
 | window_start | u64 | aligned window start, unix seconds UTC |
 | window_seconds | u32 | window duration |
-| first_receive | u64 | receive time of first kept frame, unix micros |
-| last_receive | u64 | receive time of last kept frame, unix micros |
+| first_receive | u64 | receive time of first kept frame, unix micros; `0` when `record_count = 0` |
+| last_receive | u64 | receive time of last kept frame, unix micros; `0` when `record_count = 0` |
 | received_frame_count | u64 | frames received for this cohort in this part, including frames later dropped |
 | record_count | u64 | records stored in this part |
 | cohort_len | u16 | byte length of cohort name |
@@ -129,6 +129,11 @@ memory-pressure spills create additional parts. Dropped frames for a part are
 without treating spills specially. Coverage for a window is
 `sum(record_count) / sum(received_frame_count)`; the tuner skips or flags
 windows where that ratio is suspect.
+
+A segment part may contain zero records when the collector attributes dropped
+frames to a cohort/window but kept no frames for that part. In that case
+`record_count = 0`, `received_frame_count > 0`, and `first_receive` /
+`last_receive` are `0`, making zero coverage explicit for the tuner.
 
 `header_len` lets a future version append header fields without breaking old
 readers.
@@ -153,7 +158,7 @@ readers.
 - Writer owns per-cohort buffers for the current receive-time window. Before
   buffering a record whose receive timestamp belongs to a later aligned
   window, it flushes the previous window; at window close, every non-empty
-  buffer flushes as a part.
+  buffer and every drop-only cohort count flushes as a part.
 - Memory budget: a per-cohort cap and a global cap. The collector reserves a
   fixed slice of the global cap for one serialized flush buffer:
   `per_cohort_memory_bytes + MAX_SEGMENT_OVERHEAD_BYTES`. The remaining live

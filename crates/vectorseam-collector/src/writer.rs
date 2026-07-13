@@ -196,7 +196,7 @@ impl Writer {
         let Some(state) = self.states.get(cohort) else {
             return false;
         };
-        if state.records.is_empty() {
+        if state.records.is_empty() && state.received_frame_count == 0 {
             return false;
         }
 
@@ -210,13 +210,13 @@ impl Writer {
     fn take_flush_batch(&mut self, cohort: &CohortName, window_start: u64) -> Option<FlushBatch> {
         let mut state = self.states.remove(cohort)?;
         let records = std::mem::take(&mut state.records);
-        if records.is_empty() {
+        if records.is_empty() && state.received_frame_count == 0 {
             return None;
         }
         let record_bytes = state.bytes;
 
-        let first_receive = records.first()?.receive_time;
-        let last_receive = records.last()?.receive_time;
+        let first_receive = records.first().map_or(0, |record| record.receive_time);
+        let last_receive = records.last().map_or(0, |record| record.receive_time);
         let record_count = u64::try_from(records.len()).unwrap_or(u64::MAX);
         let header = SegmentHeader {
             window_start,
@@ -325,9 +325,8 @@ impl Writer {
 
     fn fold_all_pending_drops(&mut self) {
         for (cohort, drops) in self.counters.take_all_pending_cohort_drops() {
-            if let Some(state) = self.states.get_mut(&cohort) {
-                state.received_frame_count = state.received_frame_count.saturating_add(drops);
-            }
+            let state = self.states.entry(cohort).or_default();
+            state.received_frame_count = state.received_frame_count.saturating_add(drops);
         }
     }
 }
@@ -538,15 +537,23 @@ mod tests {
         assert_eq!(fixture.segments_for("other").await.len(), 1);
     }
 
-    #[test]
-    fn fold_all_pending_drops_does_not_create_drop_only_states() {
+    #[tokio::test]
+    async fn fold_all_pending_drops_writes_drop_only_segment() {
         let mut fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
         fixture
             .counters
             .record_channel_drop(&CohortName::try_from("drop-only").unwrap());
 
         fixture.writer.fold_all_pending_drops();
+        fixture.writer.flush_all(TEST_WINDOW_START).await;
 
+        let segments = fixture.segments_for("drop-only").await;
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].header.record_count, 0);
+        assert_eq!(segments[0].header.received_frame_count, 1);
+        assert_eq!(segments[0].header.first_receive, 0);
+        assert_eq!(segments[0].header.last_receive, 0);
+        assert!(segments[0].records.is_empty());
         assert!(fixture.writer.states.is_empty());
     }
 

@@ -310,6 +310,23 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_drop_only_segment_without_records() {
+        let header = SegmentHeader {
+            first_receive: 0,
+            last_receive: 0,
+            received_frame_count: 3,
+            record_count: 0,
+            ..header()
+        };
+
+        let bytes = write_segment(&header, &[]).unwrap();
+        let parsed = read_segment(&bytes).unwrap();
+
+        assert_eq!(parsed.header, header);
+        assert!(parsed.records.is_empty());
+    }
+
+    #[test]
     fn honors_header_len_with_unknown_tail_bytes() {
         let raw_frame = frame("prod/tenant-a", &[1, 2, 3, 4]);
         let records = [SegmentRecordRef {
