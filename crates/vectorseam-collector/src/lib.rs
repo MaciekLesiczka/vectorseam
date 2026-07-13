@@ -29,7 +29,7 @@ use crate::writer::Writer;
 
 const CONNECTION_SHUTDOWN_DRAIN_MS: u64 = 250;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
-const WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const SUMMARY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Runs the collector using a local filesystem object store.

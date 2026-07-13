@@ -170,6 +170,14 @@ readers.
   exhausted. More sophisticated concurrent or streaming flushes are
   deliberately out of scope for the MVP; simple, tight resource accounting is
   preferred over higher flush throughput.
+- Inline single-flight flush is acceptable for the LocalFileSystem MVP. At the
+  design point, a full 32 MiB local write should complete well within the
+  two-second default channel cushion. For remote stores such as S3, 32 MiB
+  PUTs and sequential window-close PUTs can exceed that cushion and create
+  time-correlated drops around spills or window boundaries. The remote-store
+  milestone must revisit this tradeoff, for example with a larger channel or
+  one overlapped in-flight PUT while explicitly reserving memory for the extra
+  serialized segment.
 - Memory accounting is intentionally based on buffered record payload bytes:
   `frame.len() + 8` for the receive timestamp. It does not count Rust
   container overhead such as `BufferedRecord`, `Bytes`, `MemoryGuard`,
@@ -179,13 +187,21 @@ readers.
   substantially higher than the configured byte budget, roughly 2.5x in the
   worst case. This MVP accepts that tradeoff to keep hot-path accounting
   simple; the frame-size cap, channel cap, per-cohort cap, and connection cap
-  still bound growth.
+  still bound growth. Treat `global_memory_bytes` as a frame-byte budget, not
+  a process RSS limit; container memory limits should include headroom for
+  runtime, allocator, task, channel, and object-store overhead. For the default
+  256 MiB frame-byte budget, a 512 MiB container limit is a more realistic
+  starting point than 256 MiB.
 - Flush failures (storage errors or PUT timeouts) are logged and counted; the
   collector keeps running. Losing samples is acceptable, crashing the sidecar
   is not.
 - Graceful shutdown (SIGTERM/SIGINT): stop accepting, drain connection tasks,
   close the writer channel, flush all open buffers, and exit. Shutdown waits
-  with finite deadlines and aborts remaining tasks as a forced fallback.
+  with finite deadlines and aborts remaining tasks as a forced fallback. The
+  writer shutdown wait is 20 seconds, keeping the collector's worst-case
+  shutdown budget below Kubernetes' default 30-second termination grace once
+  connection and summary waits are included. A flush still in progress after
+  that may be lost; object-store atomic PUT semantics prevent torn segments.
 - Counters (received, records, dropped by reason, flush failures) are logged
   periodically; per-part received and record counts are embedded in segment
   headers. No metrics endpoint in MVP.
