@@ -186,13 +186,12 @@ impl Writer {
     }
 
     fn take_flush_batch(&mut self, cohort: &CohortName, window_start: u64) -> Option<FlushBatch> {
-        let state = self.states.get_mut(cohort)?;
+        let mut state = self.states.remove(cohort)?;
         let records = std::mem::take(&mut state.records);
         if records.is_empty() {
             return None;
         }
         let record_bytes = state.bytes;
-        state.bytes = 0;
 
         let first_receive = records.first()?.receive_time;
         let last_receive = records.last()?.receive_time;
@@ -206,7 +205,6 @@ impl Writer {
             record_count,
             cohort: cohort.clone(),
         };
-        state.received_frame_count = 0;
 
         Some(FlushBatch {
             window_start,
@@ -291,8 +289,9 @@ impl Writer {
 
     fn fold_all_pending_drops(&mut self) {
         for (cohort, drops) in self.counters.take_all_pending_cohort_drops() {
-            let state = self.states.entry(cohort).or_default();
-            state.received_frame_count = state.received_frame_count.saturating_add(drops);
+            if let Some(state) = self.states.get_mut(&cohort) {
+                state.received_frame_count = state.received_frame_count.saturating_add(drops);
+            }
         }
     }
 }
@@ -353,6 +352,12 @@ mod tests {
         assert_eq!(segment.records[0].frame, first);
         assert_eq!(segment.records[1].frame, second);
         assert_eq!(fixture.memory.used_bytes(), 0);
+        assert!(
+            !fixture
+                .writer
+                .states
+                .contains_key(&CohortName::try_from("prod").unwrap())
+        );
     }
 
     #[tokio::test]
@@ -440,6 +445,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn close_window_removes_flushed_cohort_states() {
+        let mut fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
+
+        fixture
+            .writer
+            .handle_frame(fixture.event("prod", 100, frame("prod", 1)))
+            .await;
+        fixture
+            .writer
+            .handle_frame(fixture.event("other", 101, frame("other", 2)))
+            .await;
+
+        fixture.writer.flush_all(TEST_WINDOW_START).await;
+
+        assert!(fixture.writer.states.is_empty());
+        assert_eq!(fixture.memory.used_bytes(), 0);
+        assert_eq!(fixture.segments_for("prod").await.len(), 1);
+        assert_eq!(fixture.segments_for("other").await.len(), 1);
+    }
+
+    #[test]
+    fn fold_all_pending_drops_does_not_create_drop_only_states() {
+        let mut fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
+        fixture
+            .counters
+            .record_channel_drop(&CohortName::try_from("drop-only").unwrap());
+
+        fixture.writer.fold_all_pending_drops();
+
+        assert!(fixture.writer.states.is_empty());
+    }
+
+    #[tokio::test]
     async fn serialization_failure_counts_failure_and_releases_memory() {
         let mut fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
         let cohort = CohortName::try_from("prod").unwrap();
@@ -459,6 +497,7 @@ mod tests {
         assert_eq!(fixture.counters.flush_failures.load(Ordering::Relaxed), 1);
         assert!(fixture.segments_for("prod").await.is_empty());
         assert_eq!(fixture.memory.used_bytes(), 0);
+        assert!(!fixture.writer.states.contains_key(&cohort));
     }
 
     impl WriterFixture {
