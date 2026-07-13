@@ -1,4 +1,4 @@
-"""Binary message packing for vector queries.
+"""Binary frame packing for vector queries.
 
 Protocol v1 encodes one vector query into a single binary frame:
 
@@ -27,28 +27,22 @@ from typing import TypeAlias
 
 BufferLike: TypeAlias = bytes | bytearray | memoryview | array.array
 
-_FIXED_FRAME_SIZE = 28
+_FIXED_FRAME_HEADER_LEN = 28
 _HEADER = struct.Struct("<I4sIIIII")
 _MAGIC = b"VQS1"
 _MAX_NAME_BYTES = 255
-_PLAIN_NAME_SEGMENT = r"[a-z0-9][a-z0-9_-]*"
-# Must stay in sync with vectorseam-core's reserved cohort keys.
-_RESERVED_COHORT_KEYS = ("window", "part", "cohorts")
-_RESERVED_COHORT_KEYS_PATTERN = "|".join(_RESERVED_COHORT_KEYS)
 _NAME_SEGMENT_PATTERN = (
-    r"(?=[^/]{1,63}(?:/|\Z))(?:"
-    rf"{_PLAIN_NAME_SEGMENT}|"
-    rf"(?!(?:{_RESERVED_COHORT_KEYS_PATTERN})=)"
-    rf"{_PLAIN_NAME_SEGMENT}={_PLAIN_NAME_SEGMENT}"
-    r")"
+    r"(?=[A-Za-z0-9._=-]{1,63}(?:/|\Z))"
+    r"(?!(?:\.{1,2})(?:/|\Z))"
+    r"(?!window=)"
+    r"[A-Za-z0-9._=-]+"
 )
 _NAME_GRAMMAR_ERROR = (
     "name must match cohort grammar: 1 to 8 '/'-separated segments; each "
-    "segment must be either [a-z0-9][a-z0-9_-]* or key=value where key and "
-    "value each match [a-z0-9][a-z0-9_-]*; each segment must be 1 to 63 "
-    "bytes including '='; whole name must be at most 255 bytes; no empty "
-    "segments, leading '/', trailing '/', multiple '=', or reserved keys "
-    "window, part, or cohorts"
+    "segment must be 1 to 63 ASCII bytes containing only letters, digits, "
+    "'.', '_', '-', or '='; whole name must be at most 255 bytes; no empty "
+    "segments, leading '/', trailing '/', '.' or '..' segments, or segments "
+    "starting with 'window='"
 )
 _NAME_PATTERN = re.compile(
     rf"\A{_NAME_SEGMENT_PATTERN}(?:/{_NAME_SEGMENT_PATTERN}){{0,7}}\Z",
@@ -84,7 +78,7 @@ class DType(enum.IntEnum):
     array_typecode: str | None
 
 
-def encode_vector_message(
+def encode_vector_frame(
     name: str,
     dtype: DType,
     dimension: int,
@@ -102,7 +96,7 @@ def encode_vector_message(
       vector_le = numpy.ascontiguousarray(
           numpy.asarray(vector, dtype=numpy.dtype("<f4"))
       )
-      frame = encode_vector_message(
+      frame = encode_vector_frame(
           "prod", DType.F32, vector_le.size, memoryview(vector_le)
       )
 
@@ -112,11 +106,10 @@ def encode_vector_message(
 
     Args:
         name: Client-defined cohort name. Must be 1 to 8 '/'-separated
-            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
-            key=value where key and value independently match that same plain
-            segment rule; each segment must be 1 to 63 bytes including '='
-            and the whole name must be at most 255 bytes. Pair keys `window`,
-            `part`, and `cohorts` are reserved.
+            segments; each segment must be 1 to 63 ASCII bytes containing
+            only letters, digits, `.`, `_`, `-`, or `=` and the whole name
+            must be at most 255 bytes. Segments `.` and `..`, and segments
+            starting with `window=`, are reserved.
         dtype: Element dtype of the packed vector bytes.
         dimension: Number of vector elements.
         vector: Raw little-endian vector bytes.
@@ -135,12 +128,12 @@ def encode_vector_message(
     _validate_dimension(dimension)
     vector_view = _byte_view(vector)
     _validate_vector_len(dimension, dtype, vector_view.nbytes)
-    return _encode_vector_message_from_view(
+    return _encode_vector_frame_from_view(
         name_bytes, dtype, dimension, vector_view
     )
 
 
-def encode_vector_message_from_iterable(
+def encode_vector_frame_from_iterable(
     name: str,
     vector: Iterable[float],
     dtype: DType = DType.F32,
@@ -149,16 +142,15 @@ def encode_vector_message_from_iterable(
 
     This convenience API is intended for experiments, examples, and small call
     sites. It traverses boxed Python floats and packs them into F32 bytes before
-    building the frame. Use `encode_vector_message` for production call sites
+    building the frame. Use `encode_vector_frame` for production call sites
     that already have packed vector memory.
 
     Args:
         name: Client-defined cohort name. Must be 1 to 8 '/'-separated
-            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
-            key=value where key and value independently match that same plain
-            segment rule; each segment must be 1 to 63 bytes including '='
-            and the whole name must be at most 255 bytes. Pair keys `window`,
-            `part`, and `cohorts` are reserved.
+            segments; each segment must be 1 to 63 ASCII bytes containing
+            only letters, digits, `.`, `_`, `-`, or `=` and the whole name
+            must be at most 255 bytes. Segments `.` and `..`, and segments
+            starting with `window=`, are reserved.
         vector: Iterable of Python floats to encode as F32.
         dtype: Element dtype to encode. Only DType.F32 is supported here.
 
@@ -175,14 +167,14 @@ def encode_vector_message_from_iterable(
     dtype = _coerce_dtype(dtype)
     if dtype is not DType.F32:
         raise NotImplementedError(
-            "encode_vector_message_from_iterable only supports F32"
+            "encode_vector_frame_from_iterable only supports F32"
         )
 
     vector_values = _to_f32_array(vector)
     if sys.byteorder != "little":
         vector_values.byteswap()
 
-    return encode_vector_message(
+    return encode_vector_frame(
         name,
         dtype,
         len(vector_values),
@@ -197,7 +189,7 @@ def _coerce_dtype(dtype: DType) -> DType:
     return dtype
 
 
-def _encode_vector_message_from_view(
+def _encode_vector_frame_from_view(
     name_bytes: bytes,
     dtype: DType,
     dimension: int,
@@ -207,7 +199,7 @@ def _encode_vector_message_from_view(
     name_len = len(name_bytes)
     vector_len = vector.nbytes
 
-    frame_len = _FIXED_FRAME_SIZE - 4 + name_len + vector_len
+    frame_len = _FIXED_FRAME_HEADER_LEN - 4 + name_len + vector_len
     _validate_u32("frame_len", frame_len)
 
     header = _HEADER.pack(
@@ -248,7 +240,7 @@ def _byte_view(vector: BufferLike) -> memoryview:
 
 
 def _encode_name(name: str) -> bytes:
-    """Encodes and validates a message name."""
+    """Encodes and validates a frame name."""
     if not isinstance(name, str):
         raise TypeError("name must be a string")
     if len(name) > _MAX_NAME_BYTES or _NAME_PATTERN.fullmatch(name) is None:
@@ -284,6 +276,6 @@ def _validate_vector_len(dimension: int, dtype: DType, vector_len: int) -> None:
 __all__ = [
     "BufferLike",
     "DType",
-    "encode_vector_message",
-    "encode_vector_message_from_iterable",
+    "encode_vector_frame",
+    "encode_vector_frame_from_iterable",
 ]

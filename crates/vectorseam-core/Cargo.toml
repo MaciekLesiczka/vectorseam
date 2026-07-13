@@ -1,10 +1,19 @@
 [package]
 name = "vectorseam-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "Core Rust components for Vectorseam."
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bytes.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
 
 [lib]
 path = "src/lib.rs"
+
+[lints]
+workspace = true

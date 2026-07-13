@@ -1,10 +1,10 @@
 """Client SDK."""
 
-from vectorseam.message import (
+from vectorseam.frame import (
     BufferLike,
     DType,
-    encode_vector_message,
-    encode_vector_message_from_iterable,
+    encode_vector_frame,
+    encode_vector_frame_from_iterable,
 )
 from vectorseam.vector_capture import (
     AdaptiveSampler,
@@ -27,7 +27,7 @@ __all__ = [
     "VectorCaptureProducer",
     "VectorSocketSender",
     "capture_vector",
-    "encode_vector_message",
-    "encode_vector_message_from_iterable",
+    "encode_vector_frame",
+    "encode_vector_frame_from_iterable",
     "get_vector_capture_producer",
 ]

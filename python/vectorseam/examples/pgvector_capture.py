@@ -46,10 +46,12 @@ def capture_demo_vectors() -> list[CaptureResult]:
 def run_example(
     database_url: str,
     *,
-    socket_path: str = "/tmp/vectorseam.sock",
+    host: str = "127.0.0.1",
+    port: int = 7737,
+    socket_path: str | None = None,
 ) -> list[tuple[int, str, float]]:
     """Starts the sender, runs one instrumented query, and stops the sender."""
-    sender = VectorSocketSender(socket_path=socket_path)
+    sender = VectorSocketSender(host=host, port=port, socket_path=socket_path)
     sender.start()
     try:
         with psycopg.connect(database_url) as conn:

@@ -1,0 +1,16 @@
+use anyhow::Result;
+use clap::Parser;
+use tracing_subscriber::EnvFilter;
+
+use vectorseam_collector::{Config, run};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    run(Config::parse()).await
+}

@@ -6,7 +6,7 @@ collector communication, or IPC transport.
 
 The primary capture path expects already-packed little-endian vector data.
 Sampling happens before marshalling. Sampled vectors are marshalled into the
-immutable ``bytes`` frames returned by ``encode_vector_message`` and stored in
+immutable ``bytes`` frames returned by ``encode_vector_frame`` and stored in
 a memory-bounded queue. The queue is bounded by total queued bytes; when a
 frame would exceed capacity, capture drops it. ``VectorCaptureProducer`` is
 thread-safe; queue state is protected by an OS-level mutex. Use
@@ -25,7 +25,7 @@ from typing import Callable, Protocol
 
 import numpy
 
-from vectorseam.message import BufferLike, DType, encode_vector_message
+from vectorseam.frame import BufferLike, DType, encode_vector_frame
 
 _DEFAULT_MAX_QUEUE_BYTES = 16 * 1024 * 1024
 _RATE_BUCKET_SECONDS = 5.0
@@ -315,12 +315,10 @@ class VectorCaptureProducer:
 
         Args:
             name: Client-defined cohort name. Must be 1 to 8
-                '/'-separated segments; each segment must be either
-                [a-z0-9][a-z0-9_-]* or key=value where key and value
-                independently match that same plain segment rule; each segment
-                must be 1 to 63 bytes including '=' and the whole name must be
-                at most 255 bytes. Pair keys `window`, `part`, and `cohorts`
-                are reserved.
+                '/'-separated segments; each segment must be 1 to 63 ASCII
+                bytes containing only letters, digits, `.`, `_`, `-`, or `=`
+                and the whole name must be at most 255 bytes. Segments `.`
+                and `..`, and segments starting with `window=`, are reserved.
             vector: Already-packed little-endian vector bytes.
             dimension: Number of vector elements.
             dtype: Element dtype of the packed vector bytes.
@@ -336,7 +334,7 @@ class VectorCaptureProducer:
         if not self._sampler.should_sample(name):
             return CaptureResult.NOT_SAMPLED
 
-        frame = encode_vector_message(name, dtype, dimension, vector)
+        frame = encode_vector_frame(name, dtype, dimension, vector)
         frame_bytes = len(frame)
 
         with self._lock:
@@ -419,11 +417,10 @@ def capture_vector(
 
     Args:
         name: Client-defined cohort name. Must be 1 to 8 '/'-separated
-            segments; each segment must be either [a-z0-9][a-z0-9_-]* or
-            key=value where key and value independently match that same plain
-            segment rule; each segment must be 1 to 63 bytes including '='
-            and the whole name must be at most 255 bytes. Pair keys `window`,
-            `part`, and `cohorts` are reserved.
+            segments; each segment must be 1 to 63 ASCII bytes containing
+            only letters, digits, `.`, `_`, `-`, or `=` and the whole name
+            must be at most 255 bytes. Segments `.` and `..`, and segments
+            starting with `window=`, are reserved.
         vector: One-dimensional NumPy array or already-packed little-endian
             vector bytes.
         dimension: Number of vector elements. Required for non-NumPy buffers.

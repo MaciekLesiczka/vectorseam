@@ -7,12 +7,26 @@ on:
       - master
 
 jobs:
-  rust:
-    name: Rust
+  rust-stable:
+    name: Rust Stable
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: make build-rust
+      - run: make lint-rust
+      - run: make doc-rust
+      - run: make test-rust
+
+  rust-msrv:
+    name: Rust MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - run: make build-rust
       - run: make test-rust
 
   python:
