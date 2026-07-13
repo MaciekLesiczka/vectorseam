@@ -24,6 +24,7 @@ pub(crate) struct CollectorCounters {
     pub(crate) flushed_parts: AtomicU64,
     pub(crate) flush_failures: AtomicU64,
     pub(crate) connection_errors: AtomicU64,
+    pub(crate) idle_connection_timeouts: AtomicU64,
     pending_cohort_drops: Mutex<HashMap<CohortName, u64>>,
 }
 
@@ -85,6 +86,7 @@ impl CollectorCounters {
             flushed_parts: self.flushed_parts.load(Ordering::Relaxed),
             flush_failures: self.flush_failures.load(Ordering::Relaxed),
             connection_errors: self.connection_errors.load(Ordering::Relaxed),
+            idle_connection_timeouts: self.idle_connection_timeouts.load(Ordering::Relaxed),
         }
     }
 }
@@ -103,6 +105,7 @@ struct CounterSnapshot {
     flushed_parts: u64,
     flush_failures: u64,
     connection_errors: u64,
+    idle_connection_timeouts: u64,
 }
 
 pub(crate) async fn summary_loop(
@@ -127,6 +130,7 @@ pub(crate) async fn summary_loop(
                     flushed_parts = snapshot.flushed_parts,
                     flush_failures = snapshot.flush_failures,
                     connection_errors = snapshot.connection_errors,
+                    idle_connection_timeouts = snapshot.idle_connection_timeouts,
                     "collector summary"
                 );
             }

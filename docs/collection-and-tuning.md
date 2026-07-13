@@ -145,7 +145,8 @@ readers.
   writer.
 - Concurrent client connections are bounded by configuration. When the limit
   is reached, the listener waits for an existing connection task to finish
-  before accepting more.
+  before accepting more. Connections also have an idle read timeout so dead
+  peers cannot hold slots forever.
 - TCP is the default production listener. A Unix-domain socket can be selected
   explicitly for local same-host use; both listener types share the same frame
   parsing, validation, buffering, and flushing path.
@@ -186,15 +187,17 @@ readers.
 
 Default sizing assumes one collector may serve up to 1024 application pods,
 with each pod sending roughly one sampled frame per second. The connection cap
-is 1024 and the reader-to-writer channel capacity is 2048, giving roughly one
-extra second of full-rate burst absorption. The default max frame size is 32
-KiB, enough for a 2048-dimensional F64 vector plus protocol and cohort-name
-overhead without making oversized streams cheap; a full default handoff
-channel therefore accounts for about 64 MiB of the global budget. The default
-per-cohort buffer is 32 MiB, so hot cohorts spill early instead of
-monopolizing memory. The default global budget is 256 MiB, a reasonable
-minimum for a production sidecar while still leaving room for queued frames,
-multiple cohorts, and the fixed flush reserve.
+is 2048, leaving headroom for reconnects while stale half-open connections are
+reaped by the default 300-second idle read timeout. The reader-to-writer
+channel capacity is 2048, giving roughly two seconds of full-rate burst
+absorption. The default max frame size is 32 KiB, enough for a
+2048-dimensional F64 vector plus protocol and cohort-name overhead without
+making oversized streams cheap; a full default handoff channel therefore
+accounts for about 64 MiB of the global budget. The default per-cohort buffer
+is 32 MiB, so hot cohorts spill early instead of monopolizing memory. The
+default global budget is 256 MiB, a reasonable minimum for a production
+sidecar while still leaving room for queued frames, multiple cohorts, and the
+fixed flush reserve.
 
 ## Tuner requirements (consumer contract)
 

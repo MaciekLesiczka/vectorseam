@@ -12,7 +12,8 @@ const DEFAULT_PER_COHORT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_GLOBAL_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE_BYTES: usize = 32 * 1024;
 const DEFAULT_CHANNEL_CAPACITY: usize = 2048;
-const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+const DEFAULT_MAX_CONNECTIONS: usize = 2048;
+const DEFAULT_IDLE_TIMEOUT_SECONDS: u64 = 300;
 const DEFAULT_PUT_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7737";
 
@@ -95,6 +96,13 @@ pub struct Config {
         default_value_t = DEFAULT_MAX_CONNECTIONS
     )]
     pub max_connections: usize,
+    /// Maximum idle time while waiting for frame bytes on one connection.
+    #[arg(
+        long = "idle-timeout-seconds",
+        env = "VECTORSEAM_IDLE_TIMEOUT_SECONDS",
+        default_value_t = DEFAULT_IDLE_TIMEOUT_SECONDS
+    )]
+    pub idle_timeout_seconds: u64,
     /// Object-store PUT timeout in seconds.
     #[arg(
         long = "put-timeout-seconds",
@@ -108,6 +116,7 @@ pub struct Config {
 pub(crate) struct ReaderConfig {
     pub(crate) max_frame_size: usize,
     pub(crate) live_memory_bytes: usize,
+    pub(crate) idle_timeout: Duration,
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +163,9 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     if config.max_connections == 0 {
         return Err(anyhow!("max connections must be greater than zero"));
     }
+    if config.idle_timeout_seconds == 0 {
+        return Err(anyhow!("idle timeout seconds must be greater than zero"));
+    }
     if config.put_timeout_seconds == 0 {
         return Err(anyhow!("put timeout seconds must be greater than zero"));
     }
@@ -188,6 +200,7 @@ mod tests {
             max_frame_size: DEFAULT_MAX_FRAME_SIZE_BYTES,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            idle_timeout_seconds: DEFAULT_IDLE_TIMEOUT_SECONDS,
             put_timeout_seconds: DEFAULT_PUT_TIMEOUT_SECONDS,
         }
     }
@@ -213,5 +226,15 @@ mod tests {
         let error = validate_config(&config).unwrap_err();
 
         assert!(error.to_string().contains("global memory cap"));
+    }
+
+    #[test]
+    fn rejects_zero_idle_timeout() {
+        let mut config = valid_config();
+        config.idle_timeout_seconds = 0;
+
+        let error = validate_config(&config).unwrap_err();
+
+        assert!(error.to_string().contains("idle timeout"));
     }
 }

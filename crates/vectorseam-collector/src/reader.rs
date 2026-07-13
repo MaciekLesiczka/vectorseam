@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -34,9 +35,26 @@ pub(crate) async fn handle_connection<S>(
 {
     loop {
         let mut len_buf = [0_u8; 4];
-        match read_exact_or_shutdown(&mut stream, &mut len_buf, &mut shutdown).await {
+        match read_exact_or_shutdown(
+            &mut stream,
+            &mut len_buf,
+            &mut shutdown,
+            config.idle_timeout,
+        )
+        .await
+        {
             ReadOutcome::Read => {}
             ReadOutcome::Closed | ReadOutcome::Shutdown => return,
+            ReadOutcome::IdleTimeout => {
+                counters
+                    .idle_connection_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    idle_timeout_seconds = config.idle_timeout.as_secs_f64(),
+                    "closing idle connection while waiting for frame length"
+                );
+                return;
+            }
             ReadOutcome::Error(error) => {
                 counters.connection_errors.fetch_add(1, Ordering::Relaxed);
                 debug!(%error, "connection read failed");
@@ -67,9 +85,26 @@ pub(crate) async fn handle_connection<S>(
 
         let mut frame = vec![0_u8; frame_total_len];
         frame[0..4].copy_from_slice(&len_buf);
-        match read_exact_or_shutdown(&mut stream, &mut frame[4..], &mut shutdown).await {
+        match read_exact_or_shutdown(
+            &mut stream,
+            &mut frame[4..],
+            &mut shutdown,
+            config.idle_timeout,
+        )
+        .await
+        {
             ReadOutcome::Read => {}
             ReadOutcome::Closed | ReadOutcome::Shutdown => return,
+            ReadOutcome::IdleTimeout => {
+                counters
+                    .idle_connection_timeouts
+                    .fetch_add(1, Ordering::Relaxed);
+                debug!(
+                    idle_timeout_seconds = config.idle_timeout.as_secs_f64(),
+                    "closing idle connection while waiting for frame body"
+                );
+                return;
+            }
             ReadOutcome::Error(error) => {
                 counters.connection_errors.fetch_add(1, Ordering::Relaxed);
                 debug!(%error, "connection frame read failed");
@@ -138,6 +173,7 @@ enum ReadOutcome {
     Read,
     Closed,
     Shutdown,
+    IdleTimeout,
     Error(io::Error),
 }
 
@@ -145,14 +181,15 @@ async fn read_exact_or_shutdown<S>(
     stream: &mut S,
     buffer: &mut [u8],
     shutdown: &mut watch::Receiver<bool>,
+    idle_timeout: Duration,
 ) -> ReadOutcome
 where
     S: AsyncRead + Unpin,
 {
     // Dropping read_exact can abandon a partially read frame. That is
-    // intentional only for shutdown: collection is best effort, and the
-    // simpler cancellation path is preferable to finishing every in-progress
-    // connection while the daemon is stopping.
+    // intentional for shutdown and idle timeout: collection is best effort,
+    // and closing a stalled connection is preferable to letting dead peers
+    // hold connection slots forever.
     tokio::select! {
         result = stream.read_exact(buffer) => {
             match result {
@@ -162,5 +199,42 @@ where
             }
         }
         _ = shutdown.changed() => ReadOutcome::Shutdown,
+        _ = tokio::time::sleep(idle_timeout) => ReadOutcome::IdleTimeout,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn idle_connection_timeout_closes_reader_and_counts() {
+        let (stream, _peer) = duplex(64);
+        let (tx, _rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let counters = Arc::new(CollectorCounters::default());
+        let memory = Arc::new(MemoryTracker::default());
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle_connection(
+                stream,
+                tx,
+                counters.clone(),
+                memory,
+                ReaderConfig {
+                    max_frame_size: 32 * 1024,
+                    live_memory_bytes: 1024 * 1024,
+                    idle_timeout: Duration::from_millis(10),
+                },
+                shutdown_rx,
+            ),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(counters.idle_connection_timeouts.load(Ordering::Relaxed), 1);
     }
 }

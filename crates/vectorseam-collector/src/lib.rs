@@ -116,6 +116,7 @@ where
     let reader_config = ReaderConfig {
         max_frame_size: config.max_frame_size,
         live_memory_bytes,
+        idle_timeout: Duration::from_secs(config.idle_timeout_seconds),
     };
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -401,6 +402,7 @@ mod tests {
             max_frame_size: 32 * 1024,
             channel_capacity: 16,
             max_connections: 16,
+            idle_timeout_seconds: 300,
             put_timeout_seconds: 60,
         }
     }
