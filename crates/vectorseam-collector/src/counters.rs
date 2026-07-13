@@ -12,6 +12,7 @@ const SUMMARY_INTERVAL_SECONDS: u64 = 60;
 #[derive(Default)]
 pub(crate) struct CollectorCounters {
     pub(crate) connections_accepted: AtomicU64,
+    pub(crate) accept_errors: AtomicU64,
     pub(crate) frames_read: AtomicU64,
     pub(crate) valid_frames_received: AtomicU64,
     pub(crate) invalid_frames: AtomicU64,
@@ -73,6 +74,7 @@ impl CollectorCounters {
     fn snapshot(&self) -> CounterSnapshot {
         CounterSnapshot {
             connections_accepted: self.connections_accepted.load(Ordering::Relaxed),
+            accept_errors: self.accept_errors.load(Ordering::Relaxed),
             frames_read: self.frames_read.load(Ordering::Relaxed),
             valid_frames_received: self.valid_frames_received.load(Ordering::Relaxed),
             invalid_frames: self.invalid_frames.load(Ordering::Relaxed),
@@ -91,6 +93,7 @@ impl CollectorCounters {
 
 struct CounterSnapshot {
     connections_accepted: u64,
+    accept_errors: u64,
     frames_read: u64,
     valid_frames_received: u64,
     invalid_frames: u64,
@@ -115,6 +118,7 @@ pub(crate) async fn summary_loop(
                 let snapshot = counters.snapshot();
                 info!(
                     connections_accepted = snapshot.connections_accepted,
+                    accept_errors = snapshot.accept_errors,
                     frames_read = snapshot.frames_read,
                     valid_frames_received = snapshot.valid_frames_received,
                     invalid_frames = snapshot.invalid_frames,

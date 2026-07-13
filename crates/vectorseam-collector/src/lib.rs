@@ -7,6 +7,7 @@ mod time;
 mod writer;
 
 use std::future::Future;
+use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -27,6 +28,7 @@ use crate::reader::handle_connection;
 use crate::writer::Writer;
 
 const CONNECTION_SHUTDOWN_DRAIN_MS: u64 = 250;
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 const WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const SUMMARY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -59,10 +61,38 @@ pub async fn run_with_store<S>(
 where
     S: Future<Output = ()> + Send,
 {
+    let listener = BoundListener::bind(&config).await?;
+    run_with_listener(config, store, shutdown, listener).await
+}
+
+trait ConnectionListener {
+    fn accept(&self) -> impl Future<Output = io::Result<AcceptedConnection>> + Send;
+    fn cleanup(&self);
+}
+
+impl ConnectionListener for BoundListener {
+    fn accept(&self) -> impl Future<Output = io::Result<AcceptedConnection>> + Send {
+        BoundListener::accept(self)
+    }
+
+    fn cleanup(&self) {
+        BoundListener::cleanup(self);
+    }
+}
+
+async fn run_with_listener<S, L>(
+    config: Config,
+    store: Arc<dyn ObjectStore>,
+    shutdown: S,
+    listener: L,
+) -> Result<()>
+where
+    S: Future<Output = ()> + Send,
+    L: ConnectionListener + Sync,
+{
     validate_config(&config)?;
     let live_memory_bytes = live_memory_bytes(&config)?;
 
-    let listener = BoundListener::bind(&config).await?;
     let counters = Arc::new(CollectorCounters::default());
     let memory = Arc::new(MemoryTracker::default());
     let (writer_tx, writer_rx) = mpsc::channel(config.channel_capacity);
@@ -109,7 +139,13 @@ where
                 break;
             }
             accept_result = listener.accept() => {
-                let connection = accept_result?;
+                let connection = match accept_result {
+                    Ok(connection) => connection,
+                    Err(error) => {
+                        handle_accept_error(error, &counters).await;
+                        continue;
+                    }
+                };
                 counters.connections_accepted.fetch_add(1, Ordering::Relaxed);
                 let task_tx = writer_tx.clone();
                 let task_counters = counters.clone();
@@ -132,11 +168,26 @@ where
     drain_connections(&mut connections, &shutdown_tx).await;
     drop(writer_tx);
 
-    await_task_shutdown(writer_handle, "writer", WRITER_SHUTDOWN_TIMEOUT).await?;
-    await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await?;
-
+    let writer_result = await_task_shutdown(writer_handle, "writer", WRITER_SHUTDOWN_TIMEOUT).await;
+    let summary_result =
+        await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await;
     listener.cleanup();
+
+    writer_result?;
+    summary_result?;
     Ok(())
+}
+
+async fn handle_accept_error(error: io::Error, counters: &CollectorCounters) {
+    counters.accept_errors.fetch_add(1, Ordering::Relaxed);
+    warn!(
+        %error,
+        kind = ?error.kind(),
+        os_error = ?error.raw_os_error(),
+        backoff_ms = ACCEPT_ERROR_BACKOFF.as_millis(),
+        "accept failed"
+    );
+    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
 }
 
 async fn await_task_shutdown(
@@ -255,4 +306,92 @@ async fn shutdown_signal() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use object_store::memory::InMemory;
+
+    #[tokio::test]
+    async fn accept_error_handler_counts_and_returns() {
+        let counters = CollectorCounters::default();
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            handle_accept_error(io::Error::from_raw_os_error(24), &counters),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(counters.accept_errors.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn accept_error_does_not_bypass_shutdown_or_cleanup() {
+        let cleanup_called = Arc::new(AtomicBool::new(false));
+        let accept_calls = Arc::new(AtomicU64::new(0));
+        let listener = FailingListener {
+            cleanup_called: cleanup_called.clone(),
+            accept_calls: accept_calls.clone(),
+        };
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            run_with_listener(
+                test_config(),
+                store,
+                async {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                },
+                listener,
+            ),
+        )
+        .await
+        .unwrap();
+
+        result.unwrap();
+        assert!(accept_calls.load(Ordering::Relaxed) >= 1);
+        assert!(cleanup_called.load(Ordering::Relaxed));
+    }
+
+    struct FailingListener {
+        cleanup_called: Arc<AtomicBool>,
+        accept_calls: Arc<AtomicU64>,
+    }
+
+    impl ConnectionListener for FailingListener {
+        fn accept(&self) -> impl Future<Output = io::Result<AcceptedConnection>> + Send {
+            let call = self.accept_calls.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if call == 0 {
+                    return Err(io::Error::from_raw_os_error(24));
+                }
+                std::future::pending().await
+            }
+        }
+
+        fn cleanup(&self) {
+            self.cleanup_called.store(true, Ordering::Relaxed);
+        }
+    }
+
+    fn test_config() -> Config {
+        Config {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            unix_socket: None,
+            storage_root: PathBuf::from("/unused"),
+            window_seconds: 60,
+            per_cohort_memory_bytes: 8 * 1024 * 1024,
+            global_memory_bytes: 64 * 1024 * 1024,
+            max_frame_size: 32 * 1024,
+            channel_capacity: 16,
+            max_connections: 16,
+        }
+    }
 }

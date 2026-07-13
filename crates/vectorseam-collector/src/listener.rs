@@ -38,20 +38,14 @@ impl BoundListener {
         Ok(Self::Tcp(listener))
     }
 
-    pub(crate) async fn accept(&self) -> Result<AcceptedConnection> {
+    pub(crate) async fn accept(&self) -> io::Result<AcceptedConnection> {
         match self {
             Self::Tcp(listener) => {
-                let (stream, _addr) = listener
-                    .accept()
-                    .await
-                    .context("accepting TCP connection")?;
+                let (stream, _addr) = listener.accept().await?;
                 Ok(AcceptedConnection::Tcp(stream))
             }
             Self::Unix { listener, .. } => {
-                let (stream, _addr) = listener
-                    .accept()
-                    .await
-                    .context("accepting unix socket connection")?;
+                let (stream, _addr) = listener.accept().await?;
                 Ok(AcceptedConnection::Unix(stream))
             }
         }
