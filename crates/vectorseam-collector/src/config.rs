@@ -57,10 +57,10 @@ pub struct Config {
         default_value_t = DEFAULT_PER_COHORT_MEMORY_BYTES
     )]
     pub per_cohort_memory_bytes: usize,
-    /// Maximum live frame memory plus serialization reserve.
+    /// Maximum live frame memory plus fixed serialization reserve.
     ///
     /// This includes frames in the reader-to-writer channel, writer cohort
-    /// buffers, and enough reserve to build one contiguous `.vseam` segment.
+    /// buffers, and fixed reserve for one max-size cohort segment.
     #[arg(
         long = "global-memory-bytes",
         env = "VECTORSEAM_GLOBAL_MEMORY_BYTES",
@@ -98,14 +98,14 @@ pub struct Config {
 #[derive(Clone, Copy)]
 pub(crate) struct ReaderConfig {
     pub(crate) max_frame_size: usize,
-    pub(crate) global_memory_bytes: usize,
+    pub(crate) live_memory_bytes: usize,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct WriterConfig {
     pub(crate) window_seconds: u32,
     pub(crate) per_cohort_memory_bytes: usize,
-    pub(crate) global_memory_bytes: usize,
+    pub(crate) live_memory_bytes: usize,
 }
 
 pub(crate) fn validate_config(config: &Config) -> Result<()> {
@@ -132,13 +132,10 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
             "per-cohort memory cap must fit one max-size record"
         ));
     }
-    let min_global_memory_bytes = max_record_bytes
-        .checked_mul(2)
-        .and_then(|bytes| bytes.checked_add(MAX_SEGMENT_OVERHEAD_BYTES))
-        .ok_or_else(|| anyhow!("max frame size is too large"))?;
-    if min_global_memory_bytes > config.global_memory_bytes {
+    let live_memory_bytes = live_memory_bytes(config)?;
+    if max_record_bytes > live_memory_bytes {
         return Err(anyhow!(
-            "global memory cap must fit one max-size record plus serialization reserve"
+            "global memory cap must fit one max-size record after serialization reserve"
         ));
     }
     if config.channel_capacity == 0 {
@@ -148,6 +145,19 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
         return Err(anyhow!("max connections must be greater than zero"));
     }
     Ok(())
+}
+
+pub(crate) fn live_memory_bytes(config: &Config) -> Result<usize> {
+    let flush_reserve = config
+        .per_cohort_memory_bytes
+        .checked_add(MAX_SEGMENT_OVERHEAD_BYTES)
+        .ok_or_else(|| anyhow!("per-cohort memory cap is too large"))?;
+    config
+        .global_memory_bytes
+        .checked_sub(flush_reserve)
+        .ok_or_else(|| {
+            anyhow!("global memory cap must exceed per-cohort cap plus serialization reserve")
+        })
 }
 
 #[cfg(test)]
@@ -184,7 +194,7 @@ mod tests {
         let mut config = valid_config();
         config.max_frame_size = 1024;
         config.per_cohort_memory_bytes = 1024 + 8;
-        config.global_memory_bytes = (1024 + 8) * 2 + MAX_SEGMENT_OVERHEAD_BYTES - 1;
+        config.global_memory_bytes = config.per_cohort_memory_bytes + MAX_SEGMENT_OVERHEAD_BYTES;
 
         let error = validate_config(&config).unwrap_err();
 

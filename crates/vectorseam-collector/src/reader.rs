@@ -111,8 +111,7 @@ pub(crate) async fn handle_connection<S>(
                 continue;
             }
         };
-        let Some(memory_guard) = memory.try_reserve(memory_bytes, config.global_memory_bytes)
-        else {
+        let Some(memory_guard) = memory.try_reserve(memory_bytes, config.live_memory_bytes) else {
             counters.record_memory_drop(&cohort);
             continue;
         };

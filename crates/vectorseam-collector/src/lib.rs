@@ -15,18 +15,20 @@ use anyhow::{Context, Result, anyhow};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use tokio::sync::{mpsc, watch};
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tracing::{debug, error, info, warn};
 
 pub use crate::config::Config;
-use crate::config::{ReaderConfig, WriterConfig, validate_config};
+use crate::config::{ReaderConfig, WriterConfig, live_memory_bytes, validate_config};
 use crate::counters::{CollectorCounters, summary_loop};
 use crate::listener::{AcceptedConnection, BoundListener};
 use crate::memory::MemoryTracker;
 use crate::reader::handle_connection;
-//use crate::writer::Writer;
+use crate::writer::Writer;
 
 const CONNECTION_SHUTDOWN_DRAIN_MS: u64 = 250;
+const WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+const SUMMARY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Runs the collector using a local filesystem object store.
 pub async fn run(config: Config) -> Result<()> {
@@ -41,7 +43,7 @@ pub async fn run(config: Config) -> Result<()> {
             error!(%error, "shutdown signal handler failed");
         }
     })
-        .await
+    .await
 }
 
 /// Runs the collector with a caller-provided object store and shutdown future.
@@ -58,6 +60,7 @@ where
     S: Future<Output = ()> + Send,
 {
     validate_config(&config)?;
+    let live_memory_bytes = live_memory_bytes(&config)?;
 
     let listener = BoundListener::bind(&config).await?;
     let counters = Arc::new(CollectorCounters::default());
@@ -68,15 +71,20 @@ where
     let writer_config = WriterConfig {
         window_seconds: config.window_seconds,
         per_cohort_memory_bytes: config.per_cohort_memory_bytes,
-        global_memory_bytes: config.global_memory_bytes,
+        live_memory_bytes,
     };
-    //let writer = Writer::new(writer_config, store, counters.clone(), memory.clone())?;
-    //let writer_handle = tokio::spawn(writer.run(writer_rx));
+    let writer = Writer::new(writer_config, store, counters.clone(), memory.clone())?;
+    let writer_handle = tokio::spawn(writer.run(writer_rx));
 
-    let summary_handle = tokio::spawn(summary_loop(counters.clone(), shutdown_rx.clone()));
+    let summary_counters = counters.clone();
+    let summary_shutdown = shutdown_rx.clone();
+    let summary_handle = tokio::spawn(async move {
+        summary_loop(summary_counters, summary_shutdown).await;
+        Ok(())
+    });
     let reader_config = ReaderConfig {
         max_frame_size: config.max_frame_size,
-        global_memory_bytes: config.global_memory_bytes,
+        live_memory_bytes,
     };
     let mut connections = JoinSet::new();
     tokio::pin!(shutdown);
@@ -124,16 +132,37 @@ where
     drain_connections(&mut connections, &shutdown_tx).await;
     drop(writer_tx);
 
-    // writer_handle
-    //     .await
-    //     .map_err(|error| anyhow!("writer task failed: {error}"))??;
-
-    summary_handle
-        .await
-        .map_err(|error| anyhow!("summary task failed: {error}"))?;
+    await_task_shutdown(writer_handle, "writer", WRITER_SHUTDOWN_TIMEOUT).await?;
+    await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await?;
 
     listener.cleanup();
     Ok(())
+}
+
+async fn await_task_shutdown(
+    mut handle: JoinHandle<Result<()>>,
+    task_name: &'static str,
+    timeout: Duration,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(joined) => joined.map_err(|error| anyhow!("{task_name} task failed: {error}"))?,
+        Err(_elapsed) => {
+            error!(
+                task = task_name,
+                timeout_seconds = timeout.as_secs_f64(),
+                "task shutdown timed out; aborting task"
+            );
+            handle.abort();
+            match handle.await {
+                Ok(result) => result,
+                Err(error) if error.is_cancelled() => {
+                    warn!(task = task_name, "task aborted after shutdown timeout");
+                    Ok(())
+                }
+                Err(error) => Err(anyhow!("{task_name} task failed after abort: {error}")),
+            }
+        }
+    }
 }
 
 fn spawn_connection(

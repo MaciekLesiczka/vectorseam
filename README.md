@@ -26,7 +26,7 @@ import psycopg
 
 from vectorseam import VectorSocketSender, capture_vector
 
-sender = VectorSocketSender(socket_path="/tmp/vectorseam.sock")
+sender = VectorSocketSender(host="vectorseam-collector.default.svc", port=7737)
 sender.start()
 
 try:
@@ -62,10 +62,12 @@ make test
 
 The Python SDK can capture vectors into a byte-bounded producer queue and send
 marshalled frames with `VectorSocketSender`. The sender uses a daemon background
-thread and Unix-domain `SOCK_STREAM` socket, micro-batches with
+thread and a TCP stream by default, micro-batches with
 `flush_interval_seconds` and `max_batch_bytes`, and is best-effort: failed
 sends drop the current batch and close the connection. Sends are bounded by
-`send_timeout_seconds`. `max_batch_bytes` is a target size, frames are never
-split, and there is no TCP fallback, ACK, retry, or durable spooling yet.
+`send_timeout_seconds`. It supports two connection modes: TCP with `host` and
+`port`, or Unix-domain socket with `socket_path`. `max_batch_bytes` is a target
+size, frames are never split, and there is no ACK, retry, or durable spooling
+yet.
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
