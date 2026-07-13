@@ -164,6 +164,16 @@ readers.
   exhausted. More sophisticated concurrent or streaming flushes are
   deliberately out of scope for the MVP; simple, tight resource accounting is
   preferred over higher flush throughput.
+- Memory accounting is intentionally based on buffered record payload bytes:
+  `frame.len() + 8` for the receive timestamp. It does not count Rust
+  container overhead such as `BufferedRecord`, `Bytes`, `MemoryGuard`,
+  `Vec` capacity slack, `CohortName`, or Tokio channel slot metadata. For
+  expected vector frames around 3-16 KiB, this overhead is small, roughly
+  1-2%. A hostile stream of minimum-size valid frames can make resident memory
+  substantially higher than the configured byte budget, roughly 2.5x in the
+  worst case. This MVP accepts that tradeoff to keep hot-path accounting
+  simple; the frame-size cap, channel cap, per-cohort cap, and connection cap
+  still bound growth.
 - Flush failures (storage errors or PUT timeouts) are logged and counted; the
   collector keeps running. Losing samples is acceptable, crashing the sidecar
   is not.
