@@ -105,7 +105,8 @@ where
         put_timeout: Duration::from_secs(config.put_timeout_seconds),
     };
     let writer = Writer::new(writer_config, store, counters.clone(), memory.clone())?;
-    let writer_handle = tokio::spawn(writer.run(writer_rx));
+    let mut writer_handle = tokio::spawn(writer.run(writer_rx));
+    let mut writer_result = None;
 
     let summary_counters = counters.clone();
     let summary_shutdown = shutdown_rx.clone();
@@ -132,6 +133,14 @@ where
                 joined = connections.join_next() => {
                     handle_connection_join(joined);
                 }
+                joined = &mut writer_handle => {
+                    let result = writer_runtime_result(joined);
+                    if let Err(error) = &result {
+                        error!(%error, "writer task stopped; shutting down collector");
+                    }
+                    writer_result = Some(result);
+                    break;
+                }
             }
             continue;
         }
@@ -139,6 +148,14 @@ where
         tokio::select! {
             _ = &mut shutdown => {
                 info!("shutdown requested");
+                break;
+            }
+            joined = &mut writer_handle => {
+                let result = writer_runtime_result(joined);
+                if let Err(error) = &result {
+                    error!(%error, "writer task stopped; shutting down collector");
+                }
+                writer_result = Some(result);
                 break;
             }
             accept_result = listener.accept() => {
@@ -172,7 +189,10 @@ where
     drain_connections(&mut connections, &shutdown_tx).await;
     drop(writer_tx);
 
-    let writer_result = await_task_shutdown(writer_handle, "writer", WRITER_SHUTDOWN_TIMEOUT).await;
+    let writer_result = match writer_result {
+        Some(result) => result,
+        None => await_task_shutdown(writer_handle, "writer", WRITER_SHUTDOWN_TIMEOUT).await,
+    };
     let summary_result =
         await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await;
     listener.cleanup();
@@ -180,6 +200,14 @@ where
     writer_result?;
     summary_result?;
     Ok(())
+}
+
+fn writer_runtime_result(joined: Result<Result<()>, JoinError>) -> Result<()> {
+    match joined {
+        Ok(Ok(())) => Err(anyhow!("writer task exited unexpectedly")),
+        Ok(Err(error)) => Err(error.context("writer task failed")),
+        Err(error) => Err(anyhow!("writer task failed: {error}")),
+    }
 }
 
 async fn handle_accept_error(error: io::Error, counters: &CollectorCounters) {

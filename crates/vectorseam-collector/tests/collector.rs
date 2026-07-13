@@ -1,11 +1,19 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use object_store::ObjectStore;
+use async_trait::async_trait;
+use futures_util::stream::BoxStream;
 use object_store::local::LocalFileSystem;
+use object_store::memory::InMemory;
+use object_store::path::Path as ObjectPath;
+use object_store::{
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as StoreResult,
+};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
@@ -154,6 +162,38 @@ async fn graceful_shutdown_flushes_partial_window() {
             .sum::<u64>(),
         frames.len() as u64
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn writer_failure_stops_collector() {
+    let storage_root = tempfile::tempdir().unwrap();
+    let addr = free_tcp_addr();
+    let config = Config {
+        listen: addr,
+        unix_socket: None,
+        storage_root: storage_root.path().to_path_buf(),
+        window_seconds: 1,
+        per_cohort_memory_bytes: 8 * 1024 * 1024,
+        global_memory_bytes: 64 * 1024 * 1024,
+        max_frame_size: 32 * 1024,
+        channel_capacity: 4_096,
+        max_connections: 1_024,
+        idle_timeout_seconds: 300,
+        put_timeout_seconds: 60,
+    };
+    let store: Arc<dyn ObjectStore> = Arc::new(PanicPutStore::default());
+    let task = tokio::spawn(run_with_store(config, store, std::future::pending::<()>()));
+
+    wait_for_tcp(addr).await;
+    send_frames(addr, &[frame("prod", 1)]).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    let error = result.unwrap_err();
+
+    assert!(error.to_string().contains("writer task failed"));
 }
 
 struct CollectorHarness {
@@ -333,4 +373,63 @@ fn relative_key(root: &Path, path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/")
+}
+
+#[derive(Debug, Default)]
+struct PanicPutStore {
+    inner: InMemory,
+}
+
+impl fmt::Display for PanicPutStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PanicPutStore")
+    }
+}
+
+#[async_trait]
+impl ObjectStore for PanicPutStore {
+    async fn put_opts(
+        &self,
+        _location: &ObjectPath,
+        _payload: PutPayload,
+        _opts: PutOptions,
+    ) -> StoreResult<PutResult> {
+        panic!("intentional test object-store panic")
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjectPath,
+        opts: PutMultipartOptions,
+    ) -> StoreResult<Box<dyn MultipartUpload>> {
+        self.inner.put_multipart_opts(location, opts).await
+    }
+
+    async fn get_opts(&self, location: &ObjectPath, options: GetOptions) -> StoreResult<GetResult> {
+        self.inner.get_opts(location, options).await
+    }
+
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, StoreResult<ObjectPath>>,
+    ) -> BoxStream<'static, StoreResult<ObjectPath>> {
+        self.inner.delete_stream(locations)
+    }
+
+    fn list(&self, prefix: Option<&ObjectPath>) -> BoxStream<'static, StoreResult<ObjectMeta>> {
+        self.inner.list(prefix)
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&ObjectPath>) -> StoreResult<ListResult> {
+        self.inner.list_with_delimiter(prefix).await
+    }
+
+    async fn copy_opts(
+        &self,
+        from: &ObjectPath,
+        to: &ObjectPath,
+        options: CopyOptions,
+    ) -> StoreResult<()> {
+        self.inner.copy_opts(from, to, options).await
+    }
 }
