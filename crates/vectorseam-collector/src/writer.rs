@@ -256,8 +256,13 @@ impl Writer {
         let segment_bytes = segment.len();
 
         let path = Path::from(key.clone());
-        match self.store.put(&path, PutPayload::from(segment)).await {
-            Ok(_result) => {
+        match tokio::time::timeout(
+            self.config.put_timeout,
+            self.store.put(&path, PutPayload::from(segment)),
+        )
+        .await
+        {
+            Ok(Ok(_result)) => {
                 self.counters.flushed_parts.fetch_add(1, Ordering::Relaxed);
                 info!(
                     cohort = %header.cohort,
@@ -271,9 +276,18 @@ impl Writer {
                     "flushed segment"
                 );
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 self.counters.flush_failures.fetch_add(1, Ordering::Relaxed);
                 error!(cohort = %header.cohort, key = %key, %error, "failed to put segment");
+            }
+            Err(_elapsed) => {
+                self.counters.flush_failures.fetch_add(1, Ordering::Relaxed);
+                error!(
+                    cohort = %header.cohort,
+                    key = %key,
+                    timeout_seconds = self.config.put_timeout.as_secs_f64(),
+                    "timed out putting segment"
+                );
             }
         }
     }
@@ -300,8 +314,17 @@ impl Writer {
 mod tests {
     use super::*;
 
+    use std::fmt;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use futures_util::stream::BoxStream;
     use object_store::ObjectStoreExt;
     use object_store::memory::InMemory;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        PutMultipartOptions, PutOptions, PutResult, Result as StoreResult,
+    };
     use vectorseam_core::frame::{FIXED_FRAME_HEADER_LEN, FRAME_MAGIC, FRAME_VERSION};
     use vectorseam_core::segment::{Segment, read_segment};
 
@@ -500,6 +523,50 @@ mod tests {
         assert!(!fixture.writer.states.contains_key(&cohort));
     }
 
+    #[tokio::test]
+    async fn put_timeout_counts_failure_and_releases_memory() {
+        let counters = Arc::new(CollectorCounters::default());
+        let memory = Arc::new(MemoryTracker::default());
+        let store: Arc<dyn ObjectStore> = Arc::new(HangingPutStore::default());
+        let mut writer = Writer {
+            config: WriterConfig {
+                window_seconds: TEST_WINDOW_SECONDS,
+                per_cohort_memory_bytes: 8 * 1024,
+                live_memory_bytes: TEST_LIVE_LIMIT,
+                put_timeout: Duration::from_millis(10),
+            },
+            store,
+            counters: counters.clone(),
+            memory: memory.clone(),
+            states: HashMap::new(),
+            current_window_start: TEST_WINDOW_START,
+        };
+        let cohort = CohortName::try_from("prod").unwrap();
+
+        writer
+            .handle_frame(event(
+                &memory,
+                TEST_LIVE_LIMIT,
+                "prod",
+                100,
+                frame("prod", 1),
+            ))
+            .await;
+
+        let flushed = tokio::time::timeout(
+            Duration::from_secs(1),
+            writer.flush_cohort(&cohort, TEST_WINDOW_START),
+        )
+        .await
+        .unwrap();
+
+        assert!(flushed);
+        assert_eq!(counters.flush_failures.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.flushed_parts.load(Ordering::Relaxed), 0);
+        assert_eq!(memory.used_bytes(), 0);
+        assert!(!writer.states.contains_key(&cohort));
+    }
+
     impl WriterFixture {
         fn event(&self, cohort: &str, receive_time: u64, frame: Bytes) -> FrameEvent {
             event(
@@ -526,6 +593,7 @@ mod tests {
                 window_seconds: TEST_WINDOW_SECONDS,
                 per_cohort_memory_bytes,
                 live_memory_bytes,
+                put_timeout: Duration::from_secs(60),
             },
             store: object_store,
             counters: counters.clone(),
@@ -607,5 +675,59 @@ mod tests {
         out.extend_from_slice(name_bytes);
         out.extend_from_slice(&vector);
         Bytes::from(out)
+    }
+
+    #[derive(Debug, Default)]
+    struct HangingPutStore {
+        inner: InMemory,
+    }
+
+    impl fmt::Display for HangingPutStore {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("HangingPutStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for HangingPutStore {
+        async fn put_opts(
+            &self,
+            _location: &Path,
+            _payload: PutPayload,
+            _opts: PutOptions,
+        ) -> StoreResult<PutResult> {
+            std::future::pending().await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOptions,
+        ) -> StoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(&self, location: &Path, options: GetOptions) -> StoreResult<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, StoreResult<Path>>,
+        ) -> BoxStream<'static, StoreResult<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, StoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> StoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> StoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
     }
 }

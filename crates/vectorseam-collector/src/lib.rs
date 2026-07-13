@@ -102,6 +102,7 @@ where
         window_seconds: config.window_seconds,
         per_cohort_memory_bytes: config.per_cohort_memory_bytes,
         live_memory_bytes,
+        put_timeout: Duration::from_secs(config.put_timeout_seconds),
     };
     let writer = Writer::new(writer_config, store, counters.clone(), memory.clone())?;
     let writer_handle = tokio::spawn(writer.run(writer_rx));
@@ -392,6 +393,7 @@ mod tests {
             max_frame_size: 32 * 1024,
             channel_capacity: 16,
             max_connections: 16,
+            put_timeout_seconds: 60,
         }
     }
 }

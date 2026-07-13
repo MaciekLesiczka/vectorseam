@@ -198,6 +198,7 @@ impl CollectorHarness {
             max_frame_size,
             channel_capacity: 4_096,
             max_connections: 1_024,
+            put_timeout_seconds: 60,
         };
         let store: Arc<dyn ObjectStore> =
             Arc::new(LocalFileSystem::new_with_prefix(storage_root.path()).unwrap());

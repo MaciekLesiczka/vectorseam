@@ -162,8 +162,9 @@ readers.
   exhausted. More sophisticated concurrent or streaming flushes are
   deliberately out of scope for the MVP; simple, tight resource accounting is
   preferred over higher flush throughput.
-- Flush failures (storage errors) are logged and counted; the collector
-  keeps running. Losing samples is acceptable, crashing the sidecar is not.
+- Flush failures (storage errors or PUT timeouts) are logged and counted; the
+  collector keeps running. Losing samples is acceptable, crashing the sidecar
+  is not.
 - Graceful shutdown (SIGTERM/SIGINT): stop accepting, drain connection tasks,
   close the writer channel, flush all open buffers, and exit. Shutdown waits
   with finite deadlines and aborts remaining tasks as a forced fallback.

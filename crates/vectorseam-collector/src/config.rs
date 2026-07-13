@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -12,6 +13,7 @@ const DEFAULT_GLOBAL_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_MAX_FRAME_SIZE_BYTES: usize = 32 * 1024;
 const DEFAULT_CHANNEL_CAPACITY: usize = 2048;
 const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+const DEFAULT_PUT_TIMEOUT_SECONDS: u64 = 60;
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7737";
 
 /// Command-line and environment configuration for the collector.
@@ -93,6 +95,13 @@ pub struct Config {
         default_value_t = DEFAULT_MAX_CONNECTIONS
     )]
     pub max_connections: usize,
+    /// Object-store PUT timeout in seconds.
+    #[arg(
+        long = "put-timeout-seconds",
+        env = "VECTORSEAM_PUT_TIMEOUT_SECONDS",
+        default_value_t = DEFAULT_PUT_TIMEOUT_SECONDS
+    )]
+    pub put_timeout_seconds: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +115,7 @@ pub(crate) struct WriterConfig {
     pub(crate) window_seconds: u32,
     pub(crate) per_cohort_memory_bytes: usize,
     pub(crate) live_memory_bytes: usize,
+    pub(crate) put_timeout: Duration,
 }
 
 pub(crate) fn validate_config(config: &Config) -> Result<()> {
@@ -144,6 +154,9 @@ pub(crate) fn validate_config(config: &Config) -> Result<()> {
     if config.max_connections == 0 {
         return Err(anyhow!("max connections must be greater than zero"));
     }
+    if config.put_timeout_seconds == 0 {
+        return Err(anyhow!("put timeout seconds must be greater than zero"));
+    }
     Ok(())
 }
 
@@ -175,6 +188,7 @@ mod tests {
             max_frame_size: DEFAULT_MAX_FRAME_SIZE_BYTES,
             channel_capacity: DEFAULT_CHANNEL_CAPACITY,
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            put_timeout_seconds: DEFAULT_PUT_TIMEOUT_SECONDS,
         }
     }
 

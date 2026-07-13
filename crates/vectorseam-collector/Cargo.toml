@@ -19,6 +19,8 @@ ulid.workspace = true
 vectorseam-core = { path = "../vectorseam-core" }
 
 [dev-dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
 tempfile.workspace = true
 
 [lib]
