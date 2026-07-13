@@ -126,7 +126,10 @@ pub(crate) async fn handle_connection<S>(
             Err(mpsc::error::TrySendError::Full(event)) => {
                 counters.record_channel_drop(&event.cohort);
             }
-            Err(mpsc::error::TrySendError::Closed(_event)) => return,
+            Err(mpsc::error::TrySendError::Closed(event)) => {
+                counters.record_channel_drop(&event.cohort);
+                return;
+            }
         }
     }
 }

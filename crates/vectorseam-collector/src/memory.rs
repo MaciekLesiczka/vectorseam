@@ -36,16 +36,21 @@ impl MemoryTracker {
 
     fn release(&self, bytes: usize) {
         let mut current = self.used_bytes.load(Ordering::Relaxed);
+        let mut release_bytes = bytes;
+        let mut underflow_logged = false;
         loop {
-            let Some(next) = current.checked_sub(bytes) else {
-                error!(
-                    used_bytes = current,
-                    release_bytes = bytes,
-                    "memory tracker release exceeded reserved bytes"
-                );
-                self.used_bytes.store(0, Ordering::Relaxed);
-                return;
-            };
+            if release_bytes > current {
+                if !underflow_logged {
+                    error!(
+                        used_bytes = current,
+                        release_bytes = bytes,
+                        "memory tracker release exceeded reserved bytes"
+                    );
+                    underflow_logged = true;
+                }
+                release_bytes = current;
+            }
+            let next = current - release_bytes;
 
             match self.used_bytes.compare_exchange_weak(
                 current,
@@ -100,6 +105,16 @@ mod tests {
         let second = tracker.try_reserve(10, 10).unwrap();
         assert_eq!(tracker.used_bytes(), 10);
         drop(second);
+        assert_eq!(tracker.used_bytes(), 0);
+    }
+
+    #[test]
+    fn release_underflow_clamps_without_store_reset() {
+        let tracker = MemoryTracker::default();
+        tracker.used_bytes.store(5, Ordering::Relaxed);
+
+        tracker.release(8);
+
         assert_eq!(tracker.used_bytes(), 0);
     }
 }

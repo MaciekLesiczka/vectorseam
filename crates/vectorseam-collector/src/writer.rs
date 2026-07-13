@@ -93,6 +93,7 @@ impl Writer {
     }
 
     async fn handle_frame(&mut self, event: FrameEvent) {
+        self.advance_to_receive_window(event.receive_time).await;
         self.fold_pending_drops(&event.cohort);
         let record_bytes = event.memory.bytes();
 
@@ -106,6 +107,27 @@ impl Writer {
         }
 
         self.add_record(event, record_bytes);
+    }
+
+    async fn advance_to_receive_window(&mut self, receive_time: u64) {
+        let receive_seconds = receive_time / 1_000_000;
+        let receive_window_start =
+            match aligned_window_start(receive_seconds, self.config.window_seconds) {
+                Ok(window_start) => window_start,
+                Err(error) => {
+                    error!(%error, "failed to compute receive-time window");
+                    return;
+                }
+            };
+
+        if receive_window_start <= self.current_window_start {
+            return;
+        }
+
+        let closing_window = self.current_window_start;
+        self.fold_all_pending_drops();
+        self.flush_all(closing_window).await;
+        self.current_window_start = receive_window_start;
     }
 
     fn add_record(&mut self, event: FrameEvent, record_bytes: usize) {
@@ -441,6 +463,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn receive_time_boundary_advances_window_before_buffering() {
+        let mut fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
+        let old_window_frame = frame("prod", 1);
+        let new_window_frame = frame("prod", 2);
+
+        fixture
+            .writer
+            .handle_frame(fixture.event("prod", 59_000_000, old_window_frame.clone()))
+            .await;
+        fixture
+            .writer
+            .handle_frame(fixture.event("prod", 60_000_000, new_window_frame.clone()))
+            .await;
+
+        assert_eq!(fixture.writer.current_window_start, 60);
+        let old_segments = fixture.segments_for_window("prod", "19700101T0000Z").await;
+        assert_eq!(old_segments.len(), 1);
+        assert_eq!(old_segments[0].header.window_start, 0);
+        assert_eq!(old_segments[0].records[0].frame, old_window_frame);
+
+        fixture.writer.flush_all(60).await;
+        let new_segments = fixture.segments_for_window("prod", "19700101T0001Z").await;
+        assert_eq!(new_segments.len(), 1);
+        assert_eq!(new_segments[0].header.window_start, 60);
+        assert_eq!(new_segments[0].records[0].frame, new_window_frame);
+    }
+
+    #[tokio::test]
     async fn run_flushes_open_buffers_when_channel_closes() {
         let fixture = writer_fixture(8 * 1024, TEST_LIVE_LIMIT);
         let store = fixture.store.clone();
@@ -581,6 +631,10 @@ mod tests {
         async fn segments_for(&self, cohort: &str) -> Vec<Segment> {
             segments_for(&self.store, cohort).await
         }
+
+        async fn segments_for_window(&self, cohort: &str, window: &str) -> Vec<Segment> {
+            segments_for_window(&self.store, cohort, window).await
+        }
     }
 
     fn writer_fixture(per_cohort_memory_bytes: usize, live_memory_bytes: usize) -> WriterFixture {
@@ -628,7 +682,11 @@ mod tests {
     }
 
     async fn segments_for(store: &InMemory, cohort: &str) -> Vec<Segment> {
-        let prefix = Path::from(format!("cohorts/{cohort}/window=19700101T0000Z"));
+        segments_for_window(store, cohort, "19700101T0000Z").await
+    }
+
+    async fn segments_for_window(store: &InMemory, cohort: &str, window: &str) -> Vec<Segment> {
+        let prefix = Path::from(format!("cohorts/{cohort}/window={window}"));
         let mut objects = store
             .list_with_delimiter(Some(&prefix))
             .await

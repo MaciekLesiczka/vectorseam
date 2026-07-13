@@ -149,8 +149,10 @@ readers.
 - TCP is the default production listener. A Unix-domain socket can be selected
   explicitly for local same-host use; both listener types share the same frame
   parsing, validation, buffering, and flushing path.
-- Writer owns per-cohort buffers for the current window. At window close,
-  every non-empty buffer flushes as a part.
+- Writer owns per-cohort buffers for the current receive-time window. Before
+  buffering a record whose receive timestamp belongs to a later aligned
+  window, it flushes the previous window; at window close, every non-empty
+  buffer flushes as a part.
 - Memory budget: a per-cohort cap and a global cap. The collector reserves a
   fixed slice of the global cap for one serialized flush buffer:
   `per_cohort_memory_bytes + MAX_SEGMENT_OVERHEAD_BYTES`. The remaining live

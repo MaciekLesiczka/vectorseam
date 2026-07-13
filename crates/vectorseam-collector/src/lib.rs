@@ -121,6 +121,7 @@ where
     tokio::pin!(shutdown);
 
     loop {
+        reap_finished_connections(&mut connections);
         if connections.len() >= config.max_connections {
             tokio::select! {
                 _ = &mut shutdown => {
@@ -162,6 +163,7 @@ where
                     task_config,
                     task_shutdown,
                 );
+                reap_finished_connections(&mut connections);
             }
         }
     }
@@ -237,6 +239,12 @@ fn spawn_connection(
                 handle_connection(stream, tx, counters, memory, config, shutdown).await;
             });
         }
+    }
+}
+
+fn reap_finished_connections(connections: &mut JoinSet<()>) {
+    while let Some(joined) = connections.try_join_next() {
+        handle_connection_join(Some(joined));
     }
 }
 
