@@ -35,22 +35,43 @@ window `W` (e.g. 24 h).
 The tuner is a single long-running process (exactly one instance per storage
 root; coordination between instances is a non-goal). Every
 `calibration.interval` it runs one **round** over all configured cohorts,
-sequentially. A round that is still running when the next tick fires causes
-that tick to be skipped (single-flight; no catch-up backlog — the rolling
-window self-heals).
+sequentially. At most one round runs at a time (single-flight): if a round is
+still running when the next tick fires, that tick is skipped and nothing is
+queued for later.
+
+Skipping ticks is safe because a round is *not* "process the data assigned to
+tick T". Every round does the same two things regardless of when it runs:
+(1) measure whatever in-scope parts have no durable intermediates yet, and
+(2) re-aggregate the entire rolling window from all intermediates. There is
+no per-tick work item that can be missed — anything a skipped tick would have
+measured is still sitting unmeasured in storage, and the next round's diff
+finds it. Ticks therefore control only the *freshness* of the published
+output, never its completeness: after downtime, crashes, or slow rounds, the
+next successful round produces the same result as if nothing had been
+skipped. That is what "the rolling window self-heals" means throughout this
+spec.
 
 Each round, per concrete cohort, has two phases:
 
 **Phase A — measure** (touches the database, produces durable intermediates):
 
-1. Compute `round_end = align(now − close_grace, storage_window)` and the
-   round range `[round_end − W, round_end)`.
+1. Compute `round_end = align(now)` and the round range
+   `[round_end − W, round_end)`. `align(t)` floors a timestamp to the
+   previous storage-window boundary, exactly the collector's
+   `aligned_window_start`: `align(t) = t − (t mod storage.window_seconds)`.
+   Example with 600 s windows: `align(12:07:23) = 12:00:00`, so a round
+   ticking at 12:07:23 with `W = 24h` covers
+   `[previous day 12:00:00, today 12:00:00)`.
 2. List segment parts under `cohorts/<cohort>/window=<ts>/` for every aligned
-   storage window fully inside the round range.
-3. Diff against already-measured parts under `measurements/<cohort>/…`. For
-   each unmeasured part: fetch and parse the `.vseam` part, then for each kept
-   sample run one database transaction that computes exact ground truth and
-   the full ef sweep (§2.5), and finally write the part's `truth` and `sweep`
+   storage window fully inside the round range, plus the collector's window
+   observation markers (§2.4) for the same range, used for coverage
+   accounting.
+3. Diff the listed parts against already-measured parts under
+   `measurements/<cohort>/…`. For each unmeasured part: fetch and parse the
+   `.vseam` part, then for each kept sample run the per-sample database
+   transaction — exact ground truth plus one ANN query per value of the
+   `calibration.ef_search` grid (required config, §2.3); the full SQL is
+   spelled out in §2.2 — and finally write the part's `truth` and `sweep`
    parquet files (in that order).
 
 **Phase B — aggregate** (pure function of the intermediates, no database):
@@ -87,17 +108,58 @@ identical aggregation results from identical intermediates.
   dtype, dimension mismatch, table smaller than k) are excluded from the
   population and reported as a count. Only dtype `F32` frames are supported.
 
-#### Ground truth
+#### Ground truth and ef sweep — one transaction per sample
 
-For sample vector `q` against the configured index (table/column/key):
+Every measured sample runs exactly one database transaction containing the
+exact ground-truth query followed by one ANN query per value of the
+`calibration.ef_search` grid, ascending. The grid is required configuration
+(§2.3); the published benchmark grid `[10, 20, 40, 60, 80, 100, 150, 200,
+300, 400]` is the recommended starting point. Spelled out in full for an
+index `{table: docs_reddit, key: doc_id, column: embedding, metric: cosine}`
+with `k = 10` and that grid:
 
 ```sql
 BEGIN ISOLATION LEVEL REPEATABLE READ;
-SET LOCAL statement_timeout = <budget.statement_timeout>;
+SET LOCAL statement_timeout = '5s';        -- budget.statement_timeout
+
+-- 1. Exact ground truth: force a sequential scan (brute-force k-NN).
 SET LOCAL enable_indexscan = off;
-SELECT <key>, <column> <=> $q AS distance
-  FROM <table> ORDER BY <column> <=> $q ASC, <key> ASC LIMIT k;
+SELECT "doc_id", "embedding" <=> '[0.011,-0.027,…]'::vector AS distance
+FROM "docs_reddit"
+ORDER BY "embedding" <=> '[0.011,-0.027,…]'::vector ASC, "doc_id" ASC
+LIMIT 10;
+
+-- 2. ANN sweep: same snapshot, index scans back on,
+--    one query per grid value, ascending.
+SET LOCAL enable_indexscan = on;
+
+SET LOCAL hnsw.ef_search = 10;
+SELECT "doc_id" FROM "docs_reddit"
+ORDER BY "embedding" <=> '[0.011,-0.027,…]'::vector ASC
+LIMIT 10;
+
+SET LOCAL hnsw.ef_search = 20;
+SELECT "doc_id" FROM "docs_reddit"
+ORDER BY "embedding" <=> '[0.011,-0.027,…]'::vector ASC
+LIMIT 10;
+
+-- … identically for ef = 40, 60, 80, 100, 150, 200, 300 …
+
+SET LOCAL hnsw.ef_search = 400;
+SELECT "doc_id" FROM "docs_reddit"
+ORDER BY "embedding" <=> '[0.011,-0.027,…]'::vector ASC
+LIMIT 10;
+
+COMMIT;
 ```
+
+Mechanics: identifiers (`table`, `key`, `column`) come from config and are
+always emitted quoted/escaped; the query vector is bound as a pgvector
+parameter (shown inline above only for readability); `SET LOCAL
+hnsw.ef_search` cannot take bind parameters, so the validated integer is
+interpolated as a literal. The ground-truth `ORDER BY` carries the key
+tie-break; the ANN `ORDER BY` must **not** — appending the key would defeat
+the HNSW index scan.
 
 - **Decision — exactness**: exact k-NN is obtained by disabling index scans
   inside the transaction, forcing a sequential scan with top-k sort.
@@ -115,19 +177,6 @@ SELECT <key>, <column> <=> $q AS distance
 - If the table holds fewer than `k` rows the sample fails ("table smaller
   than k"). The recall denominator is never adjusted.
 
-#### ANN sweep
-
-In the **same transaction** (same snapshot), after re-enabling index scans:
-
-```sql
-SET LOCAL enable_indexscan = on;
--- for each ef in calibration.ef_search, ascending:
-SET LOCAL hnsw.ef_search = <ef>;
-SELECT <key> FROM <table> ORDER BY <column> <=> $q ASC LIMIT k;
-```
-
-- The ANN `ORDER BY` is the bare operator expression with **no** key
-  tie-break — appending `key` would defeat the HNSW index scan.
 - **Decision — snapshot semantics**: ground truth and all ef results for one
   sample share one REPEATABLE READ snapshot, so each per-sample recall is
   internally consistent. Across samples and rounds the table drifts and that
@@ -225,10 +274,12 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
 
 #### Rolling window semantics
 
-- Round range is `[round_end − W, round_end)`, half-open, where
-  `round_end = align(now − close_grace, storage_window_seconds)` and
-  `close_grace` (default 30 s) absorbs collector flush latency at window
-  close.
+- Round range is `[round_end − W, round_end)`, half-open, with
+  `round_end = align(now)` — floor to the previous storage-window boundary
+  (§2.1). Examples with 600 s windows and `W = 1h`: a round at 12:07:23 has
+  `round_end = 12:00` and covers exactly the six windows starting 11:00,
+  11:10, … 11:50; a round at precisely 12:00:00 covers the same six — the
+  window `[12:00, 12:10)` is still open and never in scope.
 - **Membership is per storage window, never per record**: a part is in scope
   iff its header satisfies `window_start ≥ round_end − W` and
   `window_start + window_seconds ≤ round_end`. Only fully closed storage
@@ -236,7 +287,10 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
   (the collector guarantees them by construction).
 - **Late-arriving parts** (spills, delayed flushes) missed by one round are
   picked up by the next: every round re-lists all in-scope windows and
-  measures any part it has no intermediates for.
+  measures any part it has no intermediates for. A round that ticks moments
+  after a window closes may list that window mid-flush and see only some of
+  its parts; the remainder is simply measured next round. Observation
+  markers (§2.4) never gate measurement — they only classify coverage.
 - **No-double-count invariant**: aggregation reads intermediates keyed by
   `part_ulid`; a part contributes exactly once per round regardless of how
   often it was listed, re-listed, or re-measured after a crash. Resume never
@@ -284,11 +338,10 @@ startup; runtime changes are a non-goal.
 ```yaml
 calibration:
   interval: 10min                 # round tick
-  ef_search: [10, 20, 40, 60, 80, 100, 150, 200, 300, 400]
+  ef_search: [20, 40, 60, 80, 100, 150, 200, 300, 400]  # REQUIRED: the sweep buckets
   train_fraction: 0.7
   split_seed: 7
   min_samples: 1000
-  close_grace: 30s
 
 storage:
   root: /var/lib/vectorseam       # same object-store root the collector writes
@@ -359,7 +412,10 @@ hard validation stop is worth more trust than optional advice.
   valid cohort-name prefix per the grammar
 - `0 < percentile < 1`, `0 < value ≤ 1`, `k ≥ 1`, `window ≥
   storage.window_seconds`
-- ef grid non-empty, strictly increasing, `min(grid) ≥ k` (pgvector caps
+- ef grid present and non-empty (**required, no default** — a default grid
+  would fail the `min(grid) ≥ k` rule below for larger `k`, and a surprise
+  interplay between two defaults is worse than one explicit field), strictly
+  increasing, `min(grid) ≥ k` for every configured target (pgvector caps
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
 - `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
@@ -377,6 +433,7 @@ prefixes that cannot collide with cohort paths (a cohort named
 
 ```
 cohorts/<cohort>/window=<ts>/part-<ulid>.vseam            # collector (input)
+windows/window=<ts>/observed-<ulid>.json                  # collector (input): observation markers
 measurements/<cohort>/window=<ts>/part-<ulid>.truth.parquet
 measurements/<cohort>/window=<ts>/part-<ulid>.sweep.parquet
 calibrations/<cohort>/round-<ts>.json                     # immutable history
@@ -387,6 +444,72 @@ calibrations/<cohort>/latest.json                         # mutable pointer copy
 `round_end`. `round-<ts>.json` is written first, then the identical bytes
 overwrite `latest.json` (single atomic PUT each — the poll target for the
 demo dashboard and, later, the sidecar).
+
+#### Window observation markers (input; required collector addition)
+
+The tuner must distinguish "the collector was up and there was simply no
+traffic" from "the collector was down or started mid-window". Segment parts
+cannot carry that distinction: a zero-traffic window produces no part at all,
+and `first_receive` in a part header cannot separate "listening since 12:00,
+first frame at 12:05" from "started listening at 12:03".
+
+**Decision**: the collector additionally writes one small **observation
+marker** per storage window it fully or partially observed, after all of
+that window's parts are flushed:
+
+```jsonc
+// windows/window=<ts>/observed-<ulid>.json
+{
+  "format_version": 1,
+  "window_start": 1783513800,   // aligned window start, unix seconds UTC
+  "window_seconds": 600,
+  "observed_from_us": ...,      // max(window start, listener start), unix micros
+  "observed_to_us": ...         // min(window end, graceful-shutdown time), unix micros
+}
+```
+
+Collector-side contract (a small, explicit collector change this spec
+depends on):
+
+- Written **after** the window's parts, at window close on the normal path,
+  or at graceful shutdown for the currently open window. One small PUT —
+  atomic on `LocalFileSystem` (`object_store` writes temp + rename) and on
+  S3-style stores.
+- Written **even when zero frames were received** — that is the point.
+- Never overwritten: the ULID suffix follows the part-naming pattern, so a
+  collector restart within one window produces multiple markers whose
+  intervals the tuner unions.
+- A crash writes no marker for the interval observed since the last window
+  close; spill parts flushed before the crash remain. Coverage is therefore
+  underestimated, never overestimated — conservative in the honest
+  direction.
+
+Worked example (600 s windows, collector starts 12:03, first frame 12:05):
+the part has `window_start = 12:00` and `first_receive = 12:05`; the marker
+says `observed_from = 12:03`, `observed_to = 12:10`. The tuner can state:
+samples from 12:03–12:10 are trustworthy, and 12:00–12:03 may be missing
+samples.
+
+Tuner-side use — coverage only, never coordination:
+
+- Per in-scope window slot: `observed_seconds = |union(marker intervals) ∩
+  slot|`. Round metric: `unobserved_time_fraction = 1 − Σ observed_seconds
+  / W`.
+- A slot with a marker but no parts is an **observed zero-traffic** slot; a
+  slot (or part of one) without marker coverage is a **collector gap**.
+- Markers never gate measurement: parts found in an unmarked window are
+  still measured and used — a missing marker (old collector build,
+  pre-deployment history, crash) only raises `unobserved_time_fraction`.
+- Markers deliberately do **not** define `round_end`. Anchoring the round to
+  the wall clock keeps a collector outage visible as growing unobserved
+  time; anchoring to the last marker would silently freeze the window
+  instead. This decision supersedes an earlier `close_grace` heuristic.
+
+Alternative considered and rejected: appending a `window_collection_start`
+field to the segment header. It cannot represent windows with zero parts
+(the common case for outages), and it duplicates per-process information
+into every cohort's parts; the format's `header_len` extensibility remains
+available if a per-part need appears later.
 
 #### Durable intermediates (parquet, zstd)
 
@@ -448,8 +571,13 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
                "measured": 5310,     // rows in compatible sweep intermediates / grid size
                "failed": 12,
                "train": 3717, "test": 1593 },
-  "dropped_frame_fraction": 0.012,   // 1 - sum(record_count)/sum(received_frame_count)
-  "empty_window_fraction": 0.0417,   // in-scope storage-window slots with no parts / total slots
+  "dropped_frame_fraction": 0.012,   // collector-side: 1 - sum(record_count)/sum(received_frame_count)
+  "coverage": {
+    "unobserved_time_fraction": 0.05, // window time not covered by observation markers
+    "windows_in_scope": 144,
+    "windows_observed": 143,          // slots with at least one marker
+    "windows_with_parts": 140
+  },
   "parts_used": 144,
   "incompatible_parts": 0,           // intermediates skipped for config mismatch
   "per_ef": [                        // full-population summary, for the dashboard
@@ -461,9 +589,14 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
 ```
 
 Notes: `dropped_frame_fraction` covers collector-side drops only (SDK
-queue-full drops are invisible downstream). `empty_window_fraction` cannot
-distinguish "no traffic" from "collector down" in the MVP; it is reported as
-defined. Confidence excludes both by requirement.
+queue-full drops are invisible downstream). The `coverage` block comes from
+observation markers (§2.4): a marked slot without parts is observed
+zero-traffic, not a gap; unmarked time — collector down, started mid-window,
+or crashed — counts toward `unobserved_time_fraction`. `samples.failed`
+carries Phase A's per-sample measurement failures (SQL errors, timeouts, bad
+frames). Confidence expresses transferability only and never folds in drops,
+gaps, or failures — they are reported alongside it so the consumer can judge
+both independently.
 
 ### 2.5 Measure phase — normative details
 
@@ -494,8 +627,10 @@ Connections: one pool per distinct `(server, database)` with
 3. Split per §2.2; if `measured < min_samples` publish
    `insufficient_samples` and stop.
 4. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
-5. Compose the round JSON (all counters from part headers and file
-   metadata); PUT `round-<ts>.json`, then `latest.json`.
+5. Compute `dropped_frame_fraction` from part headers and the `coverage`
+   block from observation markers (§2.4).
+6. Compose the round JSON (all counters from part headers, marker intervals,
+   and file metadata); PUT `round-<ts>.json`, then `latest.json`.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
@@ -637,10 +772,13 @@ shuffles are not part of the contract):
   `status = "insufficient_samples"`, `recommended_ef = null`,
   `confidence = null`, sample counts still reported; 1000 measured → a
   recommendation is emitted.
-- **B8 window membership**: storage window 600 s, W = 3600 s,
-  `round_end = 12:00` → exactly the six windows 11:00–11:50 are in scope; a
-  part at 10:50 and one at 12:00 are excluded; with no part in the 11:20
-  slot, `empty_window_fraction = 1/6 ± 1e-12`.
+- **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
+  round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
+  starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded.
+  With full markers on five slots and the 11:20 slot marked only from 11:23
+  (420 s observed) → `unobserved_time_fraction = 180/3600 = 0.05 ± 1e-12`; a
+  marked slot with zero parts contributes zero samples and zero unobserved
+  time.
 - **B9 no double-count**: two consecutive overlapping rounds over the same
   parts → each round's `samples.available` equals the sum of distinct
   in-scope `record_count`s; a part listed in both rounds triggers zero new
@@ -651,6 +789,11 @@ shuffles are not part of the contract):
   m+1, n−m+1)` within 1e-6 on a grid of (n, m).
 - **B11 drop fraction**: part headers (received = 100, records = 80) and
   (received = 50, records = 50) → `dropped_frame_fraction = 2/15 ± 1e-12`.
+- **B12 markers never gate measurement**: a window containing spill parts
+  but no marker → its samples are measured and included in the population,
+  while the slot's unmarked time still counts toward
+  `unobserved_time_fraction`; two markers in one slot (collector restart)
+  have their intervals unioned, not double-counted.
 
 ### C. Edge cases and durability
 
@@ -664,8 +807,9 @@ shuffles are not part of the contract):
 - **C3 config fingerprint**: intermediates written with k = 10 are ignored
   and re-measured after k changes to 20; `incompatible_parts` > 0 in the
   next round.
-- **C4 empty round**: zero in-scope parts → `insufficient_samples`,
-  `samples.available = 0`, `empty_window_fraction = 1.0`.
+- **C4 empty round**: zero in-scope parts and zero markers →
+  `insufficient_samples`, `samples.available = 0`,
+  `unobserved_time_fraction = 1.0`.
 - **C5 config validation**: each of — inline `password` key, `user:pass@`
   in `server`, ef grid containing a value < k or > 1000 or non-increasing,
   cohort with unknown index/target, `percentile: 1.0`, `window <
