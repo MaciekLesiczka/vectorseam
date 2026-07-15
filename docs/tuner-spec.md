@@ -14,8 +14,7 @@ the collector persists them as immutable `.vseam` segment parts under
 the published `ann-recall-latency` benchmark — exact ground truth, `ef_search`
 sweep, tail-percentile calibration, holdout transfer check — and publishes,
 per cohort, the recommended `hnsw.ef_search` and a confidence number back to
-the same storage. The Python benchmark pipeline is the trusted anchor: where
-this spec defines math, it matches that pipeline's semantics exactly.
+the same storage.
 
 **Decision — component name**: crate `seam` (workspace member `crates/seam`),
 binary `seam`. Rationale: this component is VectorSeam's centerpiece and will
@@ -24,9 +23,23 @@ owns the short brand word; the `vectorseam-` prefix stays on infrastructure
 crates. If ever published to crates.io (`seam` is taken there), it publishes
 as `vectorseam-seam`; nothing else in this spec depends on the name.
 
-All timestamps in this spec are UTC. "Storage window" means the collector's
-tumbling window (default 600 s); "calibration window" means a target's rolling
-window `W` (e.g. 24 h).
+Terms used throughout:
+
+- All timestamps are UTC. **Storage window**: the collector's tumbling
+  window (default 600 s). **Calibration window**: a target's rolling window
+  `W` (e.g. 24 h).
+- **Anchor**: the published `ann-recall-latency` Python pipeline
+  (`python/ann-recall-latency/` — `ground_truth.py`, `sweep.py`,
+  `analyze.py`), the reference implementation behind the blog's findings.
+  It is trusted: where this spec defines math it matches the anchor's
+  semantics exactly, and acceptance criteria A compare the tuner's numbers
+  against it on shared fixtures.
+- **Intermediates**: the per-part parquet files (`*.truth.parquet` and
+  `*.sweep.parquet`, schemas in §2.4) that the tuner persists next to the
+  segments — for every measured sample, the exact ground-truth top-k and
+  the per-ef ANN results. They are the durable raw material from which
+  every published number is computed, the unit of crash recovery, and the
+  interface downstream verification consumes.
 
 ## 2. Functional requirements
 
@@ -51,7 +64,7 @@ next successful round produces the same result as if nothing had been
 skipped. That is what "the rolling window self-heals" means throughout this
 spec.
 
-Each round, per concrete cohort, has two phases:
+Each round, per configured cohort, has two phases:
 
 **Phase A — measure** (touches the database, produces durable intermediates):
 
@@ -90,20 +103,40 @@ to poll.
 
 ### 2.2 Estimator semantics
 
-This section is normative. Two implementations that follow it must produce
-identical aggregation results from identical intermediates.
+Every ambiguity in estimator semantics is a place where two correct-looking
+implementations can silently disagree. This section removes that freedom: any
+two implementations that follow it must produce identical aggregation results
+from identical intermediates.
 
-#### Population and sample identity
+#### Population, deduplication, and sample identity
 
-- The population for a round is every kept record in every in-scope segment
-  part (after the deterministic measurement cap, §3.1). One record = one
-  sample = one query observation. Duplicate query vectors are distinct
-  samples. Rationale: the collector's sampling already approximates the
-  production query distribution; deduplication would re-weight it.
-- A sample's stable identity is `(part_ulid, record_index)` where
-  `record_index` is the 0-based ordinal within the part. This identity keys
-  intermediates, the train/holdout split, and the measurement cap, so resumes
-  and re-listings can never double-count.
+- A **sample** is one kept record in an in-scope segment part. Its **vector
+  hash** is `FNV1a64` over the frame's raw little-endian f32 payload bytes;
+  two samples are duplicates iff their vector bytes are equal (a 64-bit
+  hash collision merging two distinct vectors is accepted as negligible).
+- **Decision — deduplicate**: within a part, each distinct vector is
+  measured once (Phase A, §2.5); across the round window, the population is
+  one member per distinct vector hash (Phase B), keeping the row with the
+  lexicographically smallest `(part_ulid, record_index)`. Rationale: an
+  identical vector yields an identical database result within a round, so a
+  duplicate adds cost but no information — and it actively harms the
+  statistics: duplicates spanning the train/holdout split leak (transfer
+  must be validated on genuinely unseen queries), and duplicated holdout
+  rows inflate `n` in the confidence formula. Recorded tradeoff: the
+  population is *distinct query vectors*, not traffic-weighted queries — a
+  hot query counts once; `dup_count` is persisted so post-MVP re-weighting
+  would not require re-measurement.
+- A duplicate recurring across *different* parts is still measured once per
+  part — a part's intermediates must stay self-contained for the resume
+  model — and Phase B discards the extra measurement. Accepted MVP waste,
+  bounded by `max_samples_per_part`.
+- A sample's storage identity is `(part_ulid, record_index)`,
+  `record_index` 0-based within the part; it keys the intermediates and the
+  measurement cap, so resumes and re-listings can never double-count. The
+  train/holdout split is keyed by the vector hash instead (see below): a
+  duplicate can never straddle the split, and membership survives the
+  rolling window even when the surviving occurrence changes as old parts
+  age out.
 - Samples whose measurement failed (SQL error, statement timeout, unsupported
   dtype, dimension mismatch, table smaller than k) are excluded from the
   population and reported as a count. Only dtype `F32` frames are supported.
@@ -168,8 +201,14 @@ the HNSW index scan.
 - **Decision — tie handling**: ground truth order is `(distance ASC, key
   ASC)`. Ties at the k boundary are broken by ascending primary key.
   Rationale: makes ground truth a deterministic function of the table
-  snapshot; the anchor's `torch.topk` tie order is arbitrary, and ties are
-  measure-zero for real embeddings, so this refinement cannot move aggregate
+  snapshot — something the anchor never pinned down. Its `ground_truth.py`
+  computes exact top-k with `torch.topk(scores, k)`; when several documents
+  share the exact boundary score, which of them enters the top-k is an
+  implementation detail of torch, undocumented and potentially different
+  across CPU/GPU backends and versions — deterministic on one machine by
+  accident, not a rule an independent implementation can follow. Exact
+  distance ties require bit-identical vectors, so they are vanishingly rare
+  on real embeddings, and fixing a rule for them cannot move aggregate
   results beyond the stated tolerances.
 - **Decision — duplicate keys**: impossible by construction — `<key>` must be
   the table's primary key (or a unique, non-null integer column). MVP
@@ -208,22 +247,24 @@ the short result and is thereby penalized. Matches the anchor exactly.
 
 #### Train/holdout split
 
-- **Decision — deterministic hash split**, not RNG shuffle: a sample is in
-  the train set iff
+- **Decision — deterministic hash split** keyed by query content, not RNG
+  shuffle: a population member is in the train set iff
 
   ```
-  FNV1a64("s:" + split_seed + ":" + part_ulid + ":" + record_index) mod 10000
+  FNV1a64("s:" + split_seed + ":" + vector_hash) mod 10000
       < round(train_fraction * 10000)
   ```
 
   with `split_seed` (default 7) and `train_fraction` (default 0.7) from
-  config, `part_ulid` as its 26-char Crockford string, integers in decimal
-  ASCII. FNV-1a 64: `h = 0xcbf29ce484222325`; per byte `h ^= b; h *=
-  0x100000001b3 (mod 2^64)`.
-  Rationale: language-portable (5 lines in any language, no RNG
+  config, `split_seed` and `vector_hash` rendered as decimal ASCII. FNV-1a
+  64: `h = 0xcbf29ce484222325`; per byte `h ^= b; h *= 0x100000001b3
+  (mod 2^64)`.
+  Rationale: language-portable (five lines in any language, no RNG
   compatibility problem with the Python anchor harness), order-independent,
-  and stable — a sample keeps its split membership across rounds and
-  resumes, so round-to-round output changes come from data, not re-shuffling.
+  and content-keyed — membership is stable across rounds, resumes, and the
+  rolling window, and identical vectors land on the same side by
+  construction, so round-to-round output changes come from data, not
+  re-shuffling.
 
 #### Compliance quantile (percentile calculation)
 
@@ -264,7 +305,8 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
 #### Minimum sample count
 
 - **Decision**: config `min_samples` (default 1000, validated ≥ 100),
-  compared against the round's measured population size. Below it the round
+  compared against the round's deduplicated population size
+  (`samples.unique`). Below it the round
   publishes `status: "insufficient_samples"` with `recommended_ef: null`,
   `confidence: null`, and full sample/coverage metadata. No degraded-
   confidence emission. Rationale: an ef recommendation from a tail quantile
@@ -381,7 +423,7 @@ targets:
     window: 24h
 
 cohorts:
-  prod/superuser:                 # pattern: exact cohort name or segment prefix
+  prod/superuser:                 # exact cohort name (MVP: no patterns)
     index: stockexchange
     target: queries_search_recall
   prod/reddit:
@@ -389,13 +431,12 @@ cohorts:
     target: queries_search_recall
 ```
 
-**Cohort patterns.** A pattern matches a concrete cohort when it equals the
-cohort name or is a whole-segment prefix of it (`prod/reddit` matches
-`prod/reddit/tldr`, not `prod/reddit-x`). Longest matching pattern wins;
-same-length distinct patterns cannot both match one name. Concrete cohorts
-are discovered by listing `cohorts/`; each matched concrete cohort gets its
-own calibration and its own outputs. Unmatched cohorts are logged and
-skipped.
+**Cohort names.** MVP: a cohort key is the exact, full cohort name — no
+patterns, no prefix matching. This keeps the tuner free of cohort discovery:
+it lists only the configured `cohorts/<name>/window=…` prefixes and ignores
+everything else in storage, so there are no matching-precedence rules, no
+discovery pass, and no "configured pattern vs concrete cohort" distinction
+anywhere in the pipeline. Prefix patterns are a non-goal (§4).
 
 **Secrets.** Decision: connection fields are plain config; the password, if
 any, comes only from the environment variable named by `password_env`
@@ -408,8 +449,8 @@ hard validation stop is worth more trust than optional advice.
 
 **Startup validation** (all violations are fatal):
 
-- every cohort references an existing index and target; every pattern is a
-  valid cohort-name prefix per the grammar
+- every cohort key is a valid cohort name per the grammar (exact names, no
+  patterns) and references an existing index and target
 - `0 < percentile < 1`, `0 < value ≤ 1`, `k ≥ 1`, `window ≥
   storage.window_seconds`
 - ef grid present and non-empty (**required, no default** — a default grid
@@ -524,12 +565,15 @@ Aggregation skips (and reports) files whose `k`, `metric`, `index`, `table`,
 config — the measure phase then re-measures those parts. This is how config
 edits across restarts stay safe without runtime reconfiguration.
 
-`part-<ulid>.truth.parquet` — one row per successfully measured sample:
+`part-<ulid>.truth.parquet` — one row per successfully measured distinct
+vector:
 
 | column            | type          | meaning                                          |
 |-------------------|---------------|--------------------------------------------------|
-| `record_index`    | int32         | ordinal in the part (sample identity)            |
-| `receive_time_us` | int64         | from the segment record                          |
+| `record_index`    | int32         | first-occurrence ordinal in the part (identity)  |
+| `vector_hash`     | uint64        | FNV-1a 64 of the raw f32 vector bytes (§2.2)     |
+| `dup_count`       | int32         | occurrences of this vector within the part (≥ 1) |
+| `receive_time_us` | int64         | from the first-occurrence segment record         |
 | `gt_keys`         | list<int64>   | exact top-k keys, ordered (distance ASC, key ASC)|
 | `gt_distances`    | list<float64> | matching operator distances                      |
 
@@ -568,9 +612,10 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "train_quantile_recall": 0.90,
   "test_quantile_recall": 0.90,
   "samples": { "available": 5400,    // sum(record_count) of in-scope parts
-               "measured": 5310,     // rows in compatible sweep intermediates / grid size
+               "measured": 5310,     // distinct vectors with intermediate rows
                "failed": 12,
-               "train": 3717, "test": 1593 },
+               "unique": 5150,       // population after window-wide dedup (§2.2)
+               "train": 3605, "test": 1545 },
   "dropped_frame_fraction": 0.012,   // collector-side: 1 - sum(record_count)/sum(received_frame_count)
   "coverage": {
     "unobserved_time_fraction": 0.05, // window time not covered by observation markers
@@ -598,20 +643,24 @@ frames). Confidence expresses transferability only and never folds in drops,
 gaps, or failures — they are reported alongside it so the consumer can judge
 both independently.
 
-### 2.5 Measure phase — normative details
+### 2.5 Measure phase details
 
 Per unmeasured part:
 
 1. GET the `.vseam` object; parse with `vectorseam-core` (header + records).
-2. Apply the measurement cap: keep record `i` iff
+2. Deduplicate within the part by exact vector bytes (§2.2): one
+   measurement per distinct vector, identified by its first-occurrence
+   `record_index`, with the occurrence count recorded as `dup_count`.
+3. Apply the measurement cap over the distinct vectors: keep the vector
+   with first occurrence `i` iff
    `FNV1a64("m:" + split_seed + ":" + part_ulid + ":" + i) mod 1000000 <
-   floor(min(1, max_samples_per_part / record_count) · 1000000)` —
+   floor(min(1, max_samples_per_part / distinct_count) · 1000000)` —
    deterministic, unbiased, cache-stable thinning of oversized parts.
-3. For each kept record: parse the frame (dtype must be F32; the f32 vector
+4. For each kept vector: parse the frame (dtype must be F32; the f32 vector
    is passed as a pgvector value), run the single-sample transaction of
    §2.2 under the traffic budget (§3.1). A failed sample increments
    `failed_count`; the transaction is rolled back and the round continues.
-4. Buffer rows in memory (tuner memory is deliberately unbudgeted — parts
+5. Buffer rows in memory (tuner memory is deliberately unbudgeted — parts
    are bounded by the collector's 32 MiB spill cap); write
    `*.truth.parquet` then `*.sweep.parquet`.
 
@@ -619,17 +668,20 @@ Connections: one pool per distinct `(server, database)` with
 `max_size = budget.max_concurrent_queries`. Every transaction sets
 `statement_timeout` via `SET LOCAL`.
 
-### 2.6 Aggregate phase — normative details
+### 2.6 Aggregate phase details
 
 1. List in-scope parts (from `cohorts/`) and intermediates (from
    `measurements/`); ignore incompatible intermediates (counted).
-2. Load sweep rows; the stored `recall` column is authoritative.
-3. Split per §2.2; if `measured < min_samples` publish
-   `insufficient_samples` and stop.
-4. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
-5. Compute `dropped_frame_fraction` from part headers and the `coverage`
+2. Load truth and sweep rows; the stored `recall` column is authoritative.
+3. Deduplicate across the window by `vector_hash`, keeping the row with the
+   smallest `(part_ulid, record_index)` (§2.2); the survivors are the
+   population (`samples.unique`).
+4. Split per §2.2; if `unique < min_samples` publish `insufficient_samples`
+   and stop.
+5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
+6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from observation markers (§2.4).
-6. Compose the round JSON (all counters from part headers, marker intervals,
+7. Compose the round JSON (all counters from part headers, marker intervals,
    and file metadata); PUT `round-<ts>.json`, then `latest.json`.
 
 Publishing the same `round_end` twice (interval shorter than the storage
@@ -714,6 +766,9 @@ anything beyond):
 - Full SDK→collector→tuner end-to-end integration tests (later milestone).
 - Data retention/compaction of segments, intermediates, or rounds.
 - Non-integer primary keys; non-cosine metrics; non-pgvector backends.
+- Cohort prefix/pattern matching — cohorts are configured by exact name.
+- Traffic-weighted recall populations (duplicates re-weighting the
+  percentile); `dup_count` in the intermediates keeps the door open.
 - Multi-instance coordination or leader election (exactly one tuner per
   storage root).
 - Per-server traffic budgets (the global budget is stricter; revisit when
@@ -726,8 +781,10 @@ Executable assertions. ε values are absolute. "F-pg" is a seeded fixture:
 into pgvector (HNSW, cosine), plus ~500 seeded query vectors emitted **in the
 same order** as (a) parquet for the Python anchor and (b) `.vseam` segments
 for the tuner, with fixture-time verification that no ground-truth k-boundary
-distance tie exists. "F-agg" means hand-crafted intermediates (parquet pairs
-and segment headers) fed to Phase B only — no database.
+distance tie exists and that query vectors are pairwise distinct (so
+deduplication is a no-op in the anchor comparison). "F-agg" means
+hand-crafted intermediates (parquet pairs and segment headers) fed to Phase B
+only — no database.
 
 ### A. Anchor reproduction (the correctness anchor)
 
@@ -752,26 +809,26 @@ shuffles are not part of the contract):
 
 - **B1 recall**: k = 10, `gt_keys = [1..10]`; `returned_keys =
   [1,2,3,11,12,13,14,15,16,17]` → recall = 0.3 exactly; `returned_keys` of 7
-  rows containing 5 hits → 0.5 (short results penalized); two samples with
-  identical vectors are two population members.
+  rows containing 5 hits → 0.5 (short results penalized).
 - **B2 tie-break** (F-pg): rows 7 and 9 given identical vectors that
   straddle the k boundary → `gt_keys` contains 7, not 9, on repeated runs.
 - **B3 quantile**: recalls `[0.5, 0.7, 0.9, 1.0]`, `percentile: 0.95` →
   compliance quantile = 0.53 exactly (h = 0.15, type-7 linear); n = 1 →
   the single value.
-- **B4 split**: membership computed by an independent 5-line FNV-1a
-  reference matches the tuner for a fixed sample list; observed train
-  fraction within 0.7 ± 0.03 for n = 10⁴; membership unchanged after
-  simulated resume (same identities → same split).
+- **B4 split**: membership computed by an independent five-line FNV-1a
+  reference matches the tuner for a fixed list of vector hashes; observed
+  train fraction within 0.7 ± 0.03 for n = 10⁴ distinct vectors; membership
+  unchanged after simulated resume and after the surviving occurrence moves
+  to a different part (same vector → same split).
 - **B5 selection**: train quantiles `{10:0.62, 20:0.85, 40:0.91, 80:0.93,
   160:0.95}`, value 0.9 → `recommended_ef = 40`, `status = "ok"`.
 - **B6 target unmet**: value 0.99 with B5's quantiles → `recommended_ef =
   160`, `status = "target_unmet"`, confidence and `test_quantile_recall`
   still present.
-- **B7 min samples**: `min_samples = 1000`; 999 measured →
+- **B7 min samples**: `min_samples = 1000`; a unique population of 999 →
   `status = "insufficient_samples"`, `recommended_ef = null`,
-  `confidence = null`, sample counts still reported; 1000 measured → a
-  recommendation is emitted.
+  `confidence = null`, sample counts still reported; a unique population of
+  1000 → a recommendation is emitted.
 - **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
   round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
   starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded.
@@ -794,6 +851,13 @@ shuffles are not part of the contract):
   while the slot's unmarked time still counts toward
   `unobserved_time_fraction`; two markers in one slot (collector restart)
   have their intervals unioned, not double-counted.
+- **B13 deduplication**: a part containing the same vector at record
+  indexes 3, 5, and 9 → exactly one truth row (`record_index = 3`,
+  `dup_count = 3`) and one grid of sweep rows for it; the same vector
+  appearing again in a second in-scope part → `samples.unique` counts it
+  once, the survivor coming from the lexicographically smaller
+  `(part_ulid, record_index)`; duplicates never land on opposite sides of
+  the train/holdout split.
 
 ### C. Edge cases and durability
 
@@ -818,6 +882,18 @@ shuffles are not part of the contract):
 - **C6 failed samples**: a table with fewer than k rows → every sample fails
   with "table smaller than k", `samples.failed = samples.available`, round
   publishes `insufficient_samples`, process keeps running.
+- **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
+  between statements, e.g. via a test proxy): after a sample's ground-truth
+  statement returns and before its sweep statements run, a second connection
+  inserts a "poison" row strictly closer to the query vector than every
+  existing row → the poison key appears in none of that sample's
+  `returned_keys` (ground truth and sweep shared one snapshot), while a
+  later sample of the same round has the poison key in its `gt_keys`
+  (cross-sample drift is real and accepted, per §2.2).
+- **C8 Phase B reproducibility**: running aggregation twice over identical
+  intermediates and config yields byte-identical round JSON except
+  `computed_at` — the accepted drift lives entirely in Phase A; everything
+  downstream of the intermediates is deterministic.
 
 ### D. Resource ceilings (metric: statement wall-time duty cycle and
 in-flight statement count, measured at the tuner's database client)
