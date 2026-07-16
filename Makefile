@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-anchor seam-f-pg-harness test-seam-f-agg build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -7,6 +7,11 @@ PYTHON_VECTOR_CAPTURE_BENCH_JSON ?= .benchmarks/vector_capture.json
 ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
 ANN_RECALL_LATENCY_POSTGRES_DATA := $(CURDIR)/python/ann-recall-latency/data/postgres
 ANN_RECALL_LATENCY_DOCKER_COMPOSE := ANN_RECALL_LATENCY_POSTGRES_DATA="$(ANN_RECALL_LATENCY_POSTGRES_DATA)" docker compose -f $(ANN_RECALL_LATENCY_COMPOSE)
+SEAM_COMPOSE := tests/seam/docker-compose.yml
+SEAM_PG_PORT ?= 55432
+SEAM_DATABASE_URL ?= postgresql://postgres:password@localhost:$(SEAM_PG_PORT)/postgres
+SEAM_F_PG_ROOT ?= $(CURDIR)/target/seam-fixtures/f-pg
+SEAM_DOCKER_COMPOSE := SEAM_PG_PORT="$(SEAM_PG_PORT)" docker compose -f $(SEAM_COMPOSE)
 
 postgres:
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) up -d postgres
@@ -44,6 +49,26 @@ all-ann-recall-latency: setup postgres
 	$(UV) run python python/ann-recall-latency/ground_truth.py --dataset all
 	$(UV) run python python/ann-recall-latency/sweep.py --dataset all
 	$(UV) run python python/ann-recall-latency/analyze.py
+
+seam-postgres-up:
+	$(SEAM_DOCKER_COMPOSE) up -d --wait postgres
+
+seam-postgres-down:
+	$(SEAM_DOCKER_COMPOSE) down --volumes
+
+seam-f-pg-fixture: seam-postgres-up
+	DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
+		$(CARGO) run --release -p seam --example f_pg_fixture
+
+seam-anchor: setup
+	$(UV) run python -m seam_harness.anchor \
+		--fixture-root "$(SEAM_F_PG_ROOT)" \
+		--dsn "$(SEAM_DATABASE_URL)"
+
+seam-f-pg-harness: seam-f-pg-fixture seam-anchor
+
+test-seam-f-agg:
+	$(CARGO) test -p seam --test f_agg_builders
 
 build-rust:
 	$(CARGO) build --workspace
@@ -97,3 +122,4 @@ clean:
 	rm -rf .venv
 	$(CARGO) clean
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) down
+	$(SEAM_DOCKER_COMPOSE) down --volumes

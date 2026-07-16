@@ -1,0 +1,547 @@
+//! Tuner configuration parsing and startup validation.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde::Deserialize;
+use thiserror::Error;
+use vectorseam_core::cohort::CohortName;
+
+const POSTGRES_IDENTIFIER_MAX_BYTES: usize = 63;
+
+/// A fully parsed and startup-validated tuner configuration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Config {
+    /// Calibration and estimator settings.
+    pub calibration: CalibrationConfig,
+    /// Shared object-store layout settings.
+    pub storage: StorageConfig,
+    /// Database traffic controls.
+    pub budget: BudgetConfig,
+    /// Named PostgreSQL indexes.
+    pub indexes: BTreeMap<String, IndexConfig>,
+    /// Named recall targets.
+    pub targets: BTreeMap<String, TargetConfig>,
+    /// Exact configured cohorts.
+    pub cohorts: BTreeMap<CohortName, CohortConfig>,
+}
+
+/// Calibration and estimator settings.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CalibrationConfig {
+    /// Time between round ticks.
+    pub interval: Duration,
+    /// Ascending `hnsw.ef_search` sweep grid.
+    pub ef_search: Vec<i32>,
+    /// Deterministic train fraction.
+    pub train_fraction: f64,
+    /// Deterministic split seed.
+    pub split_seed: u64,
+    /// Minimum deduplicated population required for selection.
+    pub min_samples: usize,
+}
+
+/// Object-store layout settings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageConfig {
+    /// Object-store root shared with the collector.
+    pub root: PathBuf,
+    /// Collector tumbling-window duration.
+    pub window_seconds: u32,
+}
+
+/// Database traffic controls.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BudgetConfig {
+    /// Maximum statement wall-time share per worker.
+    pub db_share: f64,
+    /// Global in-flight database statement limit.
+    pub max_concurrent_queries: usize,
+    /// Per-statement PostgreSQL timeout.
+    pub statement_timeout: Duration,
+}
+
+/// One named PostgreSQL vector index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexConfig {
+    /// Server in `host:port` form.
+    pub server: String,
+    /// Database name.
+    pub database: String,
+    /// Database user.
+    pub user: String,
+    /// Optional environment variable containing the password.
+    pub password_env: Option<String>,
+    /// Quoted PostgreSQL table identifier.
+    pub table: String,
+    /// Quoted PostgreSQL key-column identifier.
+    pub key: String,
+    /// Quoted PostgreSQL vector-column identifier.
+    pub column: String,
+}
+
+/// One named recall target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetConfig {
+    /// Recall denominator and result count.
+    pub k: u32,
+    /// Required recall value.
+    pub value: f64,
+    /// Required compliant population fraction.
+    pub percentile: f64,
+    /// Rolling calibration-window duration.
+    pub window: Duration,
+}
+
+/// References connecting an exact cohort to an index and target.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CohortConfig {
+    /// Named index reference.
+    pub index: String,
+    /// Named target reference.
+    pub target: String,
+}
+
+/// Configuration parsing or validation failure.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ConfigError {
+    /// YAML could not be deserialized into the configuration schema.
+    #[error("invalid tuner YAML: {0}")]
+    Yaml(String),
+    /// A startup validation rule was violated.
+    #[error("invalid tuner configuration: {0}")]
+    Validation(String),
+}
+
+impl Config {
+    /// Parses YAML and applies every frozen-spec startup validation rule.
+    pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
+        let raw: RawConfig =
+            serde_saphyr::from_str(yaml).map_err(|error| ConfigError::Yaml(error.to_string()))?;
+        Self::try_from(raw)
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    calibration: RawCalibrationConfig,
+    storage: RawStorageConfig,
+    #[serde(default)]
+    budget: RawBudgetConfig,
+    indexes: BTreeMap<String, RawIndexConfig>,
+    targets: BTreeMap<String, RawTargetConfig>,
+    cohorts: BTreeMap<String, RawCohortConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCalibrationConfig {
+    #[serde(deserialize_with = "deserialize_duration")]
+    interval: Duration,
+    ef_search: Vec<i32>,
+    #[serde(default = "default_train_fraction")]
+    train_fraction: f64,
+    #[serde(default = "default_split_seed")]
+    split_seed: u64,
+    #[serde(default = "default_min_samples")]
+    min_samples: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawStorageConfig {
+    root: PathBuf,
+    #[serde(default = "default_window_seconds")]
+    window_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawBudgetConfig {
+    #[serde(default = "default_db_share")]
+    db_share: f64,
+    #[serde(default = "default_max_concurrent_queries")]
+    max_concurrent_queries: usize,
+    #[serde(
+        default = "default_statement_timeout",
+        deserialize_with = "deserialize_duration"
+    )]
+    statement_timeout: Duration,
+}
+
+impl Default for RawBudgetConfig {
+    fn default() -> Self {
+        Self {
+            db_share: default_db_share(),
+            max_concurrent_queries: default_max_concurrent_queries(),
+            statement_timeout: default_statement_timeout(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIndexConfig {
+    server: String,
+    database: String,
+    user: String,
+    password_env: Option<String>,
+    password: Option<String>,
+    table: String,
+    key: String,
+    column: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTargetConfig {
+    k: u32,
+    value: f64,
+    percentile: f64,
+    #[serde(deserialize_with = "deserialize_duration")]
+    window: Duration,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCohortConfig {
+    index: String,
+    target: String,
+}
+
+impl TryFrom<RawConfig> for Config {
+    type Error = ConfigError;
+
+    fn try_from(raw: RawConfig) -> Result<Self, Self::Error> {
+        validate_calibration(&raw.calibration)?;
+        validate_storage(&raw.storage)?;
+        validate_budget(&raw.budget)?;
+        validate_indexes(&raw.indexes)?;
+        validate_targets(&raw.targets, raw.storage.window_seconds)?;
+        validate_grid_against_targets(&raw.calibration.ef_search, &raw.targets)?;
+
+        let cohorts = raw
+            .cohorts
+            .into_iter()
+            .map(|(name, cohort)| {
+                let validated_name = CohortName::try_from(name.as_str()).map_err(|error| {
+                    invalid(format!("cohort {name:?} is invalid: {error}"))
+                })?;
+                if !raw.indexes.contains_key(&cohort.index) {
+                    return Err(invalid(format!(
+                        "cohort {name:?} references unknown index {:?}",
+                        cohort.index
+                    )));
+                }
+                if !raw.targets.contains_key(&cohort.target) {
+                    return Err(invalid(format!(
+                        "cohort {name:?} references unknown target {:?}",
+                        cohort.target
+                    )));
+                }
+                Ok((
+                    validated_name,
+                    CohortConfig {
+                        index: cohort.index,
+                        target: cohort.target,
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
+
+        let indexes = raw
+            .indexes
+            .into_iter()
+            .map(|(name, index)| {
+                (
+                    name,
+                    IndexConfig {
+                        server: index.server,
+                        database: index.database,
+                        user: index.user,
+                        password_env: index.password_env,
+                        table: index.table,
+                        key: index.key,
+                        column: index.column,
+                    },
+                )
+            })
+            .collect();
+        let targets = raw
+            .targets
+            .into_iter()
+            .map(|(name, target)| {
+                (
+                    name,
+                    TargetConfig {
+                        k: target.k,
+                        value: target.value,
+                        percentile: target.percentile,
+                        window: target.window,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(Self {
+            calibration: CalibrationConfig {
+                interval: raw.calibration.interval,
+                ef_search: raw.calibration.ef_search,
+                train_fraction: raw.calibration.train_fraction,
+                split_seed: raw.calibration.split_seed,
+                min_samples: raw.calibration.min_samples,
+            },
+            storage: StorageConfig {
+                root: raw.storage.root,
+                window_seconds: raw.storage.window_seconds,
+            },
+            budget: BudgetConfig {
+                db_share: raw.budget.db_share,
+                max_concurrent_queries: raw.budget.max_concurrent_queries,
+                statement_timeout: raw.budget.statement_timeout,
+            },
+            indexes,
+            targets,
+            cohorts,
+        })
+    }
+}
+
+fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError> {
+    if config.interval.is_zero() {
+        return Err(invalid("calibration.interval must be greater than zero"));
+    }
+    if config.ef_search.is_empty() {
+        return Err(invalid("calibration.ef_search is required and non-empty"));
+    }
+    if config.ef_search.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(invalid(
+            "calibration.ef_search must be strictly increasing",
+        ));
+    }
+    if config.ef_search.iter().any(|ef| *ef > 1000) {
+        return Err(invalid("calibration.ef_search values must be <= 1000"));
+    }
+    if !(config.train_fraction > 0.0 && config.train_fraction < 1.0) {
+        return Err(invalid("calibration.train_fraction must be in (0, 1)"));
+    }
+    let split_threshold = (config.train_fraction * 10_000.0).round();
+    if !(1.0..=9_999.0).contains(&split_threshold) {
+        return Err(invalid(
+            "calibration.train_fraction rounds to an empty train/holdout split",
+        ));
+    }
+    if config.min_samples < 100 {
+        return Err(invalid("calibration.min_samples must be >= 100"));
+    }
+    Ok(())
+}
+
+fn validate_storage(config: &RawStorageConfig) -> Result<(), ConfigError> {
+    if config.window_seconds == 0 {
+        return Err(invalid("storage.window_seconds must be greater than zero"));
+    }
+    Ok(())
+}
+
+fn validate_budget(config: &RawBudgetConfig) -> Result<(), ConfigError> {
+    if !(config.db_share > 0.0 && config.db_share <= 1.0) {
+        return Err(invalid("budget.db_share must be in (0, 1]"));
+    }
+    if config.max_concurrent_queries == 0 {
+        return Err(invalid("budget.max_concurrent_queries must be >= 1"));
+    }
+    if config.statement_timeout.is_zero() {
+        return Err(invalid("budget.statement_timeout must be greater than zero"));
+    }
+    Ok(())
+}
+
+fn validate_indexes(indexes: &BTreeMap<String, RawIndexConfig>) -> Result<(), ConfigError> {
+    for (name, index) in indexes {
+        if index.password.is_some() {
+            return Err(invalid(format!(
+                "index {name:?} contains inline password; use password_env"
+            )));
+        }
+        if index.server.contains('@') {
+            return Err(invalid(format!(
+                "index {name:?} server contains inline userinfo; use password_env"
+            )));
+        }
+        for (field, identifier) in [
+            ("table", index.table.as_str()),
+            ("column", index.column.as_str()),
+            ("key", index.key.as_str()),
+        ] {
+            validate_postgres_identifier(name, field, identifier)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_postgres_identifier(
+    index_name: &str,
+    field: &str,
+    identifier: &str,
+) -> Result<(), ConfigError> {
+    if identifier.is_empty() {
+        return Err(invalid(format!(
+            "index {index_name:?} {field} PostgreSQL identifier must not be empty"
+        )));
+    }
+    if identifier.len() > POSTGRES_IDENTIFIER_MAX_BYTES {
+        return Err(invalid(format!(
+            "index {index_name:?} {field} PostgreSQL identifier exceeds {POSTGRES_IDENTIFIER_MAX_BYTES} bytes"
+        )));
+    }
+    if identifier.contains('\0') {
+        return Err(invalid(format!(
+            "index {index_name:?} {field} PostgreSQL identifier contains NUL"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_targets(
+    targets: &BTreeMap<String, RawTargetConfig>,
+    storage_window_seconds: u32,
+) -> Result<(), ConfigError> {
+    for (name, target) in targets {
+        if target.k == 0 {
+            return Err(invalid(format!("target {name:?} k must be >= 1")));
+        }
+        if !(target.value > 0.0 && target.value <= 1.0) {
+            return Err(invalid(format!(
+                "target {name:?} value must be in (0, 1]"
+            )));
+        }
+        if !(target.percentile > 0.0 && target.percentile < 1.0) {
+            return Err(invalid(format!(
+                "target {name:?} percentile must be in (0, 1)"
+            )));
+        }
+        if target.window.as_secs() < u64::from(storage_window_seconds) {
+            return Err(invalid(format!(
+                "target {name:?} window must be at least storage.window_seconds"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_grid_against_targets(
+    ef_search: &[i32],
+    targets: &BTreeMap<String, RawTargetConfig>,
+) -> Result<(), ConfigError> {
+    let minimum = ef_search
+        .first()
+        .copied()
+        .ok_or_else(|| invalid("calibration.ef_search is required and non-empty"))?;
+    for (name, target) in targets {
+        if i64::from(minimum) < i64::from(target.k) {
+            return Err(invalid(format!(
+                "calibration.ef_search minimum {minimum} is below target {name:?} k {}",
+                target.k
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = String::deserialize(deserializer)?;
+    humantime::parse_duration(&text).map_err(serde::de::Error::custom)
+}
+
+fn default_train_fraction() -> f64 {
+    0.7
+}
+
+fn default_split_seed() -> u64 {
+    7
+}
+
+fn default_min_samples() -> usize {
+    1000
+}
+
+fn default_window_seconds() -> u32 {
+    600
+}
+
+fn default_db_share() -> f64 {
+    0.1
+}
+
+fn default_max_concurrent_queries() -> usize {
+    1
+}
+
+fn default_statement_timeout() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn invalid(message: impl Into<String>) -> ConfigError {
+    ConfigError::Validation(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_CONFIG: &str = r#"
+calibration:
+  interval: 10min
+  ef_search: [20, 40, 80, 160]
+storage:
+  root: /tmp/vectorseam
+  window_seconds: 600
+indexes:
+  fixture:
+    server: localhost:5432
+    database: postgres
+    user: postgres
+    table: docs_fixture
+    key: doc_id
+    column: embedding
+targets:
+  recall:
+    k: 20
+    value: 0.9
+    percentile: 0.95
+    window: 1h
+cohorts:
+  acceptance/f-agg:
+    index: fixture
+    target: recall
+"#;
+
+    #[test]
+    fn parses_defaults_and_quoted_identifiers() {
+        let config = Config::from_yaml_str(VALID_CONFIG).unwrap();
+        assert_eq!(config.calibration.train_fraction, 0.7);
+        assert_eq!(config.calibration.split_seed, 7);
+        assert_eq!(config.calibration.min_samples, 1000);
+        assert_eq!(config.budget.max_concurrent_queries, 1);
+        assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
+
+        let quoted = VALID_CONFIG.replace("docs_fixture", "odd.\"table");
+        assert!(Config::from_yaml_str(&quoted).is_ok());
+    }
+
+    #[test]
+    fn rejects_guaranteed_empty_split_threshold() {
+        let yaml = VALID_CONFIG.replace(
+            "  ef_search: [20, 40, 80, 160]",
+            "  ef_search: [20, 40, 80, 160]\n  train_fraction: 0.00001",
+        );
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+        assert!(error.contains("empty train/holdout split"));
+    }
+}

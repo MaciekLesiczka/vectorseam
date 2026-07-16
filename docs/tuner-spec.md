@@ -342,11 +342,19 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
   compared against the round's deduplicated population size
   (`samples.unique`). Below it the round
   publishes `status: "insufficient_samples"` with `recommended_ef: null`,
-  `confidence: null`, and full sample/coverage metadata. No degraded-
-  confidence emission. Rationale: an ef recommendation from a tail quantile
-  with too few tail points is noise; publishing an explicit refusal keeps
-  the "app stays at its conservative default until the tuner speaks" demo
-  narrative honest. Demo configs simply lower the threshold.
+  `confidence: null`, `transferred: null`, `train_quantile_recall: null`,
+  `test_quantile_recall: null`, and full sample/coverage metadata. The
+  full-population `per_ef` summaries are still computed when the population is
+  non-empty; for an empty population `per_ef` is `[]`. No degraded-confidence
+  emission. Rationale: an ef recommendation from a tail quantile with too few
+  tail points is noise; publishing an explicit refusal keeps the "app stays at
+  its conservative default until the tuner speaks" demo narrative honest.
+  Demo configs simply lower the threshold.
+- The same `insufficient_samples` output is published if the realized train or
+  holdout split is empty. This is checked after splitting even when
+  `samples.unique >= min_samples`, because type-7 quantiles are undefined for
+  empty input. Configuration also rejects a `train_fraction` whose rounded
+  10,000-bucket threshold is 0 or 10,000, preventing a guaranteed-empty side.
 
 #### Rolling window semantics
 
@@ -492,9 +500,11 @@ hard validation stop is worth more trust than optional advice.
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
 - `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
-  `max_concurrent_queries ≥ 1`
-- `table`, `column`, `key` are valid PostgreSQL identifiers; they are always
-  emitted quoted/escaped
+  `max_concurrent_queries ≥ 1`; additionally,
+  `round(train_fraction * 10000)` must be in `1..=9999`
+- `table`, `column`, `key` are valid PostgreSQL quoted/delimited identifiers:
+  non-empty UTF-8, at most 63 bytes, and containing no NUL. They are always
+  emitted quoted with embedded double quotes escaped.
 - no inline credentials (see secrets)
 
 ### 2.4 Storage contract
@@ -574,9 +584,9 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "error": null,                     // set when Phase A aborted for this cohort (e.g. table smaller than k)
   "recommended_ef": 200,             // null when insufficient_samples
   "confidence": 0.971,               // null when insufficient_samples
-  "transferred": true,               // test quantile >= value
-  "train_quantile_recall": 0.90,
-  "test_quantile_recall": 0.90,
+  "transferred": true,               // test quantile >= value; null when insufficient_samples
+  "train_quantile_recall": 0.90,     // null when insufficient_samples
+  "test_quantile_recall": 0.90,      // null when insufficient_samples
   "samples": { "available": 5400,    // sum(record_count) of in-scope parts
                "measured": 5310,     // distinct vectors with intermediate rows
                "failed": 12,
@@ -590,7 +600,7 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   },
   "parts_used": 144,
   "incompatible_parts": 0,           // intermediates skipped for config mismatch
-  "per_ef": [                        // full-population summary, for the dashboard
+  "per_ef": [                        // full-population summary; [] for an empty population
     { "ef": 10, "quantile_recall": 0.55, "mean_recall": 0.71, "latency_p50_ms": 0.4 },
     { "ef": 20, "quantile_recall": 0.70, "mean_recall": 0.82, "latency_p50_ms": 0.6 }
     // ...
@@ -606,6 +616,9 @@ recorded corner cut (§4.2). `samples.failed` carries Phase A's per-sample
 measurement failures (SQL errors, timeouts, bad frames). Confidence
 expresses transferability only and never folds in drops, gaps, or failures —
 they are reported alongside it so the consumer can judge both independently.
+When the in-scope headers have `sum(received_frame_count) = 0`, including an
+empty round, `dropped_frame_fraction` is defined as `0.0`; absence is reported
+separately by coverage rather than represented as a drop.
 
 ### 2.5 Measure phase details
 
@@ -637,8 +650,9 @@ Connections: one pool per distinct `(server, database)` with
 3. Deduplicate across the window by `vector_hash`, keeping the row with the
    smallest `(part_ulid, record_index)` (§2.2); the survivors are the
    population (`samples.unique`).
-4. Split per §2.2; if `unique < min_samples` publish `insufficient_samples`
-   and stop.
+4. Split per §2.2; if `unique < min_samples` or either realized split is empty,
+   publish `insufficient_samples` per §2.2 and stop selection. Full-population
+   `per_ef` summaries are still included for a non-empty population.
 5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
@@ -876,6 +890,14 @@ shuffles are not part of the contract):
   most one exact scan issued, no sweep statements), the round publishes
   `insufficient_samples` with a non-null `error`, and the other cohorts'
   rounds proceed normally.
+- **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
+  between statements, e.g. via a test proxy): after a sample's ground-truth
+  statement returns and before its sweep statements run, a second connection
+  inserts a "poison" row strictly closer to the query vector than every
+  existing row → the poison key appears in none of that sample's
+  `returned_keys` (ground truth and sweep shared one snapshot), while a
+  later sample of the same round has the poison key in its `gt_keys`
+  (cross-sample drift is real and accepted, per §2.2).
 - **C8 Phase B reproducibility**: running aggregation twice over identical
   intermediates and config yields byte-identical round JSON except
   `computed_at` — the accepted drift lives entirely in Phase A; everything

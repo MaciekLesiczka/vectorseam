@@ -19,6 +19,7 @@ jobs:
       - run: make lint-rust
       - run: make doc-rust
       - run: make test-rust
+      - run: make test-seam-f-agg
 
   rust-msrv:
     name: Rust MSRV
@@ -39,3 +40,15 @@ jobs:
         with:
           python-version: "3.12"
       - run: make test-python
+
+  seam-postgres-harness:
+    name: Seam pgvector Harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: make seam-f-pg-harness

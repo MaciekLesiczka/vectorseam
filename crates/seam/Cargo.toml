@@ -1,0 +1,42 @@
+[package]
+name = "seam"
+version = "0.1.0"
+edition = "2024"
+description = "VectorSeam tuner."
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-schema = "58.3.0"
+humantime = "2.4.0"
+parquet = { version = "58.3.0", default-features = false, features = ["arrow", "zstd"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde-saphyr = { version = "0.0.29", default-features = false, features = ["deserialize"] }
+serde_json = "1.0.150"
+statrs = "0.18.0"
+thiserror.workspace = true
+vectorseam-core = { path = "../vectorseam-core" }
+
+[dev-dependencies]
+anyhow.workspace = true
+bytes.workspace = true
+proptest = "1.11.0"
+rand = "0.9.4"
+rand_chacha = "0.9.0"
+rayon = "1.11.0"
+tempfile.workspace = true
+tokio.workspace = true
+tokio-postgres = "0.7.15"
+ulid.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[example]]
+name = "f_pg_fixture"
+path = "examples/f_pg_fixture.rs"
+
+[lints]
+workspace = true
