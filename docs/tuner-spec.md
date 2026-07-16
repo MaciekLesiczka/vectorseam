@@ -28,6 +28,10 @@ Terms used throughout:
 - All timestamps are UTC. **Storage window**: the collector's tumbling
   window (default 600 s). **Calibration window**: a target's rolling window
   `W` (e.g. 24 h).
+- **In scope**: a segment part is in scope for a round iff its storage
+  window lies fully inside that round's range `[round_end − W, round_end)`;
+  the formal membership rule is in §2.2 (rolling window semantics).
+  "In-scope windows / markers / intermediates" follow the same rule.
 - **Anchor**: the published `ann-recall-latency` Python pipeline
   (`python/ann-recall-latency/` — `ground_truth.py`, `sweep.py`,
   `analyze.py`), the reference implementation behind the blog's findings.
@@ -103,11 +107,6 @@ to poll.
 
 ### 2.2 Estimator semantics
 
-Every ambiguity in estimator semantics is a place where two correct-looking
-implementations can silently disagree. This section removes that freedom: any
-two implementations that follow it must produce identical aggregation results
-from identical intermediates.
-
 #### Population, deduplication, and sample identity
 
 - A **sample** is one kept record in an in-scope segment part. Its **vector
@@ -126,20 +125,28 @@ from identical intermediates.
   population is *distinct query vectors*, not traffic-weighted queries — a
   hot query counts once; `dup_count` is persisted so post-MVP re-weighting
   would not require re-measurement.
-- A duplicate recurring across *different* parts is still measured once per
-  part — a part's intermediates must stay self-contained for the resume
-  model — and Phase B discards the extra measurement. Accepted MVP waste,
-  bounded by `max_samples_per_part`.
+- **Decision — measurement-time dedup is scoped to one part, never wider.**
+  Both wider scopes fail. Deduplicating across storage windows breaks the
+  rolling window: when the earlier window ages out of scope, the duplicate
+  that is still in scope would be left with no measurement. Deduplicating
+  across the parts of one storage window would make a part's files depend
+  on sibling parts, which can be listed in any order or appear late
+  (spills, crash recovery) — and a part is the unit of measurement and
+  crash recovery precisely because its two files are computable from that
+  part alone (§2.4). So a duplicate recurring across parts is measured once
+  per part, and Phase B discards the extras. Cheap in practice: a window
+  normally has exactly one part (spill parts appear only under memory
+  pressure), so part scope and storage-window scope usually coincide.
 - A sample's storage identity is `(part_ulid, record_index)`,
-  `record_index` 0-based within the part; it keys the intermediates and the
-  measurement cap, so resumes and re-listings can never double-count. The
+  `record_index` 0-based within the part; it keys the intermediates, so
+  resumes and re-listings can never double-count. The
   train/holdout split is keyed by the vector hash instead (see below): a
   duplicate can never straddle the split, and membership survives the
   rolling window even when the surviving occurrence changes as old parts
   age out.
 - Samples whose measurement failed (SQL error, statement timeout, unsupported
-  dtype, dimension mismatch, table smaller than k) are excluded from the
-  population and reported as a count. Only dtype `F32` frames are supported.
+  dtype, dimension mismatch) are excluded from the population and reported
+  as a count. Only dtype `F32` frames are supported.
 
 #### Ground truth and ef sweep — one transaction per sample
 
@@ -148,8 +155,8 @@ exact ground-truth query followed by one ANN query per value of the
 `calibration.ef_search` grid, ascending. The grid is required configuration
 (§2.3); the published benchmark grid `[10, 20, 40, 60, 80, 100, 150, 200,
 300, 400]` is the recommended starting point. Spelled out in full for an
-index `{table: docs_reddit, key: doc_id, column: embedding, metric: cosine}`
-with `k = 10` and that grid:
+index `{table: docs_reddit, key: doc_id, column: embedding}` with `k = 10`
+and that grid:
 
 ```sql
 BEGIN ISOLATION LEVEL REPEATABLE READ;
@@ -213,8 +220,14 @@ the HNSW index scan.
 - **Decision — duplicate keys**: impossible by construction — `<key>` must be
   the table's primary key (or a unique, non-null integer column). MVP
   supports integer keys only (`int2/int4/int8`, stored as int64).
-- If the table holds fewer than `k` rows the sample fails ("table smaller
-  than k"). The recall denominator is never adjusted.
+- If the ground-truth query returns fewer than `k` rows, the table itself
+  has fewer than `k` visible rows — a deployment problem, not per-sample
+  noise, and it would fail identically for every remaining sample in the
+  cohort. Detected on the first affected sample: the tuner aborts Phase A
+  for this cohort for the rest of the round (no further scans), publishes
+  the round with `status: "insufficient_samples"` and an `error` string
+  naming the condition, and continues with the other cohorts. The recall
+  denominator is never adjusted for small tables.
 
 - **Decision — snapshot semantics**: ground truth and all ef results for one
   sample share one REPEATABLE READ snapshot, so each per-sample recall is
@@ -231,8 +244,9 @@ the HNSW index scan.
 - Client-observed latency per ef statement is recorded (informational, never
   part of the target).
 
-MVP supports `metric: cosine` (`<=>`) only; the config field exists and any
-other value is a startup error.
+MVP supports cosine distance (`<=>`) only. There is deliberately no config
+field for it — a field with exactly one legal value is dead config; other
+pgvector operators are an additive change (§4.2).
 
 #### recall@k
 
@@ -240,10 +254,15 @@ other value is a startup error.
 recall = |set(returned_keys) ∩ set(gt_keys)| / k
 ```
 
-Set semantics over distinct keys; denominator is always the target's `k`. If
-the ANN query returns fewer than `k` rows (e.g. `ef < k` cannot happen — see
-config validation — but concurrent deletes can), recall is computed against
-the short result and is thereby penalized. Matches the anchor exactly.
+Set semantics over distinct keys; the denominator is always the target's
+`k`, matching the anchor. A short ANN result (fewer than `k` rows) is scored
+as-is, so every missing position counts as a miss. Short results cannot be
+caused by concurrent writes — the REPEATABLE READ snapshot makes ground
+truth and the sweep see the same rows — and `ef < k` is ruled out by config
+validation. They can still occur: an HNSW scan spends its `ef_search`
+candidate budget on index entries, and entries pointing at heap rows
+invisible to the snapshot (deleted or updated, not yet vacuumed) consume
+budget without producing rows.
 
 #### Train/holdout split
 
@@ -256,15 +275,32 @@ the short result and is thereby penalized. Matches the anchor exactly.
   ```
 
   with `split_seed` (default 7) and `train_fraction` (default 0.7) from
-  config, `split_seed` and `vector_hash` rendered as decimal ASCII. FNV-1a
-  64: `h = 0xcbf29ce484222325`; per byte `h ^= b; h *= 0x100000001b3
-  (mod 2^64)`.
-  Rationale: language-portable (five lines in any language, no RNG
-  compatibility problem with the Python anchor harness), order-independent,
-  and content-keyed — membership is stable across rounds, resumes, and the
-  rolling window, and identical vectors land on the same side by
-  construction, so round-to-round output changes come from data, not
-  re-shuffling.
+  config, `split_seed` and `vector_hash` rendered as decimal ASCII.
+  Rationale: order-independent and content-keyed — membership is stable
+  across rounds, resumes, and the rolling window; identical vectors land on
+  the same side by construction; round-to-round output changes come from
+  data, not re-shuffling.
+- **FNV-1a 64** (Fowler–Noll–Vo, 64-bit, variant 1a) is the hash used here
+  and for `vector_hash`. Chosen because the split must produce identical
+  values in the Rust tuner and the Python acceptance harness, and FNV-1a is
+  small enough to implement inline in both — no library dependency, no
+  cross-language RNG compatibility questions. It is not cryptographic;
+  nothing here needs it to be. Definition (all arithmetic on unsigned
+  64-bit integers, multiplication wrapping on overflow) and reference
+  values any implementation must reproduce:
+
+  ```
+  fn fnv1a64(bytes) -> u64:
+      h = 0xcbf29ce484222325                # fixed start value ("offset basis")
+      for each byte b in bytes:
+          h = h XOR b
+          h = (h * 0x100000001b3) mod 2^64  # multiply by the "FNV prime", keep low 64 bits
+      return h
+
+  fnv1a64("")       == 0xcbf29ce484222325
+  fnv1a64("a")      == 0xaf63dc4c8601ec8c
+  fnv1a64("foobar") == 0x85944171f73967e8
+  ```
 
 #### Compliance quantile (percentile calculation)
 
@@ -393,7 +429,6 @@ budget:                           # database traffic control, see §3.1
   db_share: 0.10
   max_concurrent_queries: 1
   statement_timeout: 5s
-  max_samples_per_part: 1000
 
 indexes:
   stockexchange:
@@ -404,7 +439,6 @@ indexes:
     table: docs_stackexchange
     key: doc_id
     column: embedding
-    metric: cosine                # MVP: cosine only
 
   reddit:
     server: localhost:5432
@@ -436,11 +470,12 @@ patterns, no prefix matching. This keeps the tuner free of cohort discovery:
 it lists only the configured `cohorts/<name>/window=…` prefixes and ignores
 everything else in storage, so there are no matching-precedence rules, no
 discovery pass, and no "configured pattern vs concrete cohort" distinction
-anywhere in the pipeline. Prefix patterns are a non-goal (§4).
+anywhere in the pipeline. Prefix patterns are a recorded corner cut (§4.2).
 
 **Secrets.** Decision: connection fields are plain config; the password, if
 any, comes only from the environment variable named by `password_env`
-(12-factor, maps directly onto Kubernetes `secretKeyRef` and local `export`).
+(the standard container pattern: Kubernetes injects secrets as environment
+variables via `secretKeyRef`; local development uses `export`).
 The config loader **rejects** any inline credential — a `password` key or a
 `user:pass@` userinfo in any connection value — with an error pointing at
 `password_env`. Passwords never appear in config, logs, intermediates, or
@@ -460,7 +495,7 @@ hard validation stop is worth more trust than optional advice.
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
 - `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
-  `max_concurrent_queries ≥ 1`, `max_samples_per_part ≥ 1`
+  `max_concurrent_queries ≥ 1`
 - `table`, `column`, `key` are valid PostgreSQL identifiers; they are always
   emitted quoted/escaped
 - no inline credentials (see secrets)
@@ -558,9 +593,9 @@ These schemas are part of the spec: downstream verification consumes them.
 Both files carry parquet key-value metadata:
 `format_version=1`, `cohort`, `part_ulid`, `window_start`, `window_seconds`,
 `received_frame_count`, `record_count` (copied from the segment header),
-`index` (config name), `table`, `column`, `key`, `metric`, `k`, `ef_grid`
+`index` (config name), `table`, `column`, `key`, `k`, `ef_grid`
 (comma-joined), `failed_count`, `measured_count`, `computed_at_us`.
-Aggregation skips (and reports) files whose `k`, `metric`, `index`, `table`,
+Aggregation skips (and reports) files whose `k`, `index`, `table`,
 `column`, `key`, `ef_grid`, or `format_version` don't match the current
 config — the measure phase then re-measures those parts. This is how config
 edits across restarts stay safe without runtime reconfiguration.
@@ -606,6 +641,7 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "index": "reddit",
   "ef_grid": [10, 20, 40, 60, 80, 100, 150, 200, 300, 400],
   "status": "ok",                    // "ok" | "target_unmet" | "insufficient_samples"
+  "error": null,                     // set when Phase A aborted for this cohort (e.g. table smaller than k)
   "recommended_ef": 200,             // null when insufficient_samples
   "confidence": 0.971,               // null when insufficient_samples
   "transferred": true,               // test quantile >= value
@@ -651,16 +687,13 @@ Per unmeasured part:
 2. Deduplicate within the part by exact vector bytes (§2.2): one
    measurement per distinct vector, identified by its first-occurrence
    `record_index`, with the occurrence count recorded as `dup_count`.
-3. Apply the measurement cap over the distinct vectors: keep the vector
-   with first occurrence `i` iff
-   `FNV1a64("m:" + split_seed + ":" + part_ulid + ":" + i) mod 1000000 <
-   floor(min(1, max_samples_per_part / distinct_count) · 1000000)` —
-   deterministic, unbiased, cache-stable thinning of oversized parts.
-4. For each kept vector: parse the frame (dtype must be F32; the f32 vector
-   is passed as a pgvector value), run the single-sample transaction of
-   §2.2 under the traffic budget (§3.1). A failed sample increments
-   `failed_count`; the transaction is rolled back and the round continues.
-5. Buffer rows in memory (tuner memory is deliberately unbudgeted — parts
+3. For each distinct vector: parse the frame (dtype must be F32; the f32
+   vector is passed as a pgvector value), run the single-sample transaction
+   of §2.2 under the traffic budget (§3.1). A failed sample increments
+   `failed_count`; the transaction is rolled back and the round continues —
+   except "table smaller than k", which aborts Phase A for the whole cohort
+   (§2.2).
+4. Buffer rows in memory (tuner memory is deliberately unbudgeted — parts
    are bounded by the collector's 32 MiB spill cap); write
    `*.truth.parquet` then `*.sweep.parquet`.
 
@@ -713,10 +746,6 @@ anything beyond):
 - **P0 — per-statement timeout**: `SET LOCAL statement_timeout` (default 5 s)
   on every transaction; a timed-out sample is a failed sample, never a retry
   storm.
-- **P0 — measurement cap**: `max_samples_per_part` (§2.5) bounds per-round
-  work for hot cohorts. Sizing guide (documented, not enforced): steady state
-  fits the interval when
-  `samples_per_interval · (t_scan + Σ t_ann) ≤ db_share · interval`.
 - **P1 — plan mode**: `seam plan --config …` prints, per cohort, the pending
   part count, estimated statements, and worst-case busy seconds for the next
   round, then exits without touching the database (PlanetScale's "warn
@@ -724,6 +753,14 @@ anything beyond):
 - **P2 — adaptive load signals**: pause/back off on `pg_stat_activity`
   saturation or replication lag. Explicitly out of the MVP; recorded so the
   priority call is visible.
+
+There is deliberately no per-round sample cap in the MVP (§4.2): every
+in-scope sample is measured. If a cohort's sustained sample flow exceeds
+what the duty-cycle budget can measure per interval — roughly when
+`samples_per_interval · (t_scan + Σ t_ann) > db_share · interval` — rounds
+fall behind and the published output goes stale, while the database stays
+protected by the pacer. The SDK's adaptive sampling (default ~1 sample/s per
+cohort per instance) bounds the inflow in practice.
 
 ### 3.2 Fault tolerance
 
@@ -755,7 +792,9 @@ anything beyond):
 - Tuner process memory is intentionally unbudgeted (isolated component);
   database traffic is the only guarded resource.
 
-## 4. Non-goals
+## 4. Non-goals and MVP corner cuts
+
+### 4.1 Non-goals
 
 - Runtime configuration changes (target edits require re-measurement; the
   config-fingerprint check in §2.4 handles restarts instead).
@@ -765,14 +804,36 @@ anything beyond):
 - SDK/collector consuming the recommendation; central sampling directives.
 - Full SDK→collector→tuner end-to-end integration tests (later milestone).
 - Data retention/compaction of segments, intermediates, or rounds.
-- Non-integer primary keys; non-cosine metrics; non-pgvector backends.
-- Cohort prefix/pattern matching — cohorts are configured by exact name.
-- Traffic-weighted recall populations (duplicates re-weighting the
-  percentile); `dup_count` in the intermediates keeps the door open.
+- Non-pgvector backends.
 - Multi-instance coordination or leader election (exactly one tuner per
   storage root).
-- Per-server traffic budgets (the global budget is stricter; revisit when
-  one tuner spans many servers).
+
+### 4.2 Deliberate MVP corner cuts (revisit as improvements)
+
+Corners cut knowingly to ship the MVP, each with its consequence, so they
+can come back as prioritized improvements:
+
+- **No per-round measurement cap** — every in-scope sample is measured.
+  Consequence: sustained sample flow beyond the duty-cycle budget makes
+  rounds fall behind and outputs go stale; the database stays protected
+  (§3.1). Revisit with a deterministic per-part cap if staleness bites.
+- **Ground truth runs only in-database.** Alternative for scan-averse
+  deployments: bulk-export the vector column once per round and brute-force
+  in the tuner — trades per-sample scan load for one big read, network,
+  tuner memory, and staleness of the exported copy.
+- **Cosine distance only.** Other pgvector operators (`<->`, `<#>`) are an
+  additive config-plus-operator-string change; no field exists until then.
+- **Integer primary keys only** (`int2/int4/int8`). Text/UUID keys need a
+  polymorphic key column in the intermediates.
+- **Exact cohort names only.** Prefix patterns need matching-precedence
+  rules and a cohort discovery pass (§2.3).
+- **Population is distinct query vectors, not traffic-weighted queries.**
+  `dup_count` in the intermediates allows re-weighting later without
+  re-measurement (§2.2).
+- **One global traffic budget.** Per-server budgets matter once one tuner
+  spans many databases; until then global is stricter.
+- **No adaptive load signals** (`pg_stat_activity`, replication lag) —
+  §3.1 P2.
 
 ## 5. Acceptance criteria
 
@@ -815,7 +876,8 @@ shuffles are not part of the contract):
 - **B3 quantile**: recalls `[0.5, 0.7, 0.9, 1.0]`, `percentile: 0.95` →
   compliance quantile = 0.53 exactly (h = 0.15, type-7 linear); n = 1 →
   the single value.
-- **B4 split**: membership computed by an independent five-line FNV-1a
+- **B4 split**: the tuner's FNV-1a reproduces the three reference values in
+  §2.2; membership computed by an independent five-line FNV-1a
   reference matches the tuner for a fixed list of vector hashes; observed
   train fraction within 0.7 ± 0.03 for n = 10⁴ distinct vectors; membership
   unchanged after simulated resume and after the surviving occurrence moves
@@ -879,9 +941,11 @@ shuffles are not part of the contract):
   cohort with unknown index/target, `percentile: 1.0`, `window <
   storage.window_seconds` — fails startup with a distinct error; the
   `password_env` error message names the expected mechanism.
-- **C6 failed samples**: a table with fewer than k rows → every sample fails
-  with "table smaller than k", `samples.failed = samples.available`, round
-  publishes `insufficient_samples`, process keeps running.
+- **C6 table smaller than k**: a cohort whose table has fewer than k rows →
+  Phase A aborts for that cohort after the first ground-truth result (at
+  most one exact scan issued, no sweep statements), the round publishes
+  `insufficient_samples` with a non-null `error`, and the other cohorts'
+  rounds proceed normally.
 - **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
   between statements, e.g. via a test proxy): after a sample's ground-truth
   statement returns and before its sweep statements run, a second connection
@@ -906,6 +970,3 @@ in-flight statement count, measured at the tuner's database client)
 - **D3 statement timeout**: `statement_timeout = 1ms` on F-pg → every sample
   fails within the round (no retries, counted), the round completes, and no
   tuner statement remains running server-side afterward.
-- **D4 measurement cap**: a part with `record_count = 10 ·
-  max_samples_per_part` → measured samples ≤ 1.02 · `max_samples_per_part`,
-  and the kept subset is identical across two runs (deterministic).
