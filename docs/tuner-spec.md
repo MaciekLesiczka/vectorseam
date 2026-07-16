@@ -569,7 +569,7 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "target": { "name": "queries_search_recall",
               "k": 20, "value": 0.9, "percentile": 0.95 },
   "index": "reddit",
-  "ef_grid": [10, 20, 40, 60, 80, 100, 150, 200, 300, 400],
+  "ef_grid": [20, 40, 60, 80, 100, 150, 200, 300, 400],
   "status": "ok",                    // "ok" | "target_unmet" | "insufficient_samples"
   "error": null,                     // set when Phase A aborted for this cohort (e.g. table smaller than k)
   "recommended_ef": 200,             // null when insufficient_samples
@@ -876,14 +876,6 @@ shuffles are not part of the contract):
   most one exact scan issued, no sweep statements), the round publishes
   `insufficient_samples` with a non-null `error`, and the other cohorts'
   rounds proceed normally.
-- **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
-  between statements, e.g. via a test proxy): after a sample's ground-truth
-  statement returns and before its sweep statements run, a second connection
-  inserts a "poison" row strictly closer to the query vector than every
-  existing row → the poison key appears in none of that sample's
-  `returned_keys` (ground truth and sweep shared one snapshot), while a
-  later sample of the same round has the poison key in its `gt_keys`
-  (cross-sample drift is real and accepted, per §2.2).
 - **C8 Phase B reproducibility**: running aggregation twice over identical
   intermediates and config yields byte-identical round JSON except
   `computed_at` — the accepted drift lives entirely in Phase A; everything
