@@ -188,10 +188,24 @@ struct RawIndexConfig {
     database: String,
     user: String,
     password_env: Option<String>,
-    password: Option<String>,
+    #[serde(default)]
+    password: InlinePassword,
     table: String,
     key: String,
     column: String,
+}
+
+#[derive(Debug, Default)]
+struct InlinePassword(bool);
+
+impl<'de> Deserialize<'de> for InlinePassword {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let _discarded = serde::de::IgnoredAny::deserialize(deserializer)?;
+        Ok(Self(true))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -226,9 +240,8 @@ impl TryFrom<RawConfig> for Config {
             .cohorts
             .into_iter()
             .map(|(name, cohort)| {
-                let validated_name = CohortName::try_from(name.as_str()).map_err(|error| {
-                    invalid(format!("cohort {name:?} is invalid: {error}"))
-                })?;
+                let validated_name = CohortName::try_from(name.as_str())
+                    .map_err(|error| invalid(format!("cohort {name:?} is invalid: {error}")))?;
                 if !raw.indexes.contains_key(&cohort.index) {
                     return Err(invalid(format!(
                         "cohort {name:?} references unknown index {:?}",
@@ -317,9 +330,7 @@ fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError
         return Err(invalid("calibration.ef_search is required and non-empty"));
     }
     if config.ef_search.windows(2).any(|pair| pair[0] >= pair[1]) {
-        return Err(invalid(
-            "calibration.ef_search must be strictly increasing",
-        ));
+        return Err(invalid("calibration.ef_search must be strictly increasing"));
     }
     if config.ef_search.iter().any(|ef| *ef > 1000) {
         return Err(invalid("calibration.ef_search values must be <= 1000"));
@@ -354,22 +365,30 @@ fn validate_budget(config: &RawBudgetConfig) -> Result<(), ConfigError> {
         return Err(invalid("budget.max_concurrent_queries must be >= 1"));
     }
     if config.statement_timeout.is_zero() {
-        return Err(invalid("budget.statement_timeout must be greater than zero"));
+        return Err(invalid(
+            "budget.statement_timeout must be greater than zero",
+        ));
     }
     Ok(())
 }
 
 fn validate_indexes(indexes: &BTreeMap<String, RawIndexConfig>) -> Result<(), ConfigError> {
     for (name, index) in indexes {
-        if index.password.is_some() {
+        if index.password.0 {
             return Err(invalid(format!(
                 "index {name:?} contains inline password; use password_env"
             )));
         }
-        if index.server.contains('@') {
-            return Err(invalid(format!(
-                "index {name:?} server contains inline userinfo; use password_env"
-            )));
+        for (field, value) in [
+            ("server", index.server.as_str()),
+            ("database", index.database.as_str()),
+            ("user", index.user.as_str()),
+        ] {
+            if contains_inline_userinfo(value) {
+                return Err(invalid(format!(
+                    "index {name:?} {field} contains inline userinfo; use password_env"
+                )));
+            }
         }
         for (field, identifier) in [
             ("table", index.table.as_str()),
@@ -380,6 +399,12 @@ fn validate_indexes(indexes: &BTreeMap<String, RawIndexConfig>) -> Result<(), Co
         }
     }
     Ok(())
+}
+
+fn contains_inline_userinfo(value: &str) -> bool {
+    value
+        .split_once('@')
+        .is_some_and(|(userinfo, _rest)| userinfo.contains(':'))
 }
 
 fn validate_postgres_identifier(
@@ -414,9 +439,7 @@ fn validate_targets(
             return Err(invalid(format!("target {name:?} k must be >= 1")));
         }
         if !(target.value > 0.0 && target.value <= 1.0) {
-            return Err(invalid(format!(
-                "target {name:?} value must be in (0, 1]"
-            )));
+            return Err(invalid(format!("target {name:?} value must be in (0, 1]")));
         }
         if !(target.percentile > 0.0 && target.percentile < 1.0) {
             return Err(invalid(format!(
@@ -543,5 +566,12 @@ cohorts:
         );
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("empty train/holdout split"));
+    }
+
+    #[test]
+    fn rejects_inline_password_key_even_when_null() {
+        let yaml = VALID_CONFIG.replace("    table:", "    password: null\n    table:");
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+        assert!(error.contains("password_env"));
     }
 }

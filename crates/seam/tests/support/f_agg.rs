@@ -151,6 +151,7 @@ pub fn write_intermediate_pair(
 pub fn write_b12_cross_part_fixture(root: &Path) -> Result<B12Fixture> {
     let vector_hash = 0xaf63_dc4c_8601_ec8c;
     let first_metadata = PartMetadata {
+        received_frame_count: 3,
         record_count: 3,
         ..PartMetadata::default()
     };

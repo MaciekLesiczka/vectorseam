@@ -68,7 +68,11 @@ seam-anchor: setup
 seam-f-pg-harness: seam-f-pg-fixture seam-anchor
 
 test-seam-f-agg:
-	$(CARGO) test -p seam --test f_agg_builders
+	$(CARGO) test -p seam \
+		--test f_agg_builders \
+		--test acceptance_b_estimator \
+		--test acceptance_c_durability \
+		--test estimator_properties
 
 build-rust:
 	$(CARGO) build --workspace

@@ -1,75 +1,124 @@
 # Tuner review map
 
-This map covers the Stage 1 tuner additions. There is no tuner implementation
+This map covers the completed Stage 1 harness and Stage 2 estimator. Stage 3
+transaction, pacing, and object-store orchestration modules are not present
 yet.
 
 ## Tier 1 — semantically rich / critical
 
-- `python/seam_harness/anchor.py` — owns the independent FNV-1a split and the
-  adapter that reuses the trusted ground-truth, recall, percentile, and
-  selection functions without copying their math.
-- `crates/seam/tests/support/f_agg.rs` — encodes the frozen truth/sweep parquet
+- `crates/seam/src/math.rs` — owns recall set semantics, exact FNV-1a and split
+  membership, type-7 interpolation, ef selection, and beta-posterior
+  confidence.
+- `crates/seam/src/accounting.rs` — owns half-open rolling-window membership,
+  distinct listed-part accounting, coverage, and collector drop fractions.
+- `crates/seam/src/population.rs` — owns cross-part survivor ordering,
+  full-population summaries, train quantiles, ef selection, holdout transfer,
+  and confidence inputs.
+- `crates/seam/src/aggregate.rs` — composes compatibility filtering,
+  deterministic population splitting, counters, insufficient output semantics,
+  and ordered round records from the smaller Tier 1 primitives.
+- `crates/seam/tests/acceptance_b_estimator.rs` — asserts every implemented B
+  literal and tolerance, including independent FNV and SciPy reference sides.
+- `crates/seam/tests/estimator_properties.rs` — guards monotone selection,
+  stable split membership/fraction, bounded quantiles, and monotone
+  confidence.
+- `python/seam_harness/anchor.py` — owns the independent Python FNV split
+  adapter while reusing the trusted anchor's ground-truth, recall, percentile,
+  summary, and selection functions.
+- `crates/seam/tests/support/f_agg.rs` — encodes frozen truth/sweep parquet
   schemas, metadata, object keys, and segment-header fixtures.
-- `crates/seam/examples/f_pg_fixture.rs` — determines fixture reproducibility,
-  query ordering, no-tie verification, the HNSW dataset, and the B2 tie table.
-- `crates/seam/tests/acceptance_b_estimator.rs` — transcribes every numerical
-  estimator expectation that Stage 2 must satisfy.
+- `crates/seam/examples/f_pg_fixture.rs` — determines seed-0 fixture
+  reproducibility, query ordering, pairwise distinctness, strengthened
+  boundary-gap verification, HNSW data, and the B2 tie table.
 - Stage 3 transaction-construction module (path to be recorded when added) —
-  owns the single-connection, single-transaction snapshot invariant and must
-  receive the C7 manual review below.
+  will own the single-connection snapshot invariant and must receive the C7
+  manual review below.
 
 ## Tier 2 — standard
 
+- `crates/seam/src/intermediate.rs` — synchronously validates and reads the
+  frozen parquet field schemas and metadata, then joins truth rows to the
+  authoritative stored recall/latency rows. It contains IO but no estimator
+  policy.
+- `crates/seam/src/model.rs` — defines pure aggregation inputs and the ordered,
+  serializable round JSON contract.
 - `crates/seam/tests/f_agg_builders.rs` — validates fixture schemas, metadata,
-  zstd compression, crash-shaped truth-only state, and core segment round
-  trips without a database.
+  zstd compression, crash-shaped truth-only state, ULID ordering, and core
+  segment round trips without a database.
 - `crates/seam/tests/support/anchor.rs` — validates and loads the Python
-  comparison artifact that the Rust A tests consume.
+  comparison artifact consumed in Stage 4.
 - `crates/seam/tests/acceptance_a_anchor.rs` — defines the five anchor
   comparison tolerances.
-- `crates/seam/tests/acceptance_c_durability.rs` — defines durability and edge
-  case outcomes across Stages 2–4.
+- `crates/seam/tests/acceptance_c_durability.rs` — exercises Stage 2 config,
+  compatibility, empty-round, parquet-reading, and reproducibility behavior;
+  later durability halves remain explicit ignored tests.
 - `crates/seam/tests/acceptance_d_resources.rs` — defines the instrumented
   resource ceilings for Stage 3.
 - `tests/seam/docker-compose.yml` — provides the isolated pgvector test
   service.
-- `.github/workflows/ci.yml` — runs database-free F-agg checks and the
-  dockerized pgvector harness.
-- `Makefile` — exposes the local F-agg, F-pg, and anchor harness entry points.
+- `.github/workflows/ci.yml` and `Makefile` — run the database-free Stage 2
+  acceptance/property suite on every push and retain the dockerized pgvector
+  harness job.
 
 ## Tier 3 — glue
 
-- `crates/seam/src/lib.rs` — empty Stage 1 package marker; contains no tuner
-  behavior.
+- `crates/seam/src/config.rs` — typed YAML parsing, defaults, reference checks,
+  credential rejection, duration parsing, and quoted-identifier validation.
+- `crates/seam/src/lib.rs` — package module wiring only.
 - `crates/seam/tests/support/mod.rs` — shared pending-test marker and fixture
   module wiring.
 - `python/seam_harness/__init__.py` — package marker.
 - `python/vectorseam/tests/test_seam_anchor_harness.py` — database-free Python
   reference-hash smoke tests.
-- `crates/seam/Cargo.toml` and workspace `Cargo.toml` — test dependency and
-  package wiring.
+- `crates/seam/Cargo.toml` and workspace `Cargo.toml` — package and dependency
+  wiring.
 
 ## Confidence report
 
-I am confident that all 28 criteria are traced: 27 criterion IDs are present
-in machine-test names, while C7 is explicitly deferred to human review with
-the owner's approval. The literal expected values and tolerances are sourced
-from the frozen spec. I am also confident in the parquet column/metadata
-transcription and in using `vectorseam-core` for `.vseam` segment
-serialization.
+I am confident in the exact B1, B3–B8, B10–B11 and C4–C5, C8 behavior now
+machine-gated, and in the Phase B halves of B9, B12, and C3. The estimator has
+no filesystem, async, or clock access: `computed_at` and the aligned round end
+are explicit inputs. Population and part iteration are normalized through
+ordered maps before floating-point reductions, and round JSON uses struct
+field order rather than unordered maps.
 
-The highest-value human review is the anchor adapter: it deliberately patches
-only the anchor's query split while calling its existing private calculation
-functions. Review should confirm that this is the desired meaning of “reuse”
-before Gate 1. The F-pg fixture distribution is deterministic uniform data
-normalized to unit length; the spec fixes the size, dimensionality, ordering,
-and properties but not a distribution, so this choice is harness policy rather
-than tuner behavior.
+The highest-value Stage 2 human review is the compact
+`accounting.rs`/`population.rs`/`aggregate.rs` chain: confirm the half-open
+part-membership predicate, lexicographic `(part_ulid, record_index)` survivor,
+compatible-part counters, and the owner-approved null/empty-split semantics.
+In `math.rs`, confidence is evaluated as the mathematically
+equivalent complementary regularized-beta expression
+`I_(1-p)(n-m+1, m+1)`, avoiding cancellation from a literal `1 - I_p`; the
+SciPy grid and B10 closed form pass at the frozen tolerances.
 
-I first considered emitting `.vseam` bytes in Python. I changed course so the
-fixture uses `vectorseam-core::segment::write_segment`, avoiding a second
-segment-format implementation. I also use a dedicated tie table for B2 so the
-main anchor fixture can preserve its required no-boundary-tie property.
+I am also confident that `intermediate.rs` preserves the intended seam: it
+performs synchronous storage decoding, while `aggregate` consumes only owned
+in-memory values. The reader validates frozen Arrow fields but ignores
+non-contract Arrow schema metadata. It materializes only identity, dedup, and
+stored recall/latency columns because §2.6 makes stored recall authoritative;
+ground-truth and returned-key payloads remain part of the validated parquet
+schema without being re-scored.
+
+Changes from the first approach:
+
+- The PostgreSQL fixture originally used seed 7. The owner-directed ascending
+  search selected seed 0, whose minimum boundary gap is
+  `1.3683911141981753e-6`.
+- The parquet reader initially compared entire Arrow schemas, including
+  implementation metadata not frozen by §2.4. It now compares the exact field
+  list, matching the harness contract.
+- The B12 fixture originally declared three records but only one received
+  frame. Its header now correctly declares three received frames; assertions
+  were not weakened.
+- Inline `password` values are discarded during YAML deserialization rather
+  than retained in the raw model; even `password: null` is rejected.
+- The initial aggregation module combined membership, deduplication,
+  selection, and orchestration in one file. It was split into focused
+  accounting and population modules so Gate 2 Tier 1 review remains small.
+
+No Stage 2 behavior currently needs an additional owner decision. Tier 1
+review is still requested before Gate 2 approval, as required by the staged
+plan.
 
 ## C7 deferred manual review — Gate 3
 
