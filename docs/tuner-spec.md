@@ -31,7 +31,7 @@ Terms used throughout:
 - **In scope**: a segment part is in scope for a round iff its storage
   window lies fully inside that round's range `[round_end − W, round_end)`;
   the formal membership rule is in §2.2 (rolling window semantics).
-  "In-scope windows / markers / intermediates" follow the same rule.
+  "In-scope windows / intermediates" follow the same rule.
 - **Anchor**: the published `ann-recall-latency` Python pipeline
   (`python/ann-recall-latency/` — `ground_truth.py`, `sweep.py`,
   `analyze.py`), the reference implementation behind the blog's findings.
@@ -80,9 +80,7 @@ Each round, per configured cohort, has two phases:
    ticking at 12:07:23 with `W = 24h` covers
    `[previous day 12:00:00, today 12:00:00)`.
 2. List segment parts under `cohorts/<cohort>/window=<ts>/` for every aligned
-   storage window fully inside the round range, plus the collector's window
-   observation markers (§2.4) for the same range, used for coverage
-   accounting.
+   storage window fully inside the round range.
 3. Diff the listed parts against already-measured parts under
    `measurements/<cohort>/…`. For each unmeasured part: fetch and parse the
    `.vseam` part, then for each kept sample run the per-sample database
@@ -367,8 +365,7 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
   picked up by the next: every round re-lists all in-scope windows and
   measures any part it has no intermediates for. A round that ticks moments
   after a window closes may list that window mid-flush and see only some of
-  its parts; the remainder is simply measured next round. Observation
-  markers (§2.4) never gate measurement — they only classify coverage.
+  its parts; the remainder is simply measured next round.
 - **No-double-count invariant**: aggregation reads intermediates keyed by
   `part_ulid`; a part contributes exactly once per round regardless of how
   often it was listed, re-listed, or re-measured after a crash. Resume never
@@ -509,7 +506,6 @@ prefixes that cannot collide with cohort paths (a cohort named
 
 ```
 cohorts/<cohort>/window=<ts>/part-<ulid>.vseam            # collector (input)
-windows/window=<ts>/observed-<ulid>.json                  # collector (input): observation markers
 measurements/<cohort>/window=<ts>/part-<ulid>.truth.parquet
 measurements/<cohort>/window=<ts>/part-<ulid>.sweep.parquet
 calibrations/<cohort>/round-<ts>.json                     # immutable history
@@ -520,72 +516,6 @@ calibrations/<cohort>/latest.json                         # mutable pointer copy
 `round_end`. `round-<ts>.json` is written first, then the identical bytes
 overwrite `latest.json` (single atomic PUT each — the poll target for the
 demo dashboard and, later, the sidecar).
-
-#### Window observation markers (input; required collector addition)
-
-The tuner must distinguish "the collector was up and there was simply no
-traffic" from "the collector was down or started mid-window". Segment parts
-cannot carry that distinction: a zero-traffic window produces no part at all,
-and `first_receive` in a part header cannot separate "listening since 12:00,
-first frame at 12:05" from "started listening at 12:03".
-
-**Decision**: the collector additionally writes one small **observation
-marker** per storage window it fully or partially observed, after all of
-that window's parts are flushed:
-
-```jsonc
-// windows/window=<ts>/observed-<ulid>.json
-{
-  "format_version": 1,
-  "window_start": 1783513800,   // aligned window start, unix seconds UTC
-  "window_seconds": 600,
-  "observed_from_us": ...,      // max(window start, listener start), unix micros
-  "observed_to_us": ...         // min(window end, graceful-shutdown time), unix micros
-}
-```
-
-Collector-side contract (a small, explicit collector change this spec
-depends on):
-
-- Written **after** the window's parts, at window close on the normal path,
-  or at graceful shutdown for the currently open window. One small PUT —
-  atomic on `LocalFileSystem` (`object_store` writes temp + rename) and on
-  S3-style stores.
-- Written **even when zero frames were received** — that is the point.
-- Never overwritten: the ULID suffix follows the part-naming pattern, so a
-  collector restart within one window produces multiple markers whose
-  intervals the tuner unions.
-- A crash writes no marker for the interval observed since the last window
-  close; spill parts flushed before the crash remain. Coverage is therefore
-  underestimated, never overestimated — conservative in the honest
-  direction.
-
-Worked example (600 s windows, collector starts 12:03, first frame 12:05):
-the part has `window_start = 12:00` and `first_receive = 12:05`; the marker
-says `observed_from = 12:03`, `observed_to = 12:10`. The tuner can state:
-samples from 12:03–12:10 are trustworthy, and 12:00–12:03 may be missing
-samples.
-
-Tuner-side use — coverage only, never coordination:
-
-- Per in-scope window slot: `observed_seconds = |union(marker intervals) ∩
-  slot|`. Round metric: `unobserved_time_fraction = 1 − Σ observed_seconds
-  / W`.
-- A slot with a marker but no parts is an **observed zero-traffic** slot; a
-  slot (or part of one) without marker coverage is a **collector gap**.
-- Markers never gate measurement: parts found in an unmarked window are
-  still measured and used — a missing marker (old collector build,
-  pre-deployment history, crash) only raises `unobserved_time_fraction`.
-- Markers deliberately do **not** define `round_end`. Anchoring the round to
-  the wall clock keeps a collector outage visible as growing unobserved
-  time; anchoring to the last marker would silently freeze the window
-  instead. This decision supersedes an earlier `close_grace` heuristic.
-
-Alternative considered and rejected: appending a `window_collection_start`
-field to the segment header. It cannot represent windows with zero parts
-(the common case for outages), and it duplicates per-process information
-into every cohort's parts; the format's `header_len` extensibility remains
-available if a per-part need appears later.
 
 #### Durable intermediates (parquet, zstd)
 
@@ -654,10 +584,9 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
                "train": 3605, "test": 1545 },
   "dropped_frame_fraction": 0.012,   // collector-side: 1 - sum(record_count)/sum(received_frame_count)
   "coverage": {
-    "unobserved_time_fraction": 0.05, // window time not covered by observation markers
+    "empty_window_fraction": 0.0417,  // in-scope storage windows with no parts / windows in scope
     "windows_in_scope": 144,
-    "windows_observed": 143,          // slots with at least one marker
-    "windows_with_parts": 140
+    "windows_with_parts": 138
   },
   "parts_used": 144,
   "incompatible_parts": 0,           // intermediates skipped for config mismatch
@@ -670,14 +599,13 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
 ```
 
 Notes: `dropped_frame_fraction` covers collector-side drops only (SDK
-queue-full drops are invisible downstream). The `coverage` block comes from
-observation markers (§2.4): a marked slot without parts is observed
-zero-traffic, not a gap; unmarked time — collector down, started mid-window,
-or crashed — counts toward `unobserved_time_fraction`. `samples.failed`
-carries Phase A's per-sample measurement failures (SQL errors, timeouts, bad
-frames). Confidence expresses transferability only and never folds in drops,
-gaps, or failures — they are reported alongside it so the consumer can judge
-both independently.
+queue-full drops are invisible downstream). The `coverage` block is derived
+purely from the part listing; an empty window can mean either zero traffic
+or a down/late collector, and the MVP cannot tell the two apart — a
+recorded corner cut (§4.2). `samples.failed` carries Phase A's per-sample
+measurement failures (SQL errors, timeouts, bad frames). Confidence
+expresses transferability only and never folds in drops, gaps, or failures —
+they are reported alongside it so the consumer can judge both independently.
 
 ### 2.5 Measure phase details
 
@@ -713,9 +641,9 @@ Connections: one pool per distinct `(server, database)` with
    and stop.
 5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
-   block from observation markers (§2.4).
-7. Compose the round JSON (all counters from part headers, marker intervals,
-   and file metadata); PUT `round-<ts>.json`, then `latest.json`.
+   block from the window/part listing.
+7. Compose the round JSON (all counters from part headers and file
+   metadata); PUT `round-<ts>.json`, then `latest.json`.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
@@ -817,6 +745,16 @@ can come back as prioritized improvements:
   Consequence: sustained sample flow beyond the duty-cycle budget makes
   rounds fall behind and outputs go stale; the database stays protected
   (§3.1). Revisit with a deterministic per-part cap if staleness bites.
+- **No observation-coverage signal.** An in-scope storage window with no
+  parts can mean zero traffic or a down/late collector; the tuner cannot
+  tell them apart and reports both as `empty_window_fraction`. Future
+  option (small collector change): `CohortState` records its creation
+  time — every flush replaces the state, so each part header would
+  naturally carry the observation range of its window. Example: collector
+  starts 12:03, first frame 12:05 → `window_start = 12:00`, collection
+  start 12:03: samples from 12:03–12:10 are trustworthy, 12:00–12:03 may be
+  missing. Zero-traffic windows would still leave no trace; covering those
+  needs a per-window marker object.
 - **Ground truth runs only in-database.** Alternative for scan-averse
   deployments: bulk-export the vector column once per round and brute-force
   in the tuner — trades per-sample scan load for one big read, network,
@@ -893,11 +831,9 @@ shuffles are not part of the contract):
   1000 → a recommendation is emitted.
 - **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
   round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
-  starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded.
-  With full markers on five slots and the 11:20 slot marked only from 11:23
-  (420 s observed) → `unobserved_time_fraction = 180/3600 = 0.05 ± 1e-12`; a
-  marked slot with zero parts contributes zero samples and zero unobserved
-  time.
+  starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded;
+  with no parts in the 11:20 slot,
+  `empty_window_fraction = 1/6 ± 1e-12`.
 - **B9 no double-count**: two consecutive overlapping rounds over the same
   parts → each round's `samples.available` equals the sum of distinct
   in-scope `record_count`s; a part listed in both rounds triggers zero new
@@ -908,12 +844,7 @@ shuffles are not part of the contract):
   m+1, n−m+1)` within 1e-6 on a grid of (n, m).
 - **B11 drop fraction**: part headers (received = 100, records = 80) and
   (received = 50, records = 50) → `dropped_frame_fraction = 2/15 ± 1e-12`.
-- **B12 markers never gate measurement**: a window containing spill parts
-  but no marker → its samples are measured and included in the population,
-  while the slot's unmarked time still counts toward
-  `unobserved_time_fraction`; two markers in one slot (collector restart)
-  have their intervals unioned, not double-counted.
-- **B13 deduplication**: a part containing the same vector at record
+- **B12 deduplication**: a part containing the same vector at record
   indexes 3, 5, and 9 → exactly one truth row (`record_index = 3`,
   `dup_count = 3`) and one grid of sweep rows for it; the same vector
   appearing again in a second in-scope part → `samples.unique` counts it
@@ -933,9 +864,8 @@ shuffles are not part of the contract):
 - **C3 config fingerprint**: intermediates written with k = 10 are ignored
   and re-measured after k changes to 20; `incompatible_parts` > 0 in the
   next round.
-- **C4 empty round**: zero in-scope parts and zero markers →
-  `insufficient_samples`, `samples.available = 0`,
-  `unobserved_time_fraction = 1.0`.
+- **C4 empty round**: zero in-scope parts → `insufficient_samples`,
+  `samples.available = 0`, `empty_window_fraction = 1.0`.
 - **C5 config validation**: each of — inline `password` key, `user:pass@`
   in `server`, ef grid containing a value < k or > 1000 or non-increasing,
   cohort with unknown index/target, `percentile: 1.0`, `window <
