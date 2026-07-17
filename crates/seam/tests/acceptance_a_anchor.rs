@@ -29,6 +29,7 @@ static COMPARISON: OnceLock<Result<AnchorComparison, String>> = OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 struct AnchorOutput {
+    value: f64,
     query_order: Vec<i64>,
     recall_rows: Vec<AnchorRecallRow>,
     per_ef: Vec<AnchorPerEf>,
@@ -110,6 +111,7 @@ fn a4_anchor_recommended_ef_identical() {
         comparison.tuner_recommended_ef,
         comparison.anchor_recommended_ef
     );
+    assert_eq!(comparison.tuner_recommended_ef, 80);
 }
 
 #[test]
@@ -137,6 +139,7 @@ fn required_comparison() -> &'static AnchorComparison {
 
 fn build_comparison() -> Result<AnchorComparison> {
     let anchor = read_anchor_comparison::<AnchorOutput>()?;
+    ensure!(anchor.value == 0.8);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -306,7 +309,7 @@ fn anchor_config() -> Config {
             "recall".to_owned(),
             TargetConfig {
                 k: 10,
-                value: 0.9,
+                value: 0.8,
                 percentile: 0.90,
                 window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
             },

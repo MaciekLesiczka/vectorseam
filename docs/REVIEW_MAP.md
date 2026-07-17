@@ -185,13 +185,11 @@ Stage 4 deviations from the initial skeleton:
   advances over every crossed boundary and schedules only the next future
   tick.
 
-No unresolved A–D specification question remains. Optional P1 `seam plan`
-was not implemented in Stage 4 and remains a product-priority call; it is not
-an A–D acceptance criterion. The owner also identified a possible stronger
-A4 fixture variant at `value: 0.8`, which would select a mid-grid ef. The
-current A-suite remains at the frozen §5 value `0.9`; B5 independently gates
-smallest-clearing mid-grid selection. Changing A4 requires explicit approval
-to amend the frozen spec.
+No unresolved A–D specification question remains. The owner approved the
+stronger A4 fixture target `value: 0.8`; the anchor and tuner must now select
+the literal mid-grid ef `80`. Optional P1 `seam plan` was not implemented in
+Stage 4 and remains a product-priority call; it is not an A–D acceptance
+criterion.
 
 ## C7 deferred manual review — Gate 3
 

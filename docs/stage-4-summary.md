@@ -30,12 +30,10 @@
 - D2 remains the owner-approved removed concurrency criterion.
 - Optional P1 `seam plan` was not implemented. It is outside A1–D3 and is
   flagged for the owner's product-priority call.
-- A4 retains the frozen `value: 0.9`, whose fixture result is the maximum ef.
-  B5 covers mid-grid smallest-clearing selection. Switching the A fixture to
-  `value: 0.8` remains an optional spec-amendment decision.
+- The owner-approved A4 strengthening uses `value: 0.8`; both implementations
+  must select the literal mid-grid ef `80`.
 
 ## Open questions
 
-No A1–D3 specification question is open. Priority decisions are whether P1
-plan mode should be scheduled and whether the owner wants to amend A4's
-frozen target for a stronger mid-grid anchor fixture.
+No A1–D3 specification question is open. The only remaining priority decision
+is whether P1 plan mode should be scheduled as follow-up work.

@@ -22,7 +22,7 @@ _DATASET = "seam_fixture"
 _K = 10
 _EF_GRID = [10, 20, 40, 80, 160]
 _PERCENTILE = 0.90
-_VALUE = 0.9
+_VALUE = 0.8
 _TRAIN_FRACTION = 0.7
 _SPLIT_SEED = 7
 
@@ -81,6 +81,7 @@ def _run_calibration_with_hash_split(
 ) -> dict[str, Any]:
     original_datasets = analyze.DATASETS
     original_split: Callable[..., Any] = analyze._split_query_ids
+    original_target_recall = analyze.TARGET_RECALL
 
     def fixture_split(
         unused_rows: list[dict[str, Any]], unused_dataset: str
@@ -90,10 +91,12 @@ def _run_calibration_with_hash_split(
     try:
         analyze.DATASETS = (_DATASET,)
         analyze._split_query_ids = fixture_split
+        analyze.TARGET_RECALL = _VALUE
         calibration = analyze._calibration_rows(rows)
     finally:
         analyze.DATASETS = original_datasets
         analyze._split_query_ids = original_split
+        analyze.TARGET_RECALL = original_target_recall
     if len(calibration) != 1:
         raise RuntimeError("anchor calibration must emit exactly one dataset")
     return calibration[0]

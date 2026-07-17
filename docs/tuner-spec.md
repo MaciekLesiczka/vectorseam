@@ -896,19 +896,19 @@ only — no database.
 ### A. Anchor reproduction (the correctness anchor)
 
 Same live pgvector instance and index, same k = 10, same grid
-`[10, 20, 40, 80, 160]`, and identical train/holdout membership (both sides
-computed by the §2.2 hash split — the anchor harness reuses the published
-pipeline's recall/percentile/selection code with that split; numpy RNG
-shuffles are not part of the contract):
+`[10, 20, 40, 80, 160]`, `percentile: 0.90`, `value: 0.8`, and identical
+train/holdout membership (both sides computed by the §2.2 hash split — the
+anchor harness reuses the published pipeline's recall/percentile/selection
+code with that split; numpy RNG shuffles are not part of the contract):
 
 - **A1** For ≥ 99% of (query, ef) pairs, tuner `recall` equals the anchor's
   recall exactly; disagreements are only where ground truth differs (torch
   float math vs pgvector scan near-ties).
 - **A2** Per-ef full-population mean recall: |tuner − anchor| ≤ 0.005.
 - **A3** Per-ef train compliance quantile (`percentile: 0.90`,
-  `value: 0.9`): |tuner − anchor `np.percentile(_, 10)`| ≤ 0.01.
+  `value: 0.8`): |tuner − anchor `np.percentile(_, 10)`| ≤ 0.01.
 - **A4** `recommended_ef` identical to the anchor's
-  "min ef with train p10 ≥ 0.9".
+  "min ef with train p10 ≥ 0.8", and equal to `80`.
 - **A5** `test_quantile_recall`: |tuner − anchor| ≤ 0.01, and `transferred`
   identical.
 

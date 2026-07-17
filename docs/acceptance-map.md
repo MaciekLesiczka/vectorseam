@@ -15,7 +15,7 @@ recorded in `docs/REVIEW_MAP.md`.
 | A1 | `crates/seam/tests/acceptance_a_anchor.rs::a1_anchor_recall_exact_for_at_least_99_percent` (F-pg + trusted anchor) | passing |
 | A2 | `crates/seam/tests/acceptance_a_anchor.rs::a2_anchor_full_population_mean_recall_within_0_005` (F-pg + trusted anchor) | passing |
 | A3 | `crates/seam/tests/acceptance_a_anchor.rs::a3_anchor_train_p10_within_0_01` (F-pg + trusted anchor) | passing |
-| A4 | `crates/seam/tests/acceptance_a_anchor.rs::a4_anchor_recommended_ef_identical` (F-pg + trusted anchor) | passing |
+| A4 | `crates/seam/tests/acceptance_a_anchor.rs::a4_anchor_recommended_ef_identical` (F-pg + trusted anchor) | passing — both select the spec literal `80` |
 | A5 | `crates/seam/tests/acceptance_a_anchor.rs::a5_anchor_holdout_quantile_and_transfer_match` (F-pg + trusted anchor) | passing |
 | B1 | `crates/seam/tests/acceptance_b_estimator.rs::b1_recall_set_intersection_and_short_results` | passing |
 | B2 | `crates/seam/src/database.rs::tests::b2_f_pg_ground_truth_tie_break_prefers_key_7_over_9` (F-pg); `crates/seam/src/database.rs::tests::b2_ground_truth_sql_quotes_identifiers_and_tie_breaks_by_key` | passing |
