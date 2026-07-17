@@ -9,42 +9,73 @@ use seam::model::{
     AggregationConfig, AggregationInput, IntermediateMetadata, IntermediatePart, ListedPart,
     MeasuredSample, PhaseAAbort, RoundStatus, SweepMeasurement,
 };
+use seam::tuner::Tuner;
 use support::f_agg::{
     DEFAULT_PART_ULID, DEFAULT_WINDOW_SECONDS, DEFAULT_WINDOW_START, PartMetadata, SweepRow,
-    TruthRow, write_intermediate_pair,
+    TruthRow, independently_count_truth_rows, write_intermediate_pair, write_segment_fixture,
 };
 use tempfile::tempdir;
+use tokio_util::sync::CancellationToken;
 
-#[derive(Debug)]
-struct PendingRoundResult {
-    status: String,
-    measured: u64,
-    error: Option<String>,
-}
+#[tokio::test]
+async fn c2_database_down_still_publishes_cached_phase_b_and_exits_zero() {
+    let root = tempdir().unwrap();
+    let metadata = PartMetadata {
+        ef_grid: vec![10, 20, 40],
+        ..PartMetadata::default()
+    };
+    write_segment_fixture(
+        root.path(),
+        &metadata,
+        1,
+        &[(DEFAULT_WINDOW_START * 1_000_000, vec![0.25, 0.5])],
+    )
+    .unwrap();
+    let truth = TruthRow {
+        record_index: 0,
+        vector_hash: 0xaf63_dc4c_8601_ec8c,
+        dup_count: 1,
+        receive_time_us: 1_783_512_000_000_000,
+        gt_keys: (1..=10).collect(),
+        gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
+    };
+    let sweeps = metadata
+        .ef_grid
+        .iter()
+        .map(|ef| SweepRow {
+            record_index: 0,
+            ef: *ef,
+            returned_keys: (1..=10).collect(),
+            recall: 1.0,
+            latency_ms: 0.5,
+            result_count: 10,
+        })
+        .collect::<Vec<_>>();
+    let pair = write_intermediate_pair(root.path(), &metadata, &[truth], &sweeps).unwrap();
+    // This expected side reads raw parquet metadata independently and never
+    // calls the tuner's intermediate reader.
+    let cached_measured =
+        independently_count_truth_rows(std::slice::from_ref(&pair.truth_path)).unwrap();
 
-#[test]
-#[ignore = "Stage 3: durable part resume is not implemented"]
-fn c1_resume_mid_part_rewrites_pair_and_matches_clean_run() {
-    let truth_was_rewritten = support::pending::<bool>("C1");
-    let sweep_was_written = support::pending::<bool>("C1");
-    let statements_for_incomplete_part_only = support::pending::<bool>("C1");
-    let crashed_and_clean_rounds_equal = support::pending::<bool>("C1");
-    assert!(truth_was_rewritten);
-    assert!(sweep_was_written);
-    assert!(statements_for_incomplete_part_only);
-    assert!(crashed_and_clean_rounds_equal);
-}
+    let yaml = valid_yaml()
+        .replace("/tmp/vectorseam", root.path().to_str().unwrap())
+        .replace("localhost:5432", "127.0.0.1:1");
+    let config = Config::from_yaml_str(&yaml).unwrap();
+    let mut tuner = Tuner::start(config).await.unwrap();
+    let report = tuner
+        .run_round(
+            DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
+            "2026-07-08T12:10:00Z".to_owned(),
+            1_783_512_600_000_000,
+            &CancellationToken::new(),
+        )
+        .await;
 
-#[test]
-#[ignore = "Stage 3: database degradation and publishing are not implemented"]
-fn c2_database_down_still_publishes_cached_phase_b_and_exits_zero() {
-    let published = support::pending::<PendingRoundResult>("C2");
-    // The expected side is intentionally independent: it must count raw truth
-    // parquet rows directly, never call the tuner's intermediate reader.
-    let cached_measured = support::pending::<u64>("C2");
-    let shutdown_exit_code = support::pending::<i32>("C2");
-    assert_eq!(published.measured, cached_measured);
-    assert_eq!(shutdown_exit_code, 0);
+    let published = &report.published["acceptance/f-agg"];
+    assert_eq!(published.samples.measured, cached_measured);
+    assert!(report.failed_cohorts.is_empty());
+    assert!(!report.cancelled);
+    tuner.shutdown().await;
 }
 
 #[test]
@@ -66,13 +97,6 @@ fn c3_config_fingerprint_k_change_ignores_incompatible_intermediate() {
     assert_eq!(observed.incompatible_parts, 1);
     assert_eq!(observed.parts_used, 0);
     assert_eq!(observed.samples.measured, 0);
-}
-
-#[test]
-#[ignore = "Stage 3: incompatible-part remeasurement is not implemented"]
-fn c3_config_fingerprint_k_change_remeasures_with_k_20() {
-    let part_was_remeasured_with_k_20 = support::pending::<bool>("C3");
-    assert!(part_was_remeasured_with_k_20);
 }
 
 #[test]
@@ -150,20 +174,6 @@ fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
     assert_eq!(observed.transferred, None);
-}
-
-#[test]
-#[ignore = "Stage 3: table-size detection and cohort continuation are not implemented"]
-fn c6_table_smaller_than_k_aborts_after_one_scan_and_continues_other_cohorts() {
-    let affected = support::pending::<PendingRoundResult>("C6");
-    let exact_scan_count = support::pending::<u64>("C6");
-    let sweep_statement_count = support::pending::<u64>("C6");
-    let other_cohort_completed = support::pending::<bool>("C6");
-    assert_eq!(affected.status, "insufficient_samples");
-    assert!(affected.error.is_some());
-    assert!(exact_scan_count <= 1);
-    assert_eq!(sweep_statement_count, 0);
-    assert!(other_cohort_completed);
 }
 
 #[test]
@@ -267,6 +277,7 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,

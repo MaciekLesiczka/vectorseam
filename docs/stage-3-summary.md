@@ -1,0 +1,30 @@
+# Stage 3 summary
+
+## Passed
+
+- Per-part `.vseam` parsing, exact-byte deduplication, measurement, frozen
+  parquet encoding, and truth-before-sweep durability.
+- Object-store window listing/diffing, crash resume, config-fingerprint
+  remeasurement, cached database-down publication, round/latest publication,
+  and graceful cancellation without a partial round.
+- One serialized PostgreSQL connection and duty-cycle pacer per data source;
+  one `REPEATABLE READ` transaction per sample with bound vectors, quoted
+  identifiers, exact-query tie-break, ascending ef sweep, statement timeout,
+  explicit rollback, and supervised shutdown.
+- F-agg acceptance/property suite, F-pg B2/C6/D3 suite, full workspace tests,
+  clippy, warning-free rustdoc, Rust 1.85 MSRV check, and the Phase B Criterion
+  baseline. D3 uses a locked, dedicated F-pg table to make the frozen 1 ms
+  timeout deterministic and counts sample transactions to prove there are no
+  retries.
+
+## Red or deferred
+
+- A1–A5 remain blocked until Stage 4 anchor reproduction and wire-up.
+- C7 is deferred with owner approval to the explicit manual transaction
+  checklist in `docs/REVIEW_MAP.md`; reviewer sign-off is pending.
+- D2 remains recorded as the owner-approved removed criterion.
+
+## Open questions
+
+No unresolved Stage 3 specification question remains. The Gate 3 human action
+is the C7/transaction-construction review, not a spec decision.

@@ -30,19 +30,6 @@ fn b1_recall_set_intersection_and_short_results() {
 }
 
 #[test]
-#[ignore = "Stage 3: pgvector transaction is not implemented"]
-fn b2_ground_truth_tie_break_prefers_key_7_over_9() {
-    // B2 drives the ground-truth query path in isolation. It deliberately does
-    // not run the sweep against the unindexed tie-break table.
-    let repeated_ground_truth_keys = support::pending::<Vec<Vec<i64>>>("B2");
-    assert!(
-        repeated_ground_truth_keys
-            .iter()
-            .all(|keys| keys.contains(&7) && !keys.contains(&9))
-    );
-}
-
-#[test]
 fn b3_quantile_type7_linear_and_singleton() {
     assert_eq!(quantile_type7(&[0.5, 0.7, 0.9, 1.0], 0.05).unwrap(), 0.53);
     assert_eq!(quantile_type7(&[0.7], 0.05).unwrap(), 0.7);
@@ -151,6 +138,7 @@ fn b8_window_membership_six_slots_and_one_sixth_empty() {
         round_end: observed_round_end,
         computed_at: "1970-01-01T12:07:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts,
         intermediates: Vec::new(),
     };
@@ -175,6 +163,7 @@ fn b9_no_double_count_across_overlapping_rounds_in_phase_b() {
         round_end,
         computed_at: "1970-01-01T02:00:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts: listed_parts.clone(),
         intermediates: Vec::new(),
     };
@@ -184,13 +173,6 @@ fn b9_no_double_count_across_overlapping_rounds_in_phase_b() {
     assert_eq!(first.samples.available, 130);
     assert_eq!(second.samples.available, 130);
     assert_eq!(first.samples.unique, second.samples.unique);
-}
-
-#[test]
-#[ignore = "Stage 3: storage diffing and statement instrumentation are not implemented"]
-fn b9_second_round_issues_zero_new_database_statements() {
-    let second_round_new_statements = support::pending::<u64>("B9");
-    assert_eq!(second_round_new_statements, 0);
 }
 
 #[test]
@@ -224,6 +206,7 @@ fn b11_drop_fraction_is_two_fifteenths() {
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts: vec![
             ListedPart {
                 part_ulid: "part-a".to_owned(),
@@ -267,6 +250,7 @@ fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts: vec![
             listed_from_intermediate(&first),
             listed_from_intermediate(&second),
@@ -297,15 +281,6 @@ fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
     );
     assert_eq!(moved.samples.train, both.samples.train);
     assert_eq!(moved.samples.test, both.samples.test);
-}
-
-#[test]
-#[ignore = "Stage 3: within-part measurement deduplication is not implemented"]
-fn b12_measure_dedup_emits_one_truth_row_and_one_sweep_grid() {
-    let observed_truth_rows = support::pending::<usize>("B12");
-    let observed_sweep_rows = support::pending::<usize>("B12");
-    assert_eq!(observed_truth_rows, 1);
-    assert_eq!(observed_sweep_rows, 5);
 }
 
 fn independent_is_train(vector_hash: u64, split_seed: u64, train_fraction: f64) -> bool {
@@ -385,6 +360,7 @@ fn populated_input(
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
+        phase_a_incompatible_parts: 0,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,

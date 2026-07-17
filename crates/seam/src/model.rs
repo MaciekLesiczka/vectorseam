@@ -165,6 +165,8 @@ pub struct AggregationInput {
     pub computed_at: String,
     /// Optional cohort-level Phase A abort that forces an insufficient round.
     pub phase_a_abort: Option<PhaseAAbort>,
+    /// Incompatible pairs Phase A observed and replaced before aggregation.
+    pub phase_a_incompatible_parts: u64,
     /// All listed part headers that may overlap the round.
     pub listed_parts: Vec<ListedPart>,
     /// All durable intermediate pairs that may overlap the round.

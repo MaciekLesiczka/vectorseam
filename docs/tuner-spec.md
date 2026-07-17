@@ -436,24 +436,30 @@ storage:
 
 budget:                           # database traffic control, see §3.1
   db_share: 0.10
-  max_concurrent_queries: 1
   statement_timeout: 5s
 
-indexes:
-  stockexchange:
+data_sources:
+  primary:
     server: localhost:5432
     database: postgres
     user: postgres
-    password_env: SEAM_PG_STOCKEXCHANGE   # optional; see secrets
+    password_env: SEAM_PG_PRIMARY         # optional; see secrets
+
+  analytics:
+    server: analytics.internal:5432
+    database: vectors
+    user: vectorseam
+    password_env: SEAM_PG_ANALYTICS
+
+indexes:
+  stockexchange:
+    data_source: primary
     table: docs_stackexchange
     key: doc_id
     column: embedding
 
   reddit:
-    server: localhost:5432
-    database: postgres
-    user: postgres
-    password_env: SEAM_PG_REDDIT
+    data_source: analytics
     table: docs_reddit
     key: doc_id
     column: embedding
@@ -481,20 +487,34 @@ everything else in storage, so there are no matching-precedence rules, no
 discovery pass, and no "configured pattern vs concrete cohort" distinction
 anywhere in the pipeline. Prefix patterns are a recorded corner cut (§4.2).
 
-**Secrets.** Decision: connection fields are plain config; the password, if
-any, comes only from the environment variable named by `password_env`
+**Data sources.** Database connection identity is a top-level concern.
+Each named data source owns `server`, `database`, `user`, and optional
+`password_env`; each index references exactly one data source and owns only
+`table`, `key`, and `column`. Distinct data sources must have distinct
+`(server, database)` pairs. Defining the same pair twice is a startup error,
+regardless of user or password configuration. This makes the one-connection,
+one-pacer ownership in §2.5 unambiguous.
+
+**Secrets.** Decision: data-source connection fields are plain config; the
+password, if any, comes only from the environment variable named by `password_env`
 (the standard container pattern: Kubernetes injects secrets as environment
 variables via `secretKeyRef`; local development uses `export`).
 The config loader **rejects** any inline credential — a `password` key or a
-`user:pass@` userinfo in any connection value — with an error pointing at
-`password_env`. Passwords never appear in config, logs, intermediates, or
-outputs. Rationale: one mechanism, native to every deployment target, and a
-hard validation stop is worth more trust than optional advice.
+`user:pass@` userinfo in any data-source connection value — with an error
+pointing at `password_env`. When `password_env` is configured, the named
+environment variable must exist at startup; when it is omitted, no password
+environment variable is required. Passwords never appear in config, logs,
+intermediates, or outputs. Rationale: one mechanism, native to every
+deployment target, and a hard validation stop is worth more trust than
+optional advice.
 
 **Startup validation** (all violations are fatal):
 
 - every cohort key is a valid cohort name per the grammar (exact names, no
-  patterns) and references an existing index and target
+  patterns) and references an existing index and target; every index
+  references an existing data source
+- every data source has a unique `(server, database)` pair; duplicate pairs
+  are rejected even when their users or `password_env` values differ
 - `storage.window_seconds` is a positive multiple of 60; `0 < percentile <
   1`, `0 < value ≤ 1`, `k ≥ 1`; every target `window` is at least one storage
   window and an exact multiple of `storage.window_seconds`
@@ -504,13 +524,13 @@ hard validation stop is worth more trust than optional advice.
   increasing, `min(grid) ≥ k` for every configured target (pgvector caps
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
-- `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
-  `max_concurrent_queries ≥ 1`; additionally,
-  `round(train_fraction * 10000)` must be in `1..=9999`
+- `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`;
+  additionally, `round(train_fraction * 10000)` must be in `1..=9999`
 - `table`, `column`, `key` are valid PostgreSQL quoted/delimited identifiers:
   non-empty UTF-8, at most 63 bytes, and containing no NUL. They are always
   emitted quoted with embedded double quotes escaped.
-- no inline credentials (see secrets)
+- no inline credentials; every configured `password_env` exists at startup
+  (see secrets)
 
 ### 2.4 Storage contract
 
@@ -646,9 +666,10 @@ Per unmeasured part:
    are bounded by the collector's 32 MiB spill cap); write
    `*.truth.parquet` then `*.sweep.parquet`.
 
-Connections: one pool per distinct `(server, database)` with
-`max_size = budget.max_concurrent_queries`. Every transaction sets
-`statement_timeout` via `SET LOCAL`.
+Connections: one long-lived connection and one duty-cycle pacer per data
+source. Data-source pair uniqueness means this is exactly one connection and
+pacer per `(server, database)`. All statements for that PostgreSQL pair are
+serialized. Every transaction sets `statement_timeout` via `SET LOCAL`.
 
 ### 2.6 Aggregate phase details
 
@@ -677,21 +698,19 @@ idempotent by design.
 
 ### 3.1 Database traffic control
 
-Goal: a skeptical operator can read three numbers from the config and bound
+Goal: a skeptical operator can read two numbers from the config and bound
 the tuner's worst-case database impact, PlanetScale-traffic-control style
 (budgets per workload slice), without any server-side installation:
 
-> At most `max_concurrent_queries` backend(s), each busy at most `db_share`
-> of wall-clock time, and no single statement longer than
-> `statement_timeout`.
+> One backend per `(server, database)`, busy at most `db_share` of wall-clock
+> time, and no measured statement longer than `statement_timeout`.
 
 Mechanisms, in priority order (P0 ships in the MVP; the human owner arbitrates
 anything beyond):
 
-- **P0 — concurrency budget**: a global semaphore of
-  `max_concurrent_queries` (default 1) over all tuner database work.
-- **P0 — duty-cycle pacing** (the "server share" idea): a global pacer;
-  after a statement observed to take `t`, the tuner sleeps
+- **P0 — serialized connection and duty-cycle pacing** (the "server share"
+  idea): one connection and one pacer per `(server, database)`; after a
+  statement observed to take `t`, that pacer sleeps
   `t · (1 − db_share)/db_share` before the next statement. Expensive exact
   scans automatically stretch the pacing, so the bound holds regardless of
   table size. Default `db_share: 0.10`.
@@ -720,9 +739,15 @@ cohort per instance) bounds the inflow in practice.
   JSON); `latest.json` is the only overwritten key. No local state, no WAL,
   no database writes: after a crash the tuner restarts, re-lists storage,
   and resumes with at most one part of redone work (§2.4).
-- Per-sample and per-part failures are counted and reported, never fatal.
-  Storage listing/GET failures abort the cohort's round with a log; the next
-  tick retries naturally.
+- Per-sample failures are counted in `failed_count` and reported in the round.
+  Any storage listing or GET failure, or a source-segment parse failure, aborts
+  that cohort's round without publishing and logs the object key; the next tick
+  retries naturally.
+  A malformed intermediate pair is treated as incomplete and remeasured from
+  scratch, overwriting truth then sweep. The round schema deliberately has no
+  failed-part counter because publishing from a source segment whose header
+  cannot be decoded would make availability, drop, and coverage accounting
+  unknowable.
 - Graceful shutdown (SIGTERM/SIGINT): finish or abandon the in-flight
   sample's transaction, skip remaining work, exit without publishing a
   partial round. Nothing is lost — the next run redoes only the unfinished
@@ -735,7 +760,7 @@ cohort per instance) bounds the inflow in practice.
   seam between database glue and the semantically rich estimator, which must
   stay a pure function).
 - Proposed crates (guidance, not contract): `tokio` + `tokio-postgres` +
-  `deadpool-postgres` (pool = concurrency budget) + `pgvector` (Vector type);
+  `pgvector` (Vector type);
   `arrow`/`parquet` (arrow-rs, zstd) for intermediates; `object_store`
   (already in workspace) for all storage IO; `serde` + a maintained YAML
   parser + `humantime-serde` for durations; `statrs` (or `puruspe`) for the
@@ -792,8 +817,14 @@ can come back as prioritized improvements:
 - **Population is distinct query vectors, not traffic-weighted queries.**
   `dup_count` in the intermediates allows re-weighting later without
   re-measurement (§2.2).
-- **One global traffic budget.** Per-server budgets matter once one tuner
-  spans many databases; until then global is stricter.
+- **One shared traffic-policy value.** Every data source uses the same
+  top-level `db_share` and `statement_timeout`; per-data-source overrides are
+  deferred until operators demonstrate a need.
+- **No database connection pool or concurrent statements per PostgreSQL
+  instance.** Each `(server, database)` pair has one serialized connection and
+  pacer. Consequence: independent samples cannot use parallel database
+  capacity even when the server could tolerate it; revisit with explicitly
+  defined per-connection pacing before adding more connections.
 - **No adaptive load signals** (`pg_stat_activity`, replication lag) —
   §3.1 P2.
 
@@ -891,10 +922,12 @@ shuffles are not part of the contract):
 - **C4 empty round**: zero in-scope parts → `insufficient_samples`,
   `samples.available = 0`, `empty_window_fraction = 1.0`.
 - **C5 config validation**: each of — inline `password` key, `user:pass@`
-  in `server`, ef grid containing a value < k or > 1000 or non-increasing,
-  cohort with unknown index/target, `percentile: 1.0`, `window <
+  in `server`, configured but missing `password_env`, duplicate
+  `(server, database)` data-source pair, index with unknown data source, ef
+  grid containing a value < k or > 1000 or non-increasing, cohort with
+  unknown index/target, `percentile: 1.0`, `window <
   storage.window_seconds` — fails startup with a distinct error; the
-  `password_env` error message names the expected mechanism.
+  credential errors name the expected `password_env` mechanism.
 - **C6 table smaller than k**: a cohort whose table has fewer than k rows →
   Phase A aborts for that cohort after the first ground-truth result (at
   most one exact scan issued, no sweep statements), the round publishes
@@ -914,14 +947,12 @@ shuffles are not part of the contract):
   `computed_at` — the accepted drift lives entirely in Phase A; everything
   downstream of the intermediates is deterministic.
 
-### D. Resource ceilings (metric: statement wall-time duty cycle and
-in-flight statement count, measured at the tuner's database client)
+### D. Resource ceilings (metric: statement wall-time duty cycle, measured at
+the tuner's database client)
 
 - **D1 duty cycle**: `db_share = 0.20` against an instrumented database
   taking ~50 ms/statement, ≥ 50 statements → total elapsed ≥ 0.95 · (total
   busy time / 0.20); equivalently the busy fraction over the run ≤ 0.21.
-- **D2 concurrency**: instrumented max in-flight statements ≤
-  `max_concurrent_queries` for the entire run (default config → exactly 1).
 - **D3 statement timeout**: `statement_timeout = 1ms` on F-pg → every sample
   fails within the round (no retries, counted), the round completes, and no
   tuner statement remains running server-side afterward.

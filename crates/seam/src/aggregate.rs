@@ -108,7 +108,7 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
 
     let intermediates = unique_intermediates(&input.intermediates)?;
     let mut used = Vec::new();
-    let mut incompatible_parts = 0_u64;
+    let mut incompatible_parts = input.phase_a_incompatible_parts;
     let mut measured = 0_u64;
     let mut failed = 0_u64;
     for (part_ulid, intermediate) in intermediates {
@@ -116,7 +116,9 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
             continue;
         }
         if !is_compatible(&input.config, intermediate) {
-            incompatible_parts += 1;
+            incompatible_parts = incompatible_parts
+                .checked_add(1)
+                .ok_or(AggregateError::CounterOverflow("incompatible_parts"))?;
             continue;
         }
         measured = measured
@@ -244,7 +246,7 @@ fn unique_intermediates(
     Ok(unique)
 }
 
-fn is_compatible(config: &AggregationConfig, part: &IntermediatePart) -> bool {
+pub(crate) fn is_compatible(config: &AggregationConfig, part: &IntermediatePart) -> bool {
     let metadata = &part.metadata;
     metadata.format_version == 1
         && metadata.k == config.k

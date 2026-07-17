@@ -284,7 +284,16 @@ async fn load_main_table(
              ON docs_seam_fixture
              USING hnsw (embedding vector_cosine_ops)
              WITH (m = 16, ef_construction = 64);
-             ANALYZE docs_seam_fixture;",
+             ANALYZE docs_seam_fixture;
+
+             DROP TABLE IF EXISTS docs_seam_timeout_fixture;
+             CREATE TABLE docs_seam_timeout_fixture (
+                 doc_id bigint PRIMARY KEY,
+                 embedding vector(64) NOT NULL
+             );
+             INSERT INTO docs_seam_timeout_fixture (doc_id, embedding)
+             SELECT doc_id, embedding FROM docs_seam_fixture;
+             ANALYZE docs_seam_timeout_fixture;",
         )
         .await?;
     Ok(())

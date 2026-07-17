@@ -1,171 +1,155 @@
 # Tuner review map
 
-This map covers the completed Stage 1 harness and Stage 2 estimator. Stage 3
-transaction, pacing, and object-store orchestration modules are not present
-yet.
+This map covers the Stage 1 harness, Stage 2 estimator, and Stage 3
+measurement/durability implementation.
 
 ## Tier 1 — semantically rich / critical
 
+- `crates/seam/src/database.rs` — constructs the one-connection,
+  `REPEATABLE READ` sample transaction, quotes identifiers, binds pgvector
+  values, orders exact results by distance/key, deliberately omits the ANN
+  key tie-break, applies `SET LOCAL`, and owns commit/rollback sequencing.
+- `crates/seam/src/measure.rs` — parses `.vseam` records through
+  vectorseam-core, performs first-occurrence exact-byte deduplication, hashes
+  raw payloads, distinguishes semantic sample failures from the
+  table-smaller cohort abort, and builds durable rows.
+- `crates/seam/src/pacer.rs` — enforces cooldown from observed statement wall
+  time after single-owner orchestration has serialized the statements; an
+  error path must consume the same budget as success.
+- `crates/seam/src/pipeline.rs` — owns window-scoped listing, source/header
+  membership, incomplete/malformed/config-mismatched pair handling,
+  truth-before-sweep durability, cancellation boundaries, Phase A abort
+  precedence, and history-before-latest publication.
 - `crates/seam/src/math.rs` — owns recall set semantics, exact FNV-1a and split
   membership, type-7 interpolation, ef selection, and beta-posterior
   confidence.
 - `crates/seam/src/accounting.rs` — owns half-open rolling-window membership,
-  distinct listed-part accounting, coverage, and collector drop fractions.
+  listed-part accounting, coverage, and collector drop fractions.
 - `crates/seam/src/population.rs` — owns cross-part survivor ordering,
-  full-population summaries, train quantiles, ef selection, holdout transfer,
-  and confidence inputs.
+  population summaries, train selection, holdout transfer, and confidence
+  inputs.
 - `crates/seam/src/aggregate.rs` — composes compatibility filtering,
-  deterministic population splitting, counters, typed Phase A abort
-  precedence, insufficient output semantics, and ordered round records from
-  the smaller Tier 1 primitives.
-- `crates/seam/tests/acceptance_b_estimator.rs` — asserts every implemented B
-  literal and tolerance, including independent FNV and SciPy reference sides.
-- `crates/seam/tests/estimator_properties.rs` — guards monotone selection,
-  stable split membership/fraction, bounded quantiles, and monotone
-  confidence.
-- `python/seam_harness/anchor.py` — owns the independent Python FNV split
-  adapter while reusing the trusted anchor's ground-truth, recall, percentile,
-  summary, and selection functions.
-- `crates/seam/tests/support/f_agg.rs` — encodes frozen truth/sweep parquet
-  schemas, metadata, object keys, and segment-header fixtures.
-- `crates/seam/examples/f_pg_fixture.rs` — determines seed-0 fixture
-  reproducibility, query ordering, pairwise distinctness, strengthened
-  boundary-gap verification, HNSW data, and the B2 tie table.
-- Stage 3 transaction-construction module (path to be recorded when added) —
-  will own the single-connection snapshot invariant and must receive the C7
-  manual review below.
+  deterministic splitting, counters, typed Phase A abort precedence, and
+  ordered round records from the focused Tier 1 primitives.
+- `crates/seam/src/intermediate.rs` — validates the frozen parquet schemas and
+  pair metadata, cross-checks `measured_count`, encodes zstd pairs, and joins
+  authoritative stored sweep observations without reimplementing recall.
+- `crates/seam/tests/acceptance_b_estimator.rs` and
+  `crates/seam/tests/estimator_properties.rs` — literal acceptance assertions
+  and estimator invariants.
+- `python/seam_harness/anchor.py` — independent FNV split adapter that reuses
+  the trusted anchor modules for all benchmark math.
+- `crates/seam/tests/support/f_agg.rs` and
+  `crates/seam/examples/f_pg_fixture.rs` — frozen-schema and seeded PostgreSQL
+  fixtures, including query ordering, no ties, boundary gap, HNSW, and B2.
 
 ## Tier 2 — standard
 
-- `crates/seam/src/intermediate.rs` — synchronously validates and reads the
-  frozen parquet field schemas and metadata, cross-checks `measured_count`
-  against truth rows, then joins truth rows to the authoritative stored
-  recall/latency rows. It contains IO but no estimator policy.
-- `crates/seam/src/model.rs` — defines pure aggregation inputs and the ordered,
-  serializable round JSON contract.
-- `crates/seam/tests/f_agg_builders.rs` — validates fixture schemas, metadata,
-  zstd compression, crash-shaped truth-only state, ULID ordering, and core
-  segment round trips without a database.
-- `crates/seam/tests/support/anchor.rs` — validates and loads the Python
-  comparison artifact consumed in Stage 4.
-- `crates/seam/tests/acceptance_a_anchor.rs` — defines the five anchor
-  comparison tolerances.
-- `crates/seam/tests/acceptance_c_durability.rs` — exercises Stage 2 config,
-  compatibility, empty-round, parquet-reading, and reproducibility behavior;
-  later durability halves remain explicit ignored tests.
-- `crates/seam/tests/acceptance_d_resources.rs` — defines the instrumented
-  resource ceilings for Stage 3.
-- `tests/seam/docker-compose.yml` — provides the isolated pgvector test
-  service.
-- `.github/workflows/ci.yml` and `Makefile` — run the database-free Stage 2
-  acceptance/property suite on every push and retain the dockerized pgvector
-  harness job.
+- `crates/seam/src/tuner.rs` — sequential multi-cohort orchestration, one
+  long-lived runtime per data source, database-down degradation, per-cohort
+  failure isolation, and bounded connection-driver shutdown.
+- `crates/seam/src/model.rs` — pure aggregation contracts and ordered round
+  JSON types.
+- `crates/seam/tests/acceptance_c_durability.rs` — cached database-down,
+  config, empty-round, abort, and reproducibility acceptance.
+- `crates/seam/tests/f_agg_builders.rs` — schema, compression, metadata,
+  crash-shape, ULID-order, and segment round-trip checks.
+- `crates/seam/tests/acceptance_a_anchor.rs` and
+  `crates/seam/tests/support/anchor.rs` — Stage 4 anchor comparison skeleton
+  and artifact loader.
+- `tests/seam/docker-compose.yml` — isolated pgvector service.
+- `crates/seam/benches/phase_b.rs` and
+  `docs/phase-b-benchmark-baseline.md` — fixed hot-path workloads and the
+  Stage 3 reference measurement.
 
 ## Tier 3 — glue
 
-- `crates/seam/src/config.rs` — typed YAML parsing, defaults, reference checks,
-  data-source pair uniqueness, conditional password-environment validation,
-  credential rejection, minute-aligned storage/target-window validation,
-  duration parsing, and quoted-identifier validation.
-- `agents.md` — binding project guidance, including the least-possible Rust
-  visibility rule added during Gate 2 review.
-- `crates/seam/src/lib.rs` — package module wiring only.
-- `crates/seam/tests/support/mod.rs` — shared pending-test marker and fixture
-  module wiring.
-- `python/seam_harness/__init__.py` — package marker.
-- `python/vectorseam/tests/test_seam_anchor_harness.py` — database-free Python
-  reference-hash smoke tests.
-- `crates/seam/Cargo.toml` and workspace `Cargo.toml` — package and dependency
-  wiring.
+- `crates/seam/src/config.rs` — YAML parsing, defaults, references,
+  data-source uniqueness, conditional password-environment validation,
+  duration/grid/window checks, and identifier validation.
+- `crates/seam/src/lib.rs` — module wiring.
+- `crates/seam/tests/support/mod.rs` — test support wiring.
+- `Makefile` and `.github/workflows/ci.yml` — database-free and Docker gate
+  entry points.
+- `crates/seam/Cargo.toml` and workspace `Cargo.toml` — dependency wiring.
+- `agents.md` — binding project and Tokio guidance.
 
 ## Confidence report
 
-I am confident in the exact B1, B3–B8, B10–B11, C4–C5, C8, and Phase B C6
-behavior now machine-gated, and in the Phase B halves of B9, B12, and C3.
-The estimator has no filesystem, async, or clock access: `computed_at` and the
-aligned round end are explicit inputs. Population and part iteration are
-normalized through ordered maps before floating-point reductions, and round
-JSON uses struct field order rather than unordered maps.
+I am confident in the pure estimator primitives and their composition: all
+B criteria are now machine-gated, including Phase A deduplication, PostgreSQL
+tie handling, no-double-count resume behavior, and cross-window survivor
+movement. Phase B remains synchronous and clock-free; aligned time and
+`computed_at` are explicit inputs.
 
-The highest-value Stage 2 human review is the compact
-`accounting.rs`/`population.rs`/`aggregate.rs` chain: confirm the half-open
-part-membership predicate, lexicographic `(part_ulid, record_index)` survivor,
-compatible-part counters, typed Phase A abort precedence, and the
-owner-approved null/empty-split semantics.
-In `math.rs`, confidence is evaluated as the mathematically
-equivalent complementary regularized-beta expression
-`I_(1-p)(n-m+1, m+1)`, avoiding cancellation from a literal `1 - I_p`; the
-SciPy grid and B10 closed form pass at the frozen tolerances.
+I am confident in the Stage 3 durability path. C1 uses a recording object
+store to prove truth precedes sweep and round history precedes latest, repairs
+an interrupted pair, measures only that part, and compares bytes with a clean
+run. Source storage/parse errors abort without publication under the
+owner-approved resolution; malformed intermediate pairs are remeasured.
+Cancellation is checked between samples, never by dropping an in-flight
+transaction, and a cancelled partial part and round are not published.
 
-I am also confident that `intermediate.rs` preserves the intended seam: it
-performs synchronous storage decoding, while `aggregate` consumes only owned
-in-memory values. The reader validates frozen Arrow fields but ignores
-non-contract Arrow schema metadata. It materializes only identity, dedup, and
-stored recall/latency columns because §2.6 makes stored recall authoritative;
-ground-truth and returned-key payloads remain part of the validated parquet
-schema without being re-scored.
+I am confident in the database resource path. One `DatabaseConnection` owns
+one Tokio client and its supervised driver task; mutable single ownership and
+sequential cohort orchestration serialize all statements for the data source,
+while the pacer charges successes and failures. F-pg tests prove B2, C6, and
+D3; D3 holds a dedicated fixture table lock so the frozen 1 ms timeout is
+deterministic, and its transaction counter proves one attempt per sample with
+no retries. D1 uses paused Tokio time and the frozen 50-statement bounds.
+Shutdown drops clients, observes both task-result layers, and has a ten-second
+overall deadline whose forced fallback aborts remaining driver handles.
 
-Changes from the first approach:
+The highest-value human review is `database.rs`, followed by the compact
+`measure.rs`/`pipeline.rs` durability chain. C7 deliberately rests on that
+manual database review rather than a pausing proxy. Please confirm that the
+single borrowed `Transaction` and statement order satisfy the checklist
+below.
 
-- The PostgreSQL fixture originally used seed 7. The owner-directed ascending
-  search selected seed 0, whose minimum boundary gap is
-  `1.3683911141981753e-6`.
-- The parquet reader initially compared entire Arrow schemas, including
-  implementation metadata not frozen by §2.4. It now compares the exact field
-  list, matching the harness contract.
-- The B12 fixture originally declared three records but only one received
-  frame. Its header now correctly declares three received frames; assertions
-  were not weakened.
-- Inline `password` values are discarded during YAML deserialization rather
-  than retained in the raw model; even `password: null` is rejected.
-- The initial aggregation module combined membership, deduplication,
-  selection, and orchestration in one file. It was split into focused
-  accounting and population modules so Gate 2 Tier 1 review remains small.
-- Gate 2 review exposed that a generic pass-through `error` could produce
-  `status: "ok"` with a table-smaller-than-k error when cached intermediates
-  met `min_samples`. The input is now a typed `PhaseAAbort`; this condition
-  takes precedence over population size and forces the insufficient shape.
-- The storage-window formatter initially truncated residual seconds. Startup
-  validation now requires minute-aligned storage windows and target windows
-  that are exact storage-window multiples.
-- The first C8 assertion normalized both byte streams through
-  `serde_json::Value`, which could hide field-order changes. It now normalizes
-  only `computed_at` on the typed outputs and compares serialized bytes
-  directly.
-- The initial B4/B12 survivor-stability calls repeated the same pure helper.
-  The replacement aggregates fixtures where the duplicate survivor genuinely
-  moves to a different part and compares realized train/test counts.
-- The parquet reader now rejects metadata `measured_count` values that differ
-  from the decoded truth-row count.
-- Dead no-op population handling, an unused alignment wrapper, and an unused
-  segment adapter were removed. Remaining crate internals use the least
-  visibility needed by their callers.
-- Stage 3 preflight replaced connection fields embedded in each index with
-  top-level data sources. Indexes now reference `{data_source, table, key,
-  column}`; duplicate `(server, database)` pairs and missing configured
-  password environments fail startup.
-- The owner removed `max_concurrent_queries` and D2 rather than retaining dead
-  configuration. Stage 3 will use one serialized connection and pacer per
-  unique data-source pair; D2's removal sign-off remains in the acceptance
-  map.
+Deliberate MVP corner cut: there is no connection pool or concurrent
+statement execution. Each validated unique `(server, database)` pair owns
+exactly one connection and pacer, and cohorts run sequentially. The owner
+approved this simplification when removing D2 and `max_concurrent_queries`.
 
-No Stage 2 behavior currently needs an additional owner decision. Tier 1
-review is still requested before Gate 2 approval, as required by the staged
-plan.
+Changes from the first Stage 3 approach:
+
+- Storage failure policy was initially underspecified. The owner chose:
+  storage/source failures abort that cohort without publishing, while a
+  malformed intermediate pair is remeasured; the spec now states this.
+- Replacing an incompatible pair would have erased evidence of the mismatch
+  before aggregation. `AggregationInput` now carries the Phase A count so the
+  published round retains `incompatible_parts = 1` after successful
+  remeasurement.
+- C1 initially verified only final objects. It now records PUT order and
+  asserts truth-before-sweep plus history-before-latest.
+- Connection failure is represented by the same `SampleMeasurer` boundary as
+  per-sample SQL failure, allowing cached aggregation to publish and uncached
+  valid samples to receive durable `failed_count` accounting without retries.
+- Large outcome/runtime enum variants were boxed after clippy identified
+  avoidable stack-size inflation; behavior and public JSON were unchanged.
+- Local F-pg execution exposed a Colima host-forwarding issue. An explicit
+  temporary SSH forward was used only to validate locally; the Docker CI
+  target itself remains unchanged and all B2/C6/D3 assertions passed.
+- A warm local PostgreSQL could occasionally complete D3's exact scan within
+  1 ms. The F-pg generator now creates a dedicated timeout table and D3 locks
+  it during the round, making the spec's every-sample timeout deterministic
+  without changing the production query or tolerance.
+
+No unresolved spec question remains in Stage 3.
 
 ## C7 deferred manual review — Gate 3
 
 Deferral approved by the owner on 2026-07-16. No pausing proxy and no C7-lite
-instrumentation test are required. Before Gate 3 is approved, a human must
-review the transaction-construction module and confirm all of the following:
+instrumentation test are required. Before Gate 3 approval, a human reviews
+`crates/seam/src/database.rs` and confirms:
 
-1. One checked-out database connection owns every statement for one sample.
-2. `BEGIN ISOLATION LEVEL REPEATABLE READ` establishes the transaction before
-   the ground-truth statement.
+1. One `DatabaseConnection.client` supplies every statement for one sample.
+2. `build_transaction().isolation_level(RepeatableRead).start()` is the first
+   sample statement.
 3. Transaction-scoped settings use `SET LOCAL`, never session-level `SET`.
-4. Ground truth completes before the ascending ef sweep begins.
-5. There is no commit, rollback, or connection reacquisition between ground
-   truth and the final sweep statement; the transaction commits only after the
-   sweep completes.
+4. The ground-truth query completes before ascending ef sweep statements.
+5. The borrowed transaction is neither committed, rolled back, nor
+   reacquired between ground truth and the final sweep; commit occurs only
+   after successful completion, while every error explicitly rolls back.
 
 Gate 3 sign-off record (reviewer, date, commit): pending.

@@ -426,12 +426,13 @@ fn validate_data_sources(
                 )));
             }
         }
-        if let Some(password_env) = data_source.password_env.as_deref()
-            && !password_env_exists(password_env)
-        {
-            return Err(invalid(format!(
-                "data source {name:?} password_env {password_env:?} is not present"
-            )));
+        match data_source.password_env.as_deref() {
+            Some(password_env) if !password_env_exists(password_env) => {
+                return Err(invalid(format!(
+                    "data source {name:?} password_env {password_env:?} is not present"
+                )));
+            }
+            _ => {}
         }
         let pair = (data_source.server.as_str(), data_source.database.as_str());
         if let Some(existing) = pairs.insert(pair, name.as_str()) {
