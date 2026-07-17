@@ -454,7 +454,7 @@ mod tests {
 
     fn statement_count(tuner: &Tuner) -> u64 {
         match &tuner.data_sources["primary"] {
-            DataSourceRuntime::Connected(connection) => connection.pacer_snapshot().statement_count,
+            DataSourceRuntime::Connected(connection) => connection.statement_count(),
             DataSourceRuntime::Unavailable(error) => {
                 panic!("F-pg data source unexpectedly unavailable: {error}")
             }

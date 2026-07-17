@@ -669,7 +669,10 @@ Per unmeasured part:
 Connections: one long-lived connection and one duty-cycle pacer per data
 source. Data-source pair uniqueness means this is exactly one connection and
 pacer per `(server, database)`. All statements for that PostgreSQL pair are
-serialized. Every transaction sets `statement_timeout` via `SET LOCAL`.
+serialized. The pacer sleeps only *between* sample transactions, never inside
+one (§3.1): a sample's statements run back-to-back so its `REPEATABLE READ`
+snapshot is held for the minimum possible time. Every transaction sets
+`statement_timeout` via `SET LOCAL`.
 
 ### 2.6 Aggregate phase details
 
@@ -709,11 +712,20 @@ Mechanisms, in priority order (P0 ships in the MVP; the human owner arbitrates
 anything beyond):
 
 - **P0 — serialized connection and duty-cycle pacing** (the "server share"
-  idea): one connection and one pacer per `(server, database)`; after a
-  statement observed to take `t`, that pacer sleeps
-  `t · (1 − db_share)/db_share` before the next statement. Expensive exact
-  scans automatically stretch the pacing, so the bound holds regardless of
-  table size. Default `db_share: 0.10`.
+  idea): one connection and one pacer per `(server, database)`. The paced
+  unit is one whole sample transaction (`BEGIN` through `COMMIT`/`ROLLBACK`):
+  after a transaction observed to take `t` of wall time, the pacer sleeps
+  `t · (1 − db_share)/db_share` before starting the next one. The pacer never
+  sleeps inside an open transaction — statements within one sample run
+  back-to-back. **Decision — pace between transactions, not statements**:
+  sleeping mid-transaction would stretch how long the `REPEATABLE READ`
+  snapshot is held (delaying vacuum's xmin horizon for the whole database),
+  buying pacing granularity at the cost of MVCC health; the busy-fraction
+  bound is identical either way, and each statement stays individually capped
+  by `statement_timeout`. The accepted trade-off is burstier load: one
+  transaction's statements arrive back-to-back. Expensive exact scans
+  automatically stretch the pacing, so the bound holds regardless of table
+  size. Default `db_share: 0.10`.
 - **P0 — per-statement timeout**: `SET LOCAL statement_timeout` (default 5 s)
   on every transaction; a timed-out sample is a failed sample, never a retry
   storm.
@@ -947,12 +959,14 @@ shuffles are not part of the contract):
   `computed_at` — the accepted drift lives entirely in Phase A; everything
   downstream of the intermediates is deterministic.
 
-### D. Resource ceilings (metric: statement wall-time duty cycle, measured at
-the tuner's database client)
+### D. Resource ceilings (metric: database busy wall-time duty cycle over
+paced units — whole sample transactions — measured at the tuner's database
+client)
 
-- **D1 duty cycle**: `db_share = 0.20` against an instrumented database
-  taking ~50 ms/statement, ≥ 50 statements → total elapsed ≥ 0.95 · (total
+- **D1 duty cycle**: `db_share = 0.20` against instrumented database work
+  taking ~50 ms per paced unit, ≥ 50 units → total elapsed ≥ 0.95 · (total
   busy time / 0.20); equivalently the busy fraction over the run ≤ 0.21.
+  No pacer sleep occurs inside a unit.
 - **D3 statement timeout**: `statement_timeout = 1ms` on F-pg → every sample
   fails within the round (no retries, counted), the round completes, and no
   tuner statement remains running server-side afterward.

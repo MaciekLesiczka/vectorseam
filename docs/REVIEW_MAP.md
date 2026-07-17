@@ -13,9 +13,10 @@ measurement/durability implementation.
   vectorseam-core, performs first-occurrence exact-byte deduplication, hashes
   raw payloads, distinguishes semantic sample failures from the
   table-smaller cohort abort, and builds durable rows.
-- `crates/seam/src/pacer.rs` — enforces cooldown from observed statement wall
-  time after single-owner orchestration has serialized the statements; an
-  error path must consume the same budget as success.
+- `crates/seam/src/pacer.rs` — enforces cooldown between whole sample
+  transactions from each transaction's observed wall time, never sleeping
+  inside an open transaction (owner decision, 2026-07-17); an error path must
+  consume the same budget as success.
 - `crates/seam/src/pipeline.rs` — owns window-scoped listing, source/header
   membership, incomplete/malformed/config-mismatched pair handling,
   truth-before-sweep durability, cancellation boundaries, Phase A abort
@@ -96,7 +97,7 @@ sequential cohort orchestration serialize all statements for the data source,
 while the pacer charges successes and failures. F-pg tests prove B2, C6, and
 D3; D3 holds a dedicated fixture table lock so the frozen 1 ms timeout is
 deterministic, and its transaction counter proves one attempt per sample with
-no retries. D1 uses paused Tokio time and the frozen 50-statement bounds.
+no retries. D1 uses paused Tokio time and the frozen 50-unit bounds.
 Shutdown drops clients, observes both task-result layers, and has a ten-second
 overall deadline whose forced fallback aborts remaining driver handles.
 

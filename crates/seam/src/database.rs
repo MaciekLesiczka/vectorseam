@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use pgvector::Vector;
 use thiserror::Error;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, Config as PostgresConfig, IsolationLevel, NoTls, Row, Transaction};
 use tracing::warn;
@@ -15,9 +16,7 @@ use crate::config::{BudgetConfig, DataSourceConfig};
 use crate::math::recall_at_k;
 use crate::measure::{SampleMeasureError, SampleMeasurement, SampleMeasurer, SampleSweepResult};
 use crate::model::AggregationConfig;
-#[cfg(test)]
-use crate::pacer::PacerSnapshot;
-use crate::pacer::{PacerError, StatementPacer};
+use crate::pacer::{DutyCyclePacer, PacerError};
 
 const APPLICATION_NAME: &str = "vectorseam-seam";
 
@@ -41,11 +40,17 @@ pub(crate) enum DatabaseConnectionError {
 }
 
 /// The frozen MVP's single serialized connection and pacer for one data source.
+///
+/// The pacer's unit of work is one whole sample transaction: statements
+/// inside a transaction run back-to-back, and the duty-cycle cooldown is
+/// taken between transactions from the full transaction wall time.
 pub(crate) struct DatabaseConnection {
     client: Option<Client>,
     driver: Option<JoinHandle<Result<(), tokio_postgres::Error>>>,
-    pacer: StatementPacer,
+    pacer: DutyCyclePacer,
     statement_timeout: Duration,
+    /// Client-side count of issued statements; read by acceptance tests.
+    statement_count: u64,
     #[cfg(test)]
     sample_transaction_count: u64,
 }
@@ -86,8 +91,9 @@ impl DatabaseConnection {
         Ok(Self {
             client: Some(client),
             driver: Some(driver),
-            pacer: StatementPacer::new(budget.db_share)?,
+            pacer: DutyCyclePacer::new(budget.db_share)?,
             statement_timeout: budget.statement_timeout,
+            statement_count: 0,
             #[cfg(test)]
             sample_transaction_count: 0,
         })
@@ -106,69 +112,13 @@ impl DatabaseConnection {
     }
 
     #[cfg(test)]
-    pub(crate) fn pacer_snapshot(&self) -> PacerSnapshot {
-        self.pacer.snapshot()
+    pub(crate) fn statement_count(&self) -> u64 {
+        self.statement_count
     }
 
     #[cfg(test)]
     pub(crate) fn sample_transaction_count(&self) -> u64 {
         self.sample_transaction_count
-    }
-
-    async fn measure_in_transaction(
-        pacer: &mut StatementPacer,
-        statement_timeout: Duration,
-        transaction: &Transaction<'_>,
-        vector: &[f32],
-        config: &AggregationConfig,
-    ) -> Result<SampleMeasurement, SampleMeasureError> {
-        let timeout_sql = statement_timeout_sql(statement_timeout);
-        paced_execute(pacer, transaction, &timeout_sql).await?;
-        paced_execute(pacer, transaction, "SET LOCAL enable_indexscan = off").await?;
-
-        let query_vector = Vector::from(vector.to_vec());
-        let truth_rows = pacer
-            .run(transaction.query(&ground_truth_sql(config), &[&query_vector]))
-            .await
-            .map(|timed| timed.value)
-            .map_err(database_sample_error)?;
-        if truth_rows.len() < config.k as usize {
-            return Err(SampleMeasureError::TableSmallerThanK {
-                returned: truth_rows.len(),
-                k: config.k,
-            });
-        }
-        let (gt_keys, gt_distances) = decode_ground_truth(&truth_rows)?;
-
-        paced_execute(pacer, transaction, "SET LOCAL enable_indexscan = on").await?;
-        let ann_sql = ann_sql(config);
-        let mut sweeps = Vec::with_capacity(config.ef_grid.len());
-        for &ef in &config.ef_grid {
-            paced_execute(
-                pacer,
-                transaction,
-                &format!("SET LOCAL hnsw.ef_search = {ef}"),
-            )
-            .await?;
-            let timed = pacer
-                .run(transaction.query(&ann_sql, &[&query_vector]))
-                .await
-                .map_err(database_sample_error)?;
-            let returned_keys = decode_keys(&timed.value)?;
-            let recall = recall_at_k(&gt_keys, &returned_keys, config.k)
-                .map_err(|error| SampleMeasureError::Database(error.to_string()))?;
-            sweeps.push(SampleSweepResult {
-                ef,
-                returned_keys,
-                recall,
-                latency_ms: timed.elapsed.as_secs_f64() * 1_000.0,
-            });
-        }
-        Ok(SampleMeasurement {
-            gt_keys,
-            gt_distances,
-            sweeps,
-        })
     }
 
     #[cfg(test)]
@@ -178,27 +128,32 @@ impl DatabaseConnection {
         config: &AggregationConfig,
     ) -> Result<(Vec<i64>, Vec<f64>), SampleMeasureError> {
         let statement_timeout = self.statement_timeout;
-        let pacer = &mut self.pacer;
+        let statements = &mut self.statement_count;
         let client = self.client.as_mut().ok_or_else(closed_sample_error)?;
-        let transaction = begin_sample_transaction(pacer, client).await?;
-        let result = async {
-            paced_execute(
-                pacer,
-                &transaction,
-                &statement_timeout_sql(statement_timeout),
-            )
-            .await?;
-            paced_execute(pacer, &transaction, "SET LOCAL enable_indexscan = off").await?;
-            let vector = Vector::from(vector.to_vec());
-            let rows = pacer
-                .run(transaction.query(&ground_truth_sql(config), &[&vector]))
-                .await
-                .map(|timed| timed.value)
-                .map_err(database_sample_error)?;
-            decode_ground_truth(&rows)
-        }
-        .await;
-        finish_transaction(pacer, transaction, result).await
+        self.pacer
+            .run(async {
+                let transaction = begin_sample_transaction(statements, client).await?;
+                let result = async {
+                    execute_counted(
+                        statements,
+                        &transaction,
+                        &statement_timeout_sql(statement_timeout),
+                    )
+                    .await?;
+                    execute_counted(statements, &transaction, "SET LOCAL enable_indexscan = off")
+                        .await?;
+                    let vector = Vector::from(vector.to_vec());
+                    *statements = statements.saturating_add(1);
+                    let rows = transaction
+                        .query(&ground_truth_sql(config), &[&vector])
+                        .await
+                        .map_err(database_sample_error)?;
+                    decode_ground_truth(&rows)
+                }
+                .await;
+                finish_transaction(statements, transaction, result).await
+            })
+            .await
     }
 }
 
@@ -222,29 +177,103 @@ impl SampleMeasurer for DatabaseConnection {
             self.sample_transaction_count += 1;
         }
         let statement_timeout = self.statement_timeout;
-        let pacer = &mut self.pacer;
+        let statements = &mut self.statement_count;
         let client = self.client.as_mut().ok_or_else(closed_sample_error)?;
-        let transaction = begin_sample_transaction(pacer, client).await?;
-        let result =
-            Self::measure_in_transaction(pacer, statement_timeout, &transaction, vector, config)
-                .await;
-        finish_transaction(pacer, transaction, result).await
+        self.pacer
+            .run(run_sample_transaction(
+                client,
+                statements,
+                statement_timeout,
+                vector,
+                config,
+            ))
+            .await
     }
 }
 
+/// One whole paced unit: `BEGIN` through `COMMIT`/`ROLLBACK`, back-to-back.
+async fn run_sample_transaction(
+    client: &mut Client,
+    statements: &mut u64,
+    statement_timeout: Duration,
+    vector: &[f32],
+    config: &AggregationConfig,
+) -> Result<SampleMeasurement, SampleMeasureError> {
+    let transaction = begin_sample_transaction(statements, client).await?;
+    let result =
+        measure_in_transaction(statements, statement_timeout, &transaction, vector, config).await;
+    finish_transaction(statements, transaction, result).await
+}
+
+async fn measure_in_transaction(
+    statements: &mut u64,
+    statement_timeout: Duration,
+    transaction: &Transaction<'_>,
+    vector: &[f32],
+    config: &AggregationConfig,
+) -> Result<SampleMeasurement, SampleMeasureError> {
+    let timeout_sql = statement_timeout_sql(statement_timeout);
+    execute_counted(statements, transaction, &timeout_sql).await?;
+    execute_counted(statements, transaction, "SET LOCAL enable_indexscan = off").await?;
+
+    let query_vector = Vector::from(vector.to_vec());
+    *statements = statements.saturating_add(1);
+    let truth_rows = transaction
+        .query(&ground_truth_sql(config), &[&query_vector])
+        .await
+        .map_err(database_sample_error)?;
+    if truth_rows.len() < config.k as usize {
+        return Err(SampleMeasureError::TableSmallerThanK {
+            returned: truth_rows.len(),
+            k: config.k,
+        });
+    }
+    let (gt_keys, gt_distances) = decode_ground_truth(&truth_rows)?;
+
+    execute_counted(statements, transaction, "SET LOCAL enable_indexscan = on").await?;
+    let ann_sql = ann_sql(config);
+    let mut sweeps = Vec::with_capacity(config.ef_grid.len());
+    for &ef in &config.ef_grid {
+        execute_counted(
+            statements,
+            transaction,
+            &format!("SET LOCAL hnsw.ef_search = {ef}"),
+        )
+        .await?;
+        *statements = statements.saturating_add(1);
+        let started = Instant::now();
+        let rows = transaction
+            .query(&ann_sql, &[&query_vector])
+            .await
+            .map_err(database_sample_error)?;
+        let elapsed = started.elapsed();
+        let returned_keys = decode_keys(&rows)?;
+        let recall = recall_at_k(&gt_keys, &returned_keys, config.k)
+            .map_err(|error| SampleMeasureError::Database(error.to_string()))?;
+        sweeps.push(SampleSweepResult {
+            ef,
+            returned_keys,
+            recall,
+            latency_ms: elapsed.as_secs_f64() * 1_000.0,
+        });
+    }
+    Ok(SampleMeasurement {
+        gt_keys,
+        gt_distances,
+        sweeps,
+    })
+}
+
 async fn begin_sample_transaction<'client>(
-    pacer: &mut StatementPacer,
+    statements: &mut u64,
     client: &'client mut Client,
 ) -> Result<Transaction<'client>, SampleMeasureError> {
-    pacer
-        .run(
-            client
-                .build_transaction()
-                .isolation_level(IsolationLevel::RepeatableRead)
-                .start(),
-        )
+    *statements = statements.saturating_add(1);
+    client
+        .build_transaction()
+        .isolation_level(IsolationLevel::RepeatableRead)
+        .start()
         .await
-        .map(|timed| timed.value)
         .map_err(database_sample_error)
 }
 
@@ -252,33 +281,31 @@ fn closed_sample_error() -> SampleMeasureError {
     SampleMeasureError::Database("PostgreSQL connection is closed".to_owned())
 }
 
-async fn paced_execute(
-    pacer: &mut StatementPacer,
+async fn execute_counted(
+    statements: &mut u64,
     transaction: &Transaction<'_>,
     sql: &str,
 ) -> Result<(), SampleMeasureError> {
-    pacer
-        .run(transaction.batch_execute(sql))
+    *statements = statements.saturating_add(1);
+    transaction
+        .batch_execute(sql)
         .await
-        .map(|_timed| ())
         .map_err(database_sample_error)
 }
 
 async fn finish_transaction<T>(
-    pacer: &mut StatementPacer,
+    statements: &mut u64,
     transaction: Transaction<'_>,
     result: Result<T, SampleMeasureError>,
 ) -> Result<T, SampleMeasureError> {
+    *statements = statements.saturating_add(1);
     match result {
         Ok(value) => {
-            pacer
-                .run(transaction.commit())
-                .await
-                .map_err(database_sample_error)?;
+            transaction.commit().await.map_err(database_sample_error)?;
             Ok(value)
         }
-        Err(primary) => match pacer.run(transaction.rollback()).await {
-            Ok(_timed) => Err(primary),
+        Err(primary) => match transaction.rollback().await {
+            Ok(()) => Err(primary),
             Err(rollback) if matches!(&primary, SampleMeasureError::TableSmallerThanK { .. }) => {
                 warn!(
                     %rollback,
