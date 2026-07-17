@@ -19,6 +19,8 @@ pub struct Config {
     pub storage: StorageConfig,
     /// Database traffic controls.
     pub budget: BudgetConfig,
+    /// Named PostgreSQL connection data sources.
+    pub data_sources: BTreeMap<String, DataSourceConfig>,
     /// Named PostgreSQL indexes.
     pub indexes: BTreeMap<String, IndexConfig>,
     /// Named recall targets.
@@ -56,15 +58,13 @@ pub struct StorageConfig {
 pub struct BudgetConfig {
     /// Maximum statement wall-time share per worker.
     pub db_share: f64,
-    /// Global in-flight database statement limit.
-    pub max_concurrent_queries: usize,
     /// Per-statement PostgreSQL timeout.
     pub statement_timeout: Duration,
 }
 
-/// One named PostgreSQL vector index.
+/// One uniquely addressed PostgreSQL connection target.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndexConfig {
+pub struct DataSourceConfig {
     /// Server in `host:port` form.
     pub server: String,
     /// Database name.
@@ -73,6 +73,13 @@ pub struct IndexConfig {
     pub user: String,
     /// Optional environment variable containing the password.
     pub password_env: Option<String>,
+}
+
+/// One named PostgreSQL vector index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexConfig {
+    /// Named data-source reference.
+    pub data_source: String,
     /// Quoted PostgreSQL table identifier.
     pub table: String,
     /// Quoted PostgreSQL key-column identifier.
@@ -117,10 +124,17 @@ pub enum ConfigError {
 impl Config {
     /// Parses YAML and applies every frozen-spec startup validation rule.
     pub fn from_yaml_str(yaml: &str) -> Result<Self, ConfigError> {
-        let raw: RawConfig =
-            serde_saphyr::from_str(yaml).map_err(|error| ConfigError::Yaml(error.to_string()))?;
-        Self::try_from(raw)
+        parse_with_password_env(yaml, |name| std::env::var_os(name).is_some())
     }
+}
+
+fn parse_with_password_env(
+    yaml: &str,
+    password_env_exists: impl Fn(&str) -> bool,
+) -> Result<Config, ConfigError> {
+    let raw: RawConfig =
+        serde_saphyr::from_str(yaml).map_err(|error| ConfigError::Yaml(error.to_string()))?;
+    Config::from_raw(raw, password_env_exists)
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,6 +144,7 @@ struct RawConfig {
     storage: RawStorageConfig,
     #[serde(default)]
     budget: RawBudgetConfig,
+    data_sources: BTreeMap<String, RawDataSourceConfig>,
     indexes: BTreeMap<String, RawIndexConfig>,
     targets: BTreeMap<String, RawTargetConfig>,
     cohorts: BTreeMap<String, RawCohortConfig>,
@@ -162,8 +177,6 @@ struct RawStorageConfig {
 struct RawBudgetConfig {
     #[serde(default = "default_db_share")]
     db_share: f64,
-    #[serde(default = "default_max_concurrent_queries")]
-    max_concurrent_queries: usize,
     #[serde(
         default = "default_statement_timeout",
         deserialize_with = "deserialize_duration"
@@ -175,7 +188,6 @@ impl Default for RawBudgetConfig {
     fn default() -> Self {
         Self {
             db_share: default_db_share(),
-            max_concurrent_queries: default_max_concurrent_queries(),
             statement_timeout: default_statement_timeout(),
         }
     }
@@ -183,13 +195,19 @@ impl Default for RawBudgetConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawIndexConfig {
+struct RawDataSourceConfig {
     server: String,
     database: String,
     user: String,
     password_env: Option<String>,
     #[serde(default)]
     password: InlinePassword,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawIndexConfig {
+    data_source: String,
     table: String,
     key: String,
     column: String,
@@ -225,14 +243,16 @@ struct RawCohortConfig {
     target: String,
 }
 
-impl TryFrom<RawConfig> for Config {
-    type Error = ConfigError;
-
-    fn try_from(raw: RawConfig) -> Result<Self, Self::Error> {
+impl Config {
+    fn from_raw(
+        raw: RawConfig,
+        password_env_exists: impl Fn(&str) -> bool,
+    ) -> Result<Self, ConfigError> {
         validate_calibration(&raw.calibration)?;
         validate_storage(&raw.storage)?;
         validate_budget(&raw.budget)?;
-        validate_indexes(&raw.indexes)?;
+        validate_data_sources(&raw.data_sources, password_env_exists)?;
+        validate_indexes(&raw.indexes, &raw.data_sources)?;
         validate_targets(&raw.targets, raw.storage.window_seconds)?;
         validate_grid_against_targets(&raw.calibration.ef_search, &raw.targets)?;
 
@@ -264,6 +284,21 @@ impl TryFrom<RawConfig> for Config {
             })
             .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
 
+        let data_sources = raw
+            .data_sources
+            .into_iter()
+            .map(|(name, data_source)| {
+                (
+                    name,
+                    DataSourceConfig {
+                        server: data_source.server,
+                        database: data_source.database,
+                        user: data_source.user,
+                        password_env: data_source.password_env,
+                    },
+                )
+            })
+            .collect();
         let indexes = raw
             .indexes
             .into_iter()
@@ -271,10 +306,7 @@ impl TryFrom<RawConfig> for Config {
                 (
                     name,
                     IndexConfig {
-                        server: index.server,
-                        database: index.database,
-                        user: index.user,
-                        password_env: index.password_env,
+                        data_source: index.data_source,
                         table: index.table,
                         key: index.key,
                         column: index.column,
@@ -312,9 +344,9 @@ impl TryFrom<RawConfig> for Config {
             },
             budget: BudgetConfig {
                 db_share: raw.budget.db_share,
-                max_concurrent_queries: raw.budget.max_concurrent_queries,
                 statement_timeout: raw.budget.statement_timeout,
             },
+            data_sources,
             indexes,
             targets,
             cohorts,
@@ -364,9 +396,6 @@ fn validate_budget(config: &RawBudgetConfig) -> Result<(), ConfigError> {
     if !(config.db_share > 0.0 && config.db_share <= 1.0) {
         return Err(invalid("budget.db_share must be in (0, 1]"));
     }
-    if config.max_concurrent_queries == 0 {
-        return Err(invalid("budget.max_concurrent_queries must be >= 1"));
-    }
     if config.statement_timeout.is_zero() {
         return Err(invalid(
             "budget.statement_timeout must be greater than zero",
@@ -375,23 +404,56 @@ fn validate_budget(config: &RawBudgetConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_indexes(indexes: &BTreeMap<String, RawIndexConfig>) -> Result<(), ConfigError> {
-    for (name, index) in indexes {
-        if index.password.0 {
+fn validate_data_sources(
+    data_sources: &BTreeMap<String, RawDataSourceConfig>,
+    password_env_exists: impl Fn(&str) -> bool,
+) -> Result<(), ConfigError> {
+    let mut pairs = BTreeMap::<(&str, &str), &str>::new();
+    for (name, data_source) in data_sources {
+        if data_source.password.0 {
             return Err(invalid(format!(
-                "index {name:?} contains inline password; use password_env"
+                "data source {name:?} contains inline password; use password_env"
             )));
         }
         for (field, value) in [
-            ("server", index.server.as_str()),
-            ("database", index.database.as_str()),
-            ("user", index.user.as_str()),
+            ("server", data_source.server.as_str()),
+            ("database", data_source.database.as_str()),
+            ("user", data_source.user.as_str()),
         ] {
             if contains_inline_userinfo(value) {
                 return Err(invalid(format!(
-                    "index {name:?} {field} contains inline userinfo; use password_env"
+                    "data source {name:?} {field} contains inline userinfo; use password_env"
                 )));
             }
+        }
+        if let Some(password_env) = data_source.password_env.as_deref()
+            && !password_env_exists(password_env)
+        {
+            return Err(invalid(format!(
+                "data source {name:?} password_env {password_env:?} is not present"
+            )));
+        }
+        let pair = (data_source.server.as_str(), data_source.database.as_str());
+        if let Some(existing) = pairs.insert(pair, name.as_str()) {
+            return Err(invalid(format!(
+                "data sources {existing:?} and {name:?} duplicate (server, database) pair ({:?}, {:?})",
+                data_source.server, data_source.database
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_indexes(
+    indexes: &BTreeMap<String, RawIndexConfig>,
+    data_sources: &BTreeMap<String, RawDataSourceConfig>,
+) -> Result<(), ConfigError> {
+    for (name, index) in indexes {
+        if !data_sources.contains_key(&index.data_source) {
+            return Err(invalid(format!(
+                "index {name:?} references unknown data source {:?}",
+                index.data_source
+            )));
         }
         for (field, identifier) in [
             ("table", index.table.as_str()),
@@ -512,10 +574,6 @@ fn default_db_share() -> f64 {
     0.1
 }
 
-fn default_max_concurrent_queries() -> usize {
-    1
-}
-
 fn default_statement_timeout() -> Duration {
     Duration::from_secs(5)
 }
@@ -535,11 +593,14 @@ calibration:
 storage:
   root: /tmp/vectorseam
   window_seconds: 600
-indexes:
-  fixture:
+data_sources:
+  primary:
     server: localhost:5432
     database: postgres
     user: postgres
+indexes:
+  fixture:
+    data_source: primary
     table: docs_fixture
     key: doc_id
     column: embedding
@@ -561,8 +622,9 @@ cohorts:
         assert_eq!(config.calibration.train_fraction, 0.7);
         assert_eq!(config.calibration.split_seed, 7);
         assert_eq!(config.calibration.min_samples, 1000);
-        assert_eq!(config.budget.max_concurrent_queries, 1);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
+        assert_eq!(config.indexes["fixture"].data_source, "primary");
+        assert_eq!(config.data_sources["primary"].database, "postgres");
 
         let quoted = VALID_CONFIG.replace("docs_fixture", "odd.\"table");
         assert!(Config::from_yaml_str(&quoted).is_ok());
@@ -580,9 +642,58 @@ cohorts:
 
     #[test]
     fn rejects_inline_password_key_even_when_null() {
-        let yaml = VALID_CONFIG.replace("    table:", "    password: null\n    table:");
+        let yaml = VALID_CONFIG.replace("    server:", "    password: null\n    server:");
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("password_env"));
+    }
+
+    #[test]
+    fn c5_missing_password_env_is_rejected_only_when_configured() {
+        assert!(parse_with_password_env(VALID_CONFIG, |_name| false).is_ok());
+
+        let yaml = VALID_CONFIG.replace(
+            "    user: postgres",
+            "    user: postgres\n    password_env: SEAM_PG_MISSING",
+        );
+        let error = parse_with_password_env(&yaml, |_name| false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("SEAM_PG_MISSING"));
+        assert!(error.contains("not present"));
+        assert!(parse_with_password_env(&yaml, |name| name == "SEAM_PG_MISSING").is_ok());
+    }
+
+    #[test]
+    fn c5_duplicate_data_source_pair_is_rejected() {
+        let yaml = VALID_CONFIG.replace(
+            "indexes:",
+            "  secondary:\n    server: localhost:5432\n    database: postgres\n    user: maciek\nindexes:",
+        );
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+
+        assert!(error.contains("duplicate (server, database) pair"));
+        assert!(error.contains("primary"));
+        assert!(error.contains("secondary"));
+    }
+
+    #[test]
+    fn distinct_data_source_pairs_are_allowed() {
+        let yaml = VALID_CONFIG.replace(
+            "indexes:",
+            "  secondary:\n    server: localhost:5432\n    database: maciek\n    user: maciek\nindexes:",
+        );
+
+        assert!(Config::from_yaml_str(&yaml).is_ok());
+    }
+
+    #[test]
+    fn removed_max_concurrent_queries_is_rejected() {
+        let yaml =
+            VALID_CONFIG.replace("storage:", "budget:\n  max_concurrent_queries: 1\nstorage:");
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+
+        assert!(error.contains("max_concurrent_queries"));
     }
 
     #[test]

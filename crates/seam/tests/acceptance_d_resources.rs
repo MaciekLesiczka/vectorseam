@@ -14,17 +14,6 @@ fn d1_duty_cycle_20_percent_wall_time_bound() {
 }
 
 #[test]
-#[ignore = "Stage 3: global database semaphore is not implemented"]
-fn d2_concurrency_never_exceeds_config_and_default_reaches_one() {
-    let configured_max = pending::<usize>("D2");
-    let instrumented_max_in_flight = pending::<usize>("D2");
-    assert!(instrumented_max_in_flight <= configured_max);
-
-    let default_max_in_flight = pending::<usize>("D2");
-    assert_eq!(default_max_in_flight, 1);
-}
-
-#[test]
 #[ignore = "Stage 3: statement timeout and server cleanup are not implemented"]
 fn d3_one_millisecond_timeout_fails_without_retries_or_leaks() {
     let sample_count = pending::<u64>("D3");

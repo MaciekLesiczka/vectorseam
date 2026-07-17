@@ -97,8 +97,9 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
 #[test]
 fn c5_config_validation_distinct_errors_and_password_env_guidance() {
     let cases = [
-        valid_yaml().replace("    table:", "    password: secret\n    table:"),
+        valid_yaml().replace("    server:", "    password: secret\n    server:"),
         valid_yaml().replace("server: localhost:5432", "server: user:pass@localhost:5432"),
+        valid_yaml().replace("data_source: primary", "data_source: absent"),
         valid_yaml().replace("ef_search: [10, 20, 40]", "ef_search: [9, 20, 40]"),
         valid_yaml().replace("ef_search: [10, 20, 40]", "ef_search: [10, 20, 1001]"),
         valid_yaml().replace("ef_search: [10, 20, 40]", "ef_search: [10, 40, 20]"),
@@ -112,17 +113,18 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
         .map(|yaml| Config::from_yaml_str(yaml).unwrap_err().to_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(errors.len(), 9);
-    assert_eq!(errors.iter().collect::<HashSet<_>>().len(), 9);
+    assert_eq!(errors.len(), 10);
+    assert_eq!(errors.iter().collect::<HashSet<_>>().len(), 10);
     assert!(errors[0].contains("password_env"));
     assert!(errors[1].contains("password_env"));
-    assert!(errors[2].contains("ef_search"));
+    assert!(errors[2].contains("unknown data source"));
     assert!(errors[3].contains("ef_search"));
     assert!(errors[4].contains("ef_search"));
-    assert!(errors[5].contains("unknown"));
+    assert!(errors[5].contains("ef_search"));
     assert!(errors[6].contains("unknown"));
-    assert!(errors[7].contains("percentile"));
-    assert!(errors[8].contains("window"));
+    assert!(errors[7].contains("unknown"));
+    assert!(errors[8].contains("percentile"));
+    assert!(errors[9].contains("window"));
 }
 
 #[test]
@@ -218,11 +220,14 @@ calibration:
 storage:
   root: /tmp/vectorseam
   window_seconds: 600
-indexes:
-  fixture:
+data_sources:
+  primary:
     server: localhost:5432
     database: postgres
     user: postgres
+indexes:
+  fixture:
+    data_source: primary
     table: docs_fixture
     key: doc_id
     column: embedding

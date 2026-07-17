@@ -64,6 +64,7 @@ yet.
 ## Tier 3 — glue
 
 - `crates/seam/src/config.rs` — typed YAML parsing, defaults, reference checks,
+  data-source pair uniqueness, conditional password-environment validation,
   credential rejection, minute-aligned storage/target-window validation,
   duration parsing, and quoted-identifier validation.
 - `agents.md` — binding project guidance, including the least-possible Rust
@@ -139,6 +140,14 @@ Changes from the first approach:
 - Dead no-op population handling, an unused alignment wrapper, and an unused
   segment adapter were removed. Remaining crate internals use the least
   visibility needed by their callers.
+- Stage 3 preflight replaced connection fields embedded in each index with
+  top-level data sources. Indexes now reference `{data_source, table, key,
+  column}`; duplicate `(server, database)` pairs and missing configured
+  password environments fail startup.
+- The owner removed `max_concurrent_queries` and D2 rather than retaining dead
+  configuration. Stage 3 will use one serialized connection and pacer per
+  unique data-source pair; D2's removal sign-off remains in the acceptance
+  map.
 
 No Stage 2 behavior currently needs an additional owner decision. Tier 1
 review is still requested before Gate 2 approval, as required by the staged

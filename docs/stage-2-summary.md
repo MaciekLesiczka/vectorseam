@@ -3,10 +3,11 @@
 ## Passed
 
 - The typed YAML configuration model implements all startup validation in
-  §2.3 and C5, including secret rejection, config references, duration and
-  numeric bounds, minute-aligned storage windows, exact target/storage-window
-  divisibility, owner-approved split-threshold handling, and quoted PostgreSQL
-  identifiers.
+  §2.3 and C5, including top-level data-source references, unique
+  `(server, database)` pairs, conditional password-environment checks, secret
+  rejection, duration and numeric bounds, minute-aligned storage windows,
+  exact target/storage-window divisibility, owner-approved split-threshold
+  handling, and quoted PostgreSQL identifiers.
 - Phase B is a pure synchronous function of owned intermediates, listing,
   config, aligned round end, and caller-supplied `computed_at`. It performs no
   IO, async work, or clock reads.
@@ -39,7 +40,9 @@
   Stage 3.
 - B9, B12, and C3 remain blocked overall only because their Stage 3 halves are
   still ignored; their Phase B halves are green.
-- C1, C2 and D1–D3 remain blocked until Stage 3.
+- C1, C2, D1, and D3 remain blocked until Stage 3.
+- D2 and `max_concurrent_queries` were removed with explicit owner approval on
+  2026-07-17; the acceptance-map row records that sign-off.
 - C6 remains blocked overall only because its Stage 3 table-size detection,
   statement-count, and other-cohort continuation path is still ignored; its
   Phase B forced-insufficient path is green.
@@ -66,5 +69,6 @@
   confidence percentile guard with `(0, 1)`, and added the parquet
   `measured_count` integrity check.
 
-Gate 2 is ready for the required human review of Tier 1 modules in
-`docs/REVIEW_MAP.md`. Stage 3 has not started.
+Gate 2 was approved. The subsequent Stage 3 preflight data-source/config
+revision is covered by active C5 and unit tests; Phase A implementation has
+not started.

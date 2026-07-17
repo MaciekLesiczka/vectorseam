@@ -30,16 +30,18 @@ manual review in `docs/REVIEW_MAP.md`.
 | C2 | `crates/seam/tests/acceptance_c_durability.rs::c2_database_down_still_publishes_cached_phase_b_and_exits_zero` | blocked — ignored until Stage 3 |
 | C3 | `crates/seam/tests/acceptance_c_durability.rs::c3_config_fingerprint_k_change_ignores_incompatible_intermediate`; `crates/seam/tests/acceptance_c_durability.rs::c3_config_fingerprint_k_change_remeasures_with_k_20` | blocked — Phase B compatibility path passing; Stage 3 remeasurement path ignored |
 | C4 | `crates/seam/tests/acceptance_c_durability.rs::c4_empty_round_reports_insufficient_samples_and_full_gap` | passing |
-| C5 | `crates/seam/tests/acceptance_c_durability.rs::c5_config_validation_distinct_errors_and_password_env_guidance` | passing |
+| C5 | `crates/seam/tests/acceptance_c_durability.rs::c5_config_validation_distinct_errors_and_password_env_guidance`; `crates/seam/src/config.rs::tests::c5_missing_password_env_is_rejected_only_when_configured`; `crates/seam/src/config.rs::tests::c5_duplicate_data_source_pair_is_rejected` | passing |
 | C6 | `crates/seam/tests/acceptance_c_durability.rs::c6_phase_a_abort_forces_insufficient_despite_cached_min_samples`; `crates/seam/tests/acceptance_c_durability.rs::c6_table_smaller_than_k_aborts_after_one_scan_and_continues_other_cohorts` | blocked — Phase B forced-insufficient path passing; Stage 3 detection/continuation path ignored |
 | C7 | Manual Gate 3 checklist: `docs/REVIEW_MAP.md`, “C7 deferred manual review” | deferred — owner-approved deferral; transaction review sign-off pending at Gate 3 |
 | C8 | `crates/seam/tests/acceptance_c_durability.rs::c8_phase_b_reproducible_except_computed_at` | passing |
 | D1 | `crates/seam/tests/acceptance_d_resources.rs::d1_duty_cycle_20_percent_wall_time_bound` | blocked — ignored until Stage 3 |
-| D2 | `crates/seam/tests/acceptance_d_resources.rs::d2_concurrency_never_exceeds_config_and_default_reaches_one` | blocked — ignored until Stage 3 |
+| D2 | No test — criterion and `max_concurrent_queries` were removed by owner decision | deferred-with-my-approval — removal approved 2026-07-17; row retained as the required sign-off record |
 | D3 | `crates/seam/tests/acceptance_d_resources.rs::d3_one_millisecond_timeout_fails_without_retries_or_leaks` | blocked — ignored until Stage 3 |
 
-C7 is deferred with the owner's explicit approval in this task. No criterion
-is dropped.
+C7 is deferred with the owner's explicit approval in this task. D2 is the
+sole dropped criterion: the owner explicitly removed the concurrency
+configuration and acceptance requirement on 2026-07-17. Its row remains so
+that the deletion cannot silently disappear from project history.
 
 F-pg fixture precondition: the owner directed an ascending deterministic seed
 search. Seed `0` is the first candidate and passes the strengthened PostgreSQL
