@@ -163,12 +163,30 @@ pub struct AggregationInput {
     pub round_end: u64,
     /// Caller-supplied presentation timestamp; Phase B never reads a clock.
     pub computed_at: String,
-    /// Optional Phase A cohort error.
-    pub error: Option<String>,
+    /// Optional cohort-level Phase A abort that forces an insufficient round.
+    pub phase_a_abort: Option<PhaseAAbort>,
     /// All listed part headers that may overlap the round.
     pub listed_parts: Vec<ListedPart>,
     /// All durable intermediate pairs that may overlap the round.
     pub intermediates: Vec<IntermediatePart>,
+}
+
+/// A cohort-level Phase A abort with frozen publication semantics.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PhaseAAbort {
+    /// Ground truth returned fewer than the target's `k` visible rows.
+    TableSmallerThanK {
+        /// Human-readable error published in the round record.
+        error: String,
+    },
+}
+
+impl PhaseAAbort {
+    pub(crate) fn error(&self) -> &str {
+        match self {
+            Self::TableSmallerThanK { error } => error,
+        }
+    }
 }
 
 /// Published round status.
@@ -179,7 +197,7 @@ pub enum RoundStatus {
     Ok,
     /// No ef cleared, so the maximum grid value was selected.
     TargetUnmet,
-    /// Selection was refused due to population/split size.
+    /// Selection was refused due to population/split size or a Phase A abort.
     InsufficientSamples,
 }
 
@@ -265,7 +283,7 @@ pub struct RoundOutput {
     pub index: String,
     /// Ascending ef grid.
     pub ef_grid: Vec<i32>,
-    /// Selection status.
+    /// Serialized as `"ok"`, `"target_unmet"`, or `"insufficient_samples"`.
     pub status: RoundStatus,
     /// Optional Phase A error.
     pub error: Option<String>,

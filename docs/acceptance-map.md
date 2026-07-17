@@ -17,21 +17,21 @@ manual review in `docs/REVIEW_MAP.md`.
 | B1 | `crates/seam/tests/acceptance_b_estimator.rs::b1_recall_set_intersection_and_short_results` | passing |
 | B2 | `crates/seam/tests/acceptance_b_estimator.rs::b2_ground_truth_tie_break_prefers_key_7_over_9` | blocked — ignored until Stage 3 |
 | B3 | `crates/seam/tests/acceptance_b_estimator.rs::b3_quantile_type7_linear_and_singleton` | passing |
-| B4 | `crates/seam/tests/acceptance_b_estimator.rs::b4_fnv1a_reference_split_fraction_and_membership_stability` | passing |
+| B4 | `crates/seam/tests/acceptance_b_estimator.rs::b4_fnv1a_reference_split_fraction_and_membership_stability`; `crates/seam/tests/acceptance_b_estimator.rs::b4_b12_aggregate_survivor_movement_preserves_split_membership` | passing |
 | B5 | `crates/seam/tests/acceptance_b_estimator.rs::b5_selects_smallest_clearing_ef_40` | passing |
 | B6 | `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_uses_max_ef_and_keeps_transfer_fields` | passing |
 | B7 | `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_999_refuses_and_1000_emits`; `crates/seam/tests/acceptance_b_estimator.rs::b7_realized_empty_split_is_insufficient_even_at_min_samples` | passing |
-| B8 | `crates/seam/tests/acceptance_b_estimator.rs::b8_window_membership_six_slots_and_one_sixth_empty` | passing |
+| B8 | `crates/seam/src/accounting.rs::tests::b8_window_membership_enumerates_exactly_six_slots`; `crates/seam/tests/acceptance_b_estimator.rs::b8_window_membership_six_slots_and_one_sixth_empty` | passing |
 | B9 | `crates/seam/tests/acceptance_b_estimator.rs::b9_no_double_count_across_overlapping_rounds_in_phase_b`; `crates/seam/tests/acceptance_b_estimator.rs::b9_second_round_issues_zero_new_database_statements` | blocked — Phase B no-double-count path passing; Stage 3 statement path ignored |
 | B10 | `crates/seam/tests/acceptance_b_estimator.rs::b10_confidence_matches_closed_form_and_scipy_grid` | passing |
 | B11 | `crates/seam/tests/acceptance_b_estimator.rs::b11_drop_fraction_is_two_fifteenths` | passing |
-| B12 | `crates/seam/tests/acceptance_b_estimator.rs::b12_aggregate_dedup_keeps_lexicographically_smallest_survivor_and_split`; `crates/seam/tests/acceptance_b_estimator.rs::b12_measure_dedup_emits_one_truth_row_and_one_sweep_grid` | blocked — Phase B cross-part dedup path passing; Stage 3 measure-side path ignored |
+| B12 | `crates/seam/tests/acceptance_b_estimator.rs::b4_b12_aggregate_survivor_movement_preserves_split_membership`; `crates/seam/tests/acceptance_b_estimator.rs::b12_measure_dedup_emits_one_truth_row_and_one_sweep_grid` | blocked — Phase B cross-part dedup path passing; Stage 3 measure-side path ignored |
 | C1 | `crates/seam/tests/acceptance_c_durability.rs::c1_resume_mid_part_rewrites_pair_and_matches_clean_run` | blocked — ignored until Stage 3 |
 | C2 | `crates/seam/tests/acceptance_c_durability.rs::c2_database_down_still_publishes_cached_phase_b_and_exits_zero` | blocked — ignored until Stage 3 |
 | C3 | `crates/seam/tests/acceptance_c_durability.rs::c3_config_fingerprint_k_change_ignores_incompatible_intermediate`; `crates/seam/tests/acceptance_c_durability.rs::c3_config_fingerprint_k_change_remeasures_with_k_20` | blocked — Phase B compatibility path passing; Stage 3 remeasurement path ignored |
 | C4 | `crates/seam/tests/acceptance_c_durability.rs::c4_empty_round_reports_insufficient_samples_and_full_gap` | passing |
 | C5 | `crates/seam/tests/acceptance_c_durability.rs::c5_config_validation_distinct_errors_and_password_env_guidance` | passing |
-| C6 | `crates/seam/tests/acceptance_c_durability.rs::c6_table_smaller_than_k_aborts_one_cohort_after_exact_scan` | blocked — ignored until Stage 3 |
+| C6 | `crates/seam/tests/acceptance_c_durability.rs::c6_phase_a_abort_forces_insufficient_despite_cached_min_samples`; `crates/seam/tests/acceptance_c_durability.rs::c6_table_smaller_than_k_aborts_after_one_scan_and_continues_other_cohorts` | blocked — Phase B forced-insufficient path passing; Stage 3 detection/continuation path ignored |
 | C7 | Manual Gate 3 checklist: `docs/REVIEW_MAP.md`, “C7 deferred manual review” | deferred — owner-approved deferral; transaction review sign-off pending at Gate 3 |
 | C8 | `crates/seam/tests/acceptance_c_durability.rs::c8_phase_b_reproducible_except_computed_at` | passing |
 | D1 | `crates/seam/tests/acceptance_d_resources.rs::d1_duty_cycle_20_percent_wall_time_bound` | blocked — ignored until Stage 3 |

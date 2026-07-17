@@ -7,7 +7,7 @@ use seam::config::Config;
 use seam::intermediate::read_intermediate_pair;
 use seam::model::{
     AggregationConfig, AggregationInput, IntermediateMetadata, IntermediatePart, ListedPart,
-    RoundStatus,
+    MeasuredSample, PhaseAAbort, RoundStatus, SweepMeasurement,
 };
 use support::f_agg::{
     DEFAULT_PART_ULID, DEFAULT_WINDOW_SECONDS, DEFAULT_WINDOW_START, PartMetadata, SweepRow,
@@ -126,8 +126,33 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
 }
 
 #[test]
-#[ignore = "Stage 3: table-size abort is not implemented"]
-fn c6_table_smaller_than_k_aborts_one_cohort_after_exact_scan() {
+fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
+    let mut input = aggregation_input(vec![IntermediatePart {
+        metadata: metadata(100),
+        samples: measured_samples(100),
+    }]);
+    input.listed_parts[0].received_frame_count = 100;
+    input.listed_parts[0].record_count = 100;
+    input.phase_a_abort = Some(PhaseAAbort::TableSmallerThanK {
+        error: "table has fewer than k visible rows".to_owned(),
+    });
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.samples.unique, 100);
+    assert_eq!(observed.status, RoundStatus::InsufficientSamples);
+    assert_eq!(
+        observed.error.as_deref(),
+        Some("table has fewer than k visible rows")
+    );
+    assert_eq!(observed.recommended_ef, None);
+    assert_eq!(observed.confidence, None);
+    assert_eq!(observed.transferred, None);
+}
+
+#[test]
+#[ignore = "Stage 3: table-size detection and cohort continuation are not implemented"]
+fn c6_table_smaller_than_k_aborts_after_one_scan_and_continues_other_cohorts() {
     let affected = support::pending::<PendingRoundResult>("C6");
     let exact_scan_count = support::pending::<u64>("C6");
     let sweep_statement_count = support::pending::<u64>("C6");
@@ -174,16 +199,14 @@ fn c8_phase_b_reproducible_except_computed_at() {
         .listed_parts
         .push(second_input.listed_parts[0].clone());
 
-    let first = round_json_bytes(&aggregate(&first_input).unwrap()).unwrap();
-    let second = round_json_bytes(&aggregate(&second_input).unwrap()).unwrap();
-    let mut first_json: serde_json::Value = serde_json::from_slice(&first).unwrap();
-    let mut second_json: serde_json::Value = serde_json::from_slice(&second).unwrap();
-    first_json["computed_at"] = serde_json::Value::Null;
-    second_json["computed_at"] = serde_json::Value::Null;
+    let mut first = aggregate(&first_input).unwrap();
+    let mut second = aggregate(&second_input).unwrap();
+    first.computed_at = "normalized".to_owned();
+    second.computed_at = "normalized".to_owned();
 
     assert_eq!(
-        serde_json::to_vec(&first_json).unwrap(),
-        serde_json::to_vec(&second_json).unwrap()
+        round_json_bytes(&first).unwrap(),
+        round_json_bytes(&second).unwrap()
     );
 }
 
@@ -238,7 +261,7 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
         },
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
-        error: None,
+        phase_a_abort: None,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,
@@ -269,4 +292,26 @@ fn metadata(measured_count: u64) -> IntermediateMetadata {
         measured_count,
         computed_at_us: 1_783_512_000_000_000,
     }
+}
+
+fn measured_samples(count: usize) -> Vec<MeasuredSample> {
+    (0..count)
+        .map(|record_index| MeasuredSample {
+            record_index: i32::try_from(record_index).unwrap(),
+            vector_hash: record_index as u64,
+            dup_count: 1,
+            sweeps: [10, 20, 40, 80, 160]
+                .into_iter()
+                .map(|ef| {
+                    (
+                        ef,
+                        SweepMeasurement {
+                            recall: 1.0,
+                            latency_ms: 1.0,
+                        },
+                    )
+                })
+                .collect(),
+        })
+        .collect()
 }

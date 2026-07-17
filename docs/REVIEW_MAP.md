@@ -15,8 +15,9 @@ yet.
   full-population summaries, train quantiles, ef selection, holdout transfer,
   and confidence inputs.
 - `crates/seam/src/aggregate.rs` — composes compatibility filtering,
-  deterministic population splitting, counters, insufficient output semantics,
-  and ordered round records from the smaller Tier 1 primitives.
+  deterministic population splitting, counters, typed Phase A abort
+  precedence, insufficient output semantics, and ordered round records from
+  the smaller Tier 1 primitives.
 - `crates/seam/tests/acceptance_b_estimator.rs` — asserts every implemented B
   literal and tolerance, including independent FNV and SciPy reference sides.
 - `crates/seam/tests/estimator_properties.rs` — guards monotone selection,
@@ -37,9 +38,9 @@ yet.
 ## Tier 2 — standard
 
 - `crates/seam/src/intermediate.rs` — synchronously validates and reads the
-  frozen parquet field schemas and metadata, then joins truth rows to the
-  authoritative stored recall/latency rows. It contains IO but no estimator
-  policy.
+  frozen parquet field schemas and metadata, cross-checks `measured_count`
+  against truth rows, then joins truth rows to the authoritative stored
+  recall/latency rows. It contains IO but no estimator policy.
 - `crates/seam/src/model.rs` — defines pure aggregation inputs and the ordered,
   serializable round JSON contract.
 - `crates/seam/tests/f_agg_builders.rs` — validates fixture schemas, metadata,
@@ -63,7 +64,10 @@ yet.
 ## Tier 3 — glue
 
 - `crates/seam/src/config.rs` — typed YAML parsing, defaults, reference checks,
-  credential rejection, duration parsing, and quoted-identifier validation.
+  credential rejection, minute-aligned storage/target-window validation,
+  duration parsing, and quoted-identifier validation.
+- `agents.md` — binding project guidance, including the least-possible Rust
+  visibility rule added during Gate 2 review.
 - `crates/seam/src/lib.rs` — package module wiring only.
 - `crates/seam/tests/support/mod.rs` — shared pending-test marker and fixture
   module wiring.
@@ -75,17 +79,18 @@ yet.
 
 ## Confidence report
 
-I am confident in the exact B1, B3–B8, B10–B11 and C4–C5, C8 behavior now
-machine-gated, and in the Phase B halves of B9, B12, and C3. The estimator has
-no filesystem, async, or clock access: `computed_at` and the aligned round end
-are explicit inputs. Population and part iteration are normalized through
-ordered maps before floating-point reductions, and round JSON uses struct
-field order rather than unordered maps.
+I am confident in the exact B1, B3–B8, B10–B11, C4–C5, C8, and Phase B C6
+behavior now machine-gated, and in the Phase B halves of B9, B12, and C3.
+The estimator has no filesystem, async, or clock access: `computed_at` and the
+aligned round end are explicit inputs. Population and part iteration are
+normalized through ordered maps before floating-point reductions, and round
+JSON uses struct field order rather than unordered maps.
 
 The highest-value Stage 2 human review is the compact
 `accounting.rs`/`population.rs`/`aggregate.rs` chain: confirm the half-open
 part-membership predicate, lexicographic `(part_ulid, record_index)` survivor,
-compatible-part counters, and the owner-approved null/empty-split semantics.
+compatible-part counters, typed Phase A abort precedence, and the
+owner-approved null/empty-split semantics.
 In `math.rs`, confidence is evaluated as the mathematically
 equivalent complementary regularized-beta expression
 `I_(1-p)(n-m+1, m+1)`, avoiding cancellation from a literal `1 - I_p`; the
@@ -115,6 +120,25 @@ Changes from the first approach:
 - The initial aggregation module combined membership, deduplication,
   selection, and orchestration in one file. It was split into focused
   accounting and population modules so Gate 2 Tier 1 review remains small.
+- Gate 2 review exposed that a generic pass-through `error` could produce
+  `status: "ok"` with a table-smaller-than-k error when cached intermediates
+  met `min_samples`. The input is now a typed `PhaseAAbort`; this condition
+  takes precedence over population size and forces the insufficient shape.
+- The storage-window formatter initially truncated residual seconds. Startup
+  validation now requires minute-aligned storage windows and target windows
+  that are exact storage-window multiples.
+- The first C8 assertion normalized both byte streams through
+  `serde_json::Value`, which could hide field-order changes. It now normalizes
+  only `computed_at` on the typed outputs and compares serialized bytes
+  directly.
+- The initial B4/B12 survivor-stability calls repeated the same pure helper.
+  The replacement aggregates fixtures where the duplicate survivor genuinely
+  moves to a different part and compares realized train/test counts.
+- The parquet reader now rejects metadata `measured_count` values that differ
+  from the decoded truth-row count.
+- Dead no-op population handling, an unused alignment wrapper, and an unused
+  segment adapter were removed. Remaining crate internals use the least
+  visibility needed by their callers.
 
 No Stage 2 behavior currently needs an additional owner decision. Tier 1
 review is still requested before Gate 2 approval, as required by the staged

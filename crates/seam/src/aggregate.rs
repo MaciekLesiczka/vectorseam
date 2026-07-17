@@ -5,15 +5,17 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use vectorseam_core::window::{WindowError, format_window_timestamp};
 
-pub use crate::accounting::{aligned_round_end, dropped_frame_fraction, in_scope_window_starts};
-use crate::accounting::{coverage, unique_in_scope_parts};
+use crate::accounting::{
+    coverage, dropped_frame_fraction, in_scope_window_starts, unique_in_scope_parts,
+};
 use crate::math::{MathError, is_train_member, split_threshold};
 use crate::model::{
     AggregationConfig, AggregationInput, IntermediatePart, RoundOutput, RoundStatus, RoundTarget,
     RoundWindow, SampleCounts,
 };
-pub use crate::population::{PopulationSample, deduplicate_samples};
-use crate::population::{per_ef_summaries, select_and_validate, validate_population};
+use crate::population::{
+    deduplicate_samples, per_ef_summaries, select_and_validate, validate_population,
+};
 
 /// Invalid or internally inconsistent Phase B input.
 #[derive(Debug, Error)]
@@ -148,7 +150,7 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         }
     }
 
-    let mut samples = SampleCounts {
+    let samples = SampleCounts {
         available,
         measured,
         failed,
@@ -156,8 +158,10 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         train: train.len() as u64,
         test: test.len() as u64,
     };
-    let insufficient =
-        population.len() < input.config.min_samples || train.is_empty() || test.is_empty();
+    let insufficient = input.phase_a_abort.is_some()
+        || population.len() < input.config.min_samples
+        || train.is_empty()
+        || test.is_empty();
 
     let selection = if insufficient {
         None
@@ -183,13 +187,6 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
                 Some(selection.test_quantile),
             ),
         };
-    // Make the all-zero empty-round representation explicit rather than
-    // relying on the fields' construction order.
-    if population.is_empty() {
-        samples.train = 0;
-        samples.test = 0;
-    }
-
     Ok(RoundOutput {
         format_version: 1,
         cohort: input.config.cohort.clone(),
@@ -208,7 +205,10 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         index: input.config.index.clone(),
         ef_grid: input.config.ef_grid.clone(),
         status,
-        error: input.error.clone(),
+        error: input
+            .phase_a_abort
+            .as_ref()
+            .map(|abort| abort.error().to_owned()),
         recommended_ef,
         confidence,
         transferred,
@@ -261,9 +261,19 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
             "storage_window_seconds must be greater than zero".to_owned(),
         ));
     }
+    if config.storage_window_seconds % 60 != 0 {
+        return Err(AggregateError::InvalidConfig(
+            "storage_window_seconds must be a multiple of 60".to_owned(),
+        ));
+    }
     if config.window_duration_seconds < u64::from(config.storage_window_seconds) {
         return Err(AggregateError::InvalidConfig(
             "window duration must be at least one storage window".to_owned(),
+        ));
+    }
+    if config.window_duration_seconds % u64::from(config.storage_window_seconds) != 0 {
+        return Err(AggregateError::InvalidConfig(
+            "window duration must be a multiple of storage_window_seconds".to_owned(),
         ));
     }
     if config.k == 0 {

@@ -354,6 +354,9 @@ fn validate_storage(config: &RawStorageConfig) -> Result<(), ConfigError> {
     if config.window_seconds == 0 {
         return Err(invalid("storage.window_seconds must be greater than zero"));
     }
+    if config.window_seconds % 60 != 0 {
+        return Err(invalid("storage.window_seconds must be a multiple of 60"));
+    }
     Ok(())
 }
 
@@ -449,6 +452,13 @@ fn validate_targets(
         if target.window.as_secs() < u64::from(storage_window_seconds) {
             return Err(invalid(format!(
                 "target {name:?} window must be at least storage.window_seconds"
+            )));
+        }
+        if target.window.subsec_nanos() != 0
+            || target.window.as_secs() % u64::from(storage_window_seconds) != 0
+        {
+            return Err(invalid(format!(
+                "target {name:?} window must be a multiple of storage.window_seconds"
             )));
         }
     }
@@ -573,5 +583,19 @@ cohorts:
         let yaml = VALID_CONFIG.replace("    table:", "    password: null\n    table:");
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("password_env"));
+    }
+
+    #[test]
+    fn rejects_non_minute_storage_window() {
+        let yaml = VALID_CONFIG.replace("window_seconds: 600", "window_seconds: 610");
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+        assert!(error.contains("multiple of 60"));
+    }
+
+    #[test]
+    fn rejects_target_window_not_divisible_by_storage_window() {
+        let yaml = VALID_CONFIG.replace("window: 1h", "window: 15min");
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+        assert!(error.contains("multiple of storage.window_seconds"));
     }
 }

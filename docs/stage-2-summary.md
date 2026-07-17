@@ -4,8 +4,9 @@
 
 - The typed YAML configuration model implements all startup validation in
   §2.3 and C5, including secret rejection, config references, duration and
-  numeric bounds, owner-approved split-threshold handling, and quoted
-  PostgreSQL identifiers.
+  numeric bounds, minute-aligned storage windows, exact target/storage-window
+  divisibility, owner-approved split-threshold handling, and quoted PostgreSQL
+  identifiers.
 - Phase B is a pure synchronous function of owned intermediates, listing,
   config, aligned round end, and caller-supplied `computed_at`. It performs no
   IO, async work, or clock reads.
@@ -14,12 +15,15 @@
   target-unmet outputs, regularized-beta confidence, rolling membership,
   listing and cross-part deduplication, drop/coverage counters, compatibility
   filtering, per-ef summaries, and deterministic round JSON.
+- A typed Phase A table-smaller-than-k abort takes precedence over cached
+  population size and forces `insufficient_samples` with the abort error and
+  null selection fields.
 - Synchronous glue reads the exact §2.4 parquet field schemas and metadata,
-  joins truth/sweep rows, and parses segment headers through
-  `vectorseam-core`.
+  cross-checks metadata `measured_count` against decoded truth rows, joins
+  truth/sweep rows, and parses segment headers through `vectorseam-core`.
 - B1, B3–B8, B10–B11, C4–C5, and C8 are fully passing. The Phase B paths of
-  B9, B12, and C3 also pass; their remaining Phase A/statement assertions stay
-  explicit and ignored for Stage 3.
+  B9, B12, C3, and C6 also pass; their remaining Phase A/statement assertions
+  stay explicit and ignored for Stage 3.
 - The four required property tests pass: recommendation monotonicity under
   value relaxation, split stability, quantile bounds, and confidence
   monotonicity in successes for fixed holdout size.
@@ -35,13 +39,32 @@
   Stage 3.
 - B9, B12, and C3 remain blocked overall only because their Stage 3 halves are
   still ignored; their Phase B halves are green.
-- C1, C2, C6 and D1–D3 remain blocked until Stage 3.
+- C1, C2 and D1–D3 remain blocked until Stage 3.
+- C6 remains blocked overall only because its Stage 3 table-size detection,
+  statement-count, and other-cohort continuation path is still ignored; its
+  Phase B forced-insufficient path is green.
 - C7 remains the owner-approved manual deferral. Its transaction-construction
   checklist and pending Gate 3 sign-off are retained in `docs/REVIEW_MAP.md`.
 
 ## Open questions
 
 - None. No assertion was weakened and no tolerance was widened.
+
+## Gate 2 review corrections
+
+- Replaced the generic aggregation error pass-through with a typed Phase A
+  abort and added a cached-population C6 regression test.
+- Enforced storage/target window alignment instead of truncating residual
+  seconds.
+- Removed dead no-op and unused alignment/adapter code; narrowed internal
+  visibility and recorded the least-visibility rule in `agents.md`.
+- Made C8 compare raw deterministic JSON bytes after normalizing only
+  `computed_at`.
+- Replaced tautological B4/B12 stability calls with aggregate-level survivor
+  movement coverage.
+- Excluded zero from the ef-selection property generator, aligned the
+  confidence percentile guard with `(0, 1)`, and added the parquet
+  `measured_count` integrity check.
 
 Gate 2 is ready for the required human review of Tier 1 modules in
 `docs/REVIEW_MAP.md`. Stage 3 has not started.

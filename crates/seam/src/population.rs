@@ -10,7 +10,7 @@ use crate::model::{
 
 /// A window-wide deduplication survivor, exposed for acceptance assertions.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PopulationSample {
+pub(crate) struct PopulationSample {
     /// Survivor part ULID.
     pub part_ulid: String,
     /// Survivor first-occurrence record ordinal.
@@ -22,7 +22,7 @@ pub struct PopulationSample {
 }
 
 /// Deduplicates compatible samples by vector hash and survivor ordering.
-pub fn deduplicate_samples<'a>(
+pub(crate) fn deduplicate_samples<'a>(
     samples: impl IntoIterator<Item = (&'a str, &'a MeasuredSample)>,
 ) -> Vec<PopulationSample> {
     let mut survivors = BTreeMap::<u64, PopulationSample>::new();

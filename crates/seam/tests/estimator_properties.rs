@@ -8,8 +8,8 @@ proptest! {
     #[test]
     fn selected_ef_is_monotone_non_increasing_when_value_is_relaxed(
         quantiles in vec(0.0_f64..=1.0, 5),
-        first_value in 0.0_f64..=1.0,
-        second_value in 0.0_f64..=1.0,
+        first_value in 1.0e-12_f64..=1.0,
+        second_value in 1.0e-12_f64..=1.0,
     ) {
         let strict_value = first_value.max(second_value);
         let relaxed_value = first_value.min(second_value);

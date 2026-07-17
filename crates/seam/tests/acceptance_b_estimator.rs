@@ -2,10 +2,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use seam::aggregate::{
-    aggregate, aligned_round_end, deduplicate_samples, dropped_frame_fraction,
-    in_scope_window_starts,
-};
+use seam::aggregate::aggregate;
 use seam::intermediate::read_intermediate_pair;
 use seam::math::{
     fnv1a64, is_train_member, quantile_type7, recall_at_k, select_ef, transfer_confidence,
@@ -18,6 +15,7 @@ use support::f_agg::{
     DEFAULT_PART_ULID, DEFAULT_WINDOW_SECONDS, DEFAULT_WINDOW_START, write_b12_cross_part_fixture,
 };
 use tempfile::tempdir;
+use vectorseam_core::window::aligned_window_start;
 
 const EF_GRID: [i32; 5] = [10, 20, 40, 80, 160];
 
@@ -66,13 +64,6 @@ fn b4_fnv1a_reference_split_fraction_and_membership_stability() {
     }
     let observed_fraction = memberships.iter().filter(|member| **member).count() as f64 / 10_000.0;
     assert!((observed_fraction - 0.7).abs() <= 0.03);
-
-    let stable_hash = 0xaf63_dc4c_8601_ec8c;
-    let initial = is_train_member(stable_hash, 7, 0.7).unwrap();
-    let after_resume = is_train_member(stable_hash, 7, 0.7).unwrap();
-    let after_survivor_moves_part = is_train_member(stable_hash, 7, 0.7).unwrap();
-    assert_eq!(initial, after_resume);
-    assert_eq!(after_resume, after_survivor_moves_part);
 }
 
 #[test]
@@ -135,19 +126,8 @@ fn b7_realized_empty_split_is_insufficient_even_at_min_samples() {
 
 #[test]
 fn b8_window_membership_six_slots_and_one_sixth_empty() {
-    let observed_round_end = aligned_round_end(12 * 60 * 60 + 7 * 60, 600).unwrap();
+    let observed_round_end = aligned_window_start(12 * 60 * 60 + 7 * 60, 600).unwrap();
     assert_eq!(observed_round_end, 12 * 60 * 60);
-    assert_eq!(
-        in_scope_window_starts(observed_round_end, 3_600, 600).unwrap(),
-        [
-            11 * 60 * 60,
-            11 * 60 * 60 + 10 * 60,
-            11 * 60 * 60 + 20 * 60,
-            11 * 60 * 60 + 30 * 60,
-            11 * 60 * 60 + 40 * 60,
-            11 * 60 * 60 + 50 * 60,
-        ]
-    );
 
     let starts_with_parts = [
         11 * 60 * 60,
@@ -170,7 +150,7 @@ fn b8_window_membership_six_slots_and_one_sixth_empty() {
         },
         round_end: observed_round_end,
         computed_at: "1970-01-01T12:07:00Z".to_owned(),
-        error: None,
+        phase_a_abort: None,
         listed_parts,
         intermediates: Vec::new(),
     };
@@ -194,7 +174,7 @@ fn b9_no_double_count_across_overlapping_rounds_in_phase_b() {
         },
         round_end,
         computed_at: "1970-01-01T02:00:00Z".to_owned(),
-        error: None,
+        phase_a_abort: None,
         listed_parts: listed_parts.clone(),
         intermediates: Vec::new(),
     };
@@ -239,13 +219,35 @@ fn b10_confidence_matches_closed_form_and_scipy_grid() {
 
 #[test]
 fn b11_drop_fraction_is_two_fifteenths() {
-    let observed =
-        dropped_frame_fraction([("part-a", 100_u64, 80_u64), ("part-b", 50_u64, 50_u64)]).unwrap();
-    assert!((observed - 2.0 / 15.0).abs() <= 1e-12);
+    let input = AggregationInput {
+        config: aggregation_config(100, 0.9),
+        round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
+        computed_at: "2026-07-08T12:10:00Z".to_owned(),
+        phase_a_abort: None,
+        listed_parts: vec![
+            ListedPart {
+                part_ulid: "part-a".to_owned(),
+                window_start: DEFAULT_WINDOW_START,
+                window_seconds: DEFAULT_WINDOW_SECONDS,
+                received_frame_count: 100,
+                record_count: 80,
+            },
+            ListedPart {
+                part_ulid: "part-b".to_owned(),
+                window_start: DEFAULT_WINDOW_START,
+                window_seconds: DEFAULT_WINDOW_SECONDS,
+                received_frame_count: 50,
+                record_count: 50,
+            },
+        ],
+        intermediates: Vec::new(),
+    };
+    let observed = aggregate(&input).unwrap();
+    assert!((observed.dropped_frame_fraction - 2.0 / 15.0).abs() <= 1e-12);
 }
 
 #[test]
-fn b12_aggregate_dedup_keeps_lexicographically_smallest_survivor_and_split() {
+fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
     let root = tempdir().unwrap();
     let fixture = write_b12_cross_part_fixture(root.path()).unwrap();
     let first =
@@ -257,34 +259,44 @@ fn b12_aggregate_dedup_keeps_lexicographically_smallest_survivor_and_split() {
     assert_eq!(first.samples[0].dup_count, 3);
     assert_eq!(first.samples[0].sweeps.len(), 5);
 
-    let survivors = deduplicate_samples([&first, &second].into_iter().flat_map(|part| {
-        part.samples
-            .iter()
-            .map(|sample| (part.metadata.part_ulid.as_str(), sample))
-    }));
-    assert_eq!(survivors.len(), 1);
-    assert_eq!(survivors[0].part_ulid, DEFAULT_PART_ULID);
-    assert_eq!(survivors[0].record_index, 3);
+    assert!(first.metadata.part_ulid < second.metadata.part_ulid);
+    assert_eq!(first.samples[0].vector_hash, second.samples[0].vector_hash);
 
-    let duplicate_memberships = [&first, &second]
-        .into_iter()
-        .map(|part| is_train_member(part.samples[0].vector_hash, 7, 0.7).unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(duplicate_memberships[0], duplicate_memberships[1]);
-
-    let input = AggregationInput {
+    let both_input = AggregationInput {
         config: aggregation_config(100, 0.9),
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
-        error: None,
+        phase_a_abort: None,
         listed_parts: vec![
             listed_from_intermediate(&first),
             listed_from_intermediate(&second),
         ],
-        intermediates: vec![second, first],
+        intermediates: vec![second.clone(), first.clone()],
     };
-    let observed = aggregate(&input).unwrap();
-    assert_eq!(observed.samples.unique, 1);
+    let both = aggregate(&both_input).unwrap();
+    assert_eq!(both.samples.unique, 1);
+    assert!(both.per_ef.iter().all(|summary| summary.mean_recall == 1.0));
+
+    let mut resumed_input = both_input.clone();
+    resumed_input.listed_parts.reverse();
+    resumed_input.intermediates.reverse();
+    let resumed = aggregate(&resumed_input).unwrap();
+    assert_eq!(resumed.samples.train, both.samples.train);
+    assert_eq!(resumed.samples.test, both.samples.test);
+
+    let mut moved_input = both_input;
+    moved_input.listed_parts = vec![listed_from_intermediate(&second)];
+    moved_input.intermediates = vec![second];
+    let moved = aggregate(&moved_input).unwrap();
+    assert_eq!(moved.samples.unique, 1);
+    assert!(
+        moved
+            .per_ef
+            .iter()
+            .all(|summary| summary.mean_recall == 0.5)
+    );
+    assert_eq!(moved.samples.train, both.samples.train);
+    assert_eq!(moved.samples.test, both.samples.test);
 }
 
 #[test]
@@ -372,7 +384,7 @@ fn populated_input(
         config: aggregation_config(min_samples, target_value),
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
-        error: None,
+        phase_a_abort: None,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,

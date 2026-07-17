@@ -225,7 +225,11 @@ the HNSW index scan.
   for this cohort for the rest of the round (no further scans), publishes
   the round with `status: "insufficient_samples"` and an `error` string
   naming the condition, and continues with the other cohorts. The recall
-  denominator is never adjusted for small tables.
+  denominator is never adjusted for small tables. Phase A passes this
+  condition to Phase B as a typed cohort abort. It takes precedence over
+  cached population size: even if prior compatible intermediates still meet
+  `min_samples`, selection is skipped and the insufficient output shape is
+  forced.
 
 - **Decision — snapshot semantics**: ground truth and all ef results for one
   sample share one REPEATABLE READ snapshot, so each per-sample recall is
@@ -491,8 +495,9 @@ hard validation stop is worth more trust than optional advice.
 
 - every cohort key is a valid cohort name per the grammar (exact names, no
   patterns) and references an existing index and target
-- `0 < percentile < 1`, `0 < value ≤ 1`, `k ≥ 1`, `window ≥
-  storage.window_seconds`
+- `storage.window_seconds` is a positive multiple of 60; `0 < percentile <
+  1`, `0 < value ≤ 1`, `k ≥ 1`; every target `window` is at least one storage
+  window and an exact multiple of `storage.window_seconds`
 - ef grid present and non-empty (**required, no default** — a default grid
   would fail the `min(grid) ≥ k` rule below for larger `k`, and a surprise
   interplay between two defaults is worse than one explicit field), strictly
@@ -539,6 +544,9 @@ Aggregation skips (and reports) files whose `k`, `index`, `table`,
 `column`, `key`, `ef_grid`, or `format_version` don't match the current
 config — the measure phase then re-measures those parts. This is how config
 edits across restarts stay safe without runtime reconfiguration.
+The reader rejects a pair when metadata `measured_count` differs from the
+actual truth-row count; counters cannot silently disagree with the decoded
+population.
 
 `part-<ulid>.truth.parquet` — one row per successfully measured distinct
 vector:
@@ -581,7 +589,7 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "index": "reddit",
   "ef_grid": [20, 40, 60, 80, 100, 150, 200, 300, 400],
   "status": "ok",                    // "ok" | "target_unmet" | "insufficient_samples"
-  "error": null,                     // set when Phase A aborted for this cohort (e.g. table smaller than k)
+  "error": null,                     // non-null Phase A abort forces insufficient_samples
   "recommended_ef": 200,             // null when insufficient_samples
   "confidence": 0.971,               // null when insufficient_samples
   "transferred": true,               // test quantile >= value; null when insufficient_samples
@@ -650,9 +658,11 @@ Connections: one pool per distinct `(server, database)` with
 3. Deduplicate across the window by `vector_hash`, keeping the row with the
    smallest `(part_ulid, record_index)` (§2.2); the survivors are the
    population (`samples.unique`).
-4. Split per §2.2; if `unique < min_samples` or either realized split is empty,
-   publish `insufficient_samples` per §2.2 and stop selection. Full-population
-   `per_ef` summaries are still included for a non-empty population.
+4. Split per §2.2; if Phase A supplied a table-smaller-than-k abort,
+   `unique < min_samples`, or either realized split is empty, publish
+   `insufficient_samples` per §2.2 and stop selection. The Phase A abort's
+   error string is copied to the round. Full-population `per_ef` summaries are
+   still included for a non-empty cached population.
 5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
@@ -888,8 +898,9 @@ shuffles are not part of the contract):
 - **C6 table smaller than k**: a cohort whose table has fewer than k rows →
   Phase A aborts for that cohort after the first ground-truth result (at
   most one exact scan issued, no sweep statements), the round publishes
-  `insufficient_samples` with a non-null `error`, and the other cohorts'
-  rounds proceed normally.
+  `insufficient_samples` with a non-null `error` even when cached compatible
+  intermediates meet `min_samples`, and the other cohorts' rounds proceed
+  normally.
 - **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
   between statements, e.g. via a test proxy): after a sample's ground-truth
   statement returns and before its sweep statements run, a second connection

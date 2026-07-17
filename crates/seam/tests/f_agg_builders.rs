@@ -6,6 +6,7 @@ use std::fs::File;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::basic::Compression;
 use parquet::file::reader::{FileReader, SerializedFileReader};
+use seam::intermediate::{IntermediateError, read_intermediate_pair};
 use support::f_agg::{
     B12_SECOND_PART_ULID, PartMetadata, SweepRow, TruthRow, independently_count_truth_rows,
     sweep_schema, truth_schema, write_b12_cross_part_fixture, write_intermediate_pair,
@@ -144,4 +145,40 @@ fn f_agg_builder_segment_header_round_trips_through_core() {
     assert_eq!(segment.header.received_frame_count, 100);
     assert_eq!(segment.header.record_count, 2);
     assert_eq!(segment.records.len(), 2);
+}
+
+#[test]
+fn f_agg_reader_rejects_measured_count_different_from_truth_rows() {
+    let root = tempdir().unwrap();
+    let metadata = PartMetadata {
+        measured_count: 2,
+        ..PartMetadata::default()
+    };
+    let truth = TruthRow {
+        record_index: 0,
+        vector_hash: 1,
+        dup_count: 1,
+        receive_time_us: 1_783_512_000_000_000,
+        gt_keys: (1..=10).collect(),
+        gt_distances: vec![0.0; 10],
+    };
+    let sweep = SweepRow {
+        record_index: 0,
+        ef: 10,
+        returned_keys: (1..=10).collect(),
+        recall: 1.0,
+        latency_ms: 0.5,
+        result_count: 10,
+    };
+    let pair = write_intermediate_pair(root.path(), &metadata, &[truth], &[sweep]).unwrap();
+
+    let error = read_intermediate_pair(&pair.truth_path, &pair.sweep_path).unwrap_err();
+
+    assert!(matches!(
+        error,
+        IntermediateError::MeasuredCountMismatch {
+            metadata_count: 2,
+            truth_row_count: 1,
+        }
+    ));
 }

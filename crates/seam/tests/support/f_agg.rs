@@ -169,7 +169,7 @@ pub fn write_b12_cross_part_fixture(root: &Path) -> Result<B12Fixture> {
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
-    let sweep = |record_index| {
+    let sweep = |record_index, recall| {
         first_metadata
             .ef_grid
             .iter()
@@ -177,14 +177,14 @@ pub fn write_b12_cross_part_fixture(root: &Path) -> Result<B12Fixture> {
                 record_index,
                 ef: *ef,
                 returned_keys: (1..=10).collect(),
-                recall: 1.0,
+                recall,
                 latency_ms: 0.5,
                 result_count: 10,
             })
             .collect::<Vec<_>>()
     };
-    let first = write_intermediate_pair(root, &first_metadata, &[truth(3, 3)], &sweep(3))?;
-    let second = write_intermediate_pair(root, &second_metadata, &[truth(0, 1)], &sweep(0))?;
+    let first = write_intermediate_pair(root, &first_metadata, &[truth(3, 3)], &sweep(3, 1.0))?;
+    let second = write_intermediate_pair(root, &second_metadata, &[truth(0, 1)], &sweep(0, 0.5))?;
     Ok(B12Fixture {
         first,
         second,

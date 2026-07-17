@@ -45,7 +45,7 @@ pub enum MathError {
 pub struct EfSelection {
     /// Selected ef value.
     pub recommended_ef: i32,
-    /// `ok` or `target_unmet`.
+    /// `Ok` or `TargetUnmet`; insufficient status is applied before selection.
     pub status: RoundStatus,
 }
 
@@ -150,7 +150,7 @@ pub fn select_ef(
 
 /// Computes the Beta-posterior survival probability from the frozen formula.
 pub fn transfer_confidence(n: usize, m: usize, percentile: f64) -> Result<f64, MathError> {
-    if m > n || !percentile.is_finite() || !(0.0..1.0).contains(&percentile) {
+    if m > n || !percentile.is_finite() || percentile <= 0.0 || percentile >= 1.0 {
         return Err(MathError::InvalidConfidenceInput);
     }
     let successes = m as f64 + 1.0;

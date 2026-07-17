@@ -2,24 +2,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use vectorseam_core::window::{WindowError, aligned_window_start};
+use vectorseam_core::window::WindowError;
 
 use crate::aggregate::AggregateError;
 use crate::model::{Coverage, ListedPart};
 
-/// Aligns a tick time down to the current storage-window start.
-pub fn aligned_round_end(
-    now_unix_seconds: u64,
-    storage_window_seconds: u32,
-) -> Result<u64, AggregateError> {
-    Ok(aligned_window_start(
-        now_unix_seconds,
-        storage_window_seconds,
-    )?)
-}
-
 /// Enumerates fully-contained storage-window starts in ascending order.
-pub fn in_scope_window_starts(
+pub(crate) fn in_scope_window_starts(
     round_end: u64,
     window_duration_seconds: u64,
     storage_window_seconds: u32,
@@ -48,7 +37,7 @@ pub fn in_scope_window_starts(
 }
 
 /// Computes collector-side drop fraction from distinct part header counts.
-pub fn dropped_frame_fraction<'a>(
+pub(crate) fn dropped_frame_fraction<'a>(
     headers: impl IntoIterator<Item = (&'a str, u64, u64)>,
 ) -> Result<f64, AggregateError> {
     let mut received = 0_u64;
@@ -116,5 +105,25 @@ pub(crate) fn coverage(expected_windows: &[u64], listed: &BTreeMap<&str, &Listed
         empty_window_fraction,
         windows_in_scope: windows_in_scope as u64,
         windows_with_parts: windows_with_parts as u64,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b8_window_membership_enumerates_exactly_six_slots() {
+        assert_eq!(
+            in_scope_window_starts(12 * 60 * 60, 3_600, 600).unwrap(),
+            [
+                11 * 60 * 60,
+                11 * 60 * 60 + 10 * 60,
+                11 * 60 * 60 + 20 * 60,
+                11 * 60 * 60 + 30 * 60,
+                11 * 60 * 60 + 40 * 60,
+                11 * 60 * 60 + 50 * 60,
+            ]
+        );
     }
 }

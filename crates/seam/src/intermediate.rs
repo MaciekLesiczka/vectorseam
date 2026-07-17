@@ -11,11 +11,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::errors::ParquetError;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use thiserror::Error;
-use vectorseam_core::segment::{SegmentError, read_segment};
 
-use crate::model::{
-    IntermediateMetadata, IntermediatePart, ListedPart, MeasuredSample, SweepMeasurement,
-};
+use crate::model::{IntermediateMetadata, IntermediatePart, MeasuredSample, SweepMeasurement};
 
 /// Invalid or unreadable durable intermediate data.
 #[derive(Debug, Error)]
@@ -29,9 +26,6 @@ pub enum IntermediateError {
     /// An Arrow record batch could not be decoded.
     #[error("decode intermediate Arrow batch: {0}")]
     Arrow(#[from] ArrowError),
-    /// A `.vseam` segment could not be decoded by `vectorseam-core`.
-    #[error(transparent)]
-    Segment(#[from] SegmentError),
     /// The durable Arrow schema did not exactly match the frozen schema.
     #[error("{kind} parquet schema does not match the frozen schema")]
     Schema {
@@ -58,6 +52,14 @@ pub enum IntermediateError {
     /// A truth record ordinal occurred more than once.
     #[error("duplicate truth record_index {0}")]
     DuplicateTruthRecord(i32),
+    /// Metadata measured count did not equal the actual truth-row count.
+    #[error("parquet measured_count {metadata_count} does not match {truth_row_count} truth rows")]
+    MeasuredCountMismatch {
+        /// Metadata value.
+        metadata_count: u64,
+        /// Decoded truth-row count.
+        truth_row_count: usize,
+    },
     /// A sweep row had no truth row with the same record ordinal.
     #[error("sweep record_index {0} has no matching truth row")]
     OrphanSweepRecord(i32),
@@ -83,6 +85,12 @@ pub fn read_intermediate_pair(
     }
 
     let mut samples = read_truth_rows(truth_path)?;
+    if usize::try_from(truth_metadata.measured_count) != Ok(samples.len()) {
+        return Err(IntermediateError::MeasuredCountMismatch {
+            metadata_count: truth_metadata.measured_count,
+            truth_row_count: samples.len(),
+        });
+    }
     read_sweep_rows(sweep_path, &mut samples)?;
     Ok(IntermediatePart {
         metadata: truth_metadata,
@@ -90,23 +98,8 @@ pub fn read_intermediate_pair(
     })
 }
 
-/// Parses a listed part header through `vectorseam-core` conventions.
-pub fn listed_part_from_segment(
-    part_ulid: impl Into<String>,
-    bytes: &[u8],
-) -> Result<ListedPart, IntermediateError> {
-    let segment = read_segment(bytes)?;
-    Ok(ListedPart {
-        part_ulid: part_ulid.into(),
-        window_start: segment.header.window_start,
-        window_seconds: segment.header.window_seconds,
-        received_frame_count: segment.header.received_frame_count,
-        record_count: segment.header.record_count,
-    })
-}
-
 /// Frozen truth parquet Arrow schema.
-pub fn truth_schema() -> SchemaRef {
+fn truth_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("record_index", DataType::Int32, false),
         Field::new("vector_hash", DataType::UInt64, false),
@@ -126,7 +119,7 @@ pub fn truth_schema() -> SchemaRef {
 }
 
 /// Frozen sweep parquet Arrow schema.
-pub fn sweep_schema() -> SchemaRef {
+fn sweep_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("record_index", DataType::Int32, false),
         Field::new("ef", DataType::Int32, false),
