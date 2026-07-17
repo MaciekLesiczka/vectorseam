@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
         std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_owned());
     std::fs::create_dir_all(&root)
         .with_context(|| format!("create fixture root {}", root.display()))?;
+    reset_generated_outputs(&root)?;
 
     let (documents, queries) = generate_vectors(SEED);
     verify_normalized(&documents)?;
@@ -95,6 +96,20 @@ async fn main() -> Result<()> {
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),
     )?;
     println!("generated F-pg fixture at {}", root.display());
+    Ok(())
+}
+
+fn reset_generated_outputs(root: &Path) -> Result<()> {
+    for directory in ["storage", "anchor"] {
+        let path = root.join(directory);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| format!("remove {}", path.display()));
+            }
+        }
+    }
     Ok(())
 }
 

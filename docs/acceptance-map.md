@@ -1,18 +1,20 @@
 # Tuner acceptance map
 
-Stage 3 is implemented. A criterion is marked `passing` only when all of its
+Stage 4 is implemented. A criterion is marked `passing` only when all of its
 currently required behavior is machine-gated. The F-agg suite runs without a
 database; tests marked F-pg are executed by `make seam-f-pg-tests` after the
-deterministic fixture is loaded. Suite A remains blocked on Stage 4. C7 is the
-owner-approved manual-review exception recorded in `docs/REVIEW_MAP.md`.
+deterministic fixture is loaded. Suite A is executed by
+`make seam-anchor-tests` after the trusted Python anchor output is generated.
+C7 is the owner-approved manual-review exception recorded in
+`docs/REVIEW_MAP.md`.
 
 | Criterion | Test path and name | Status |
 |---|---|---|
-| A1 | `crates/seam/tests/acceptance_a_anchor.rs::a1_anchor_recall_exact_for_at_least_99_percent` | blocked — ignored until Stage 4 |
-| A2 | `crates/seam/tests/acceptance_a_anchor.rs::a2_anchor_full_population_mean_recall_within_0_005` | blocked — ignored until Stage 4 |
-| A3 | `crates/seam/tests/acceptance_a_anchor.rs::a3_anchor_train_p10_within_0_01` | blocked — ignored until Stage 4 |
-| A4 | `crates/seam/tests/acceptance_a_anchor.rs::a4_anchor_recommended_ef_identical` | blocked — ignored until Stage 4 |
-| A5 | `crates/seam/tests/acceptance_a_anchor.rs::a5_anchor_holdout_quantile_and_transfer_match` | blocked — ignored until Stage 4 |
+| A1 | `crates/seam/tests/acceptance_a_anchor.rs::a1_anchor_recall_exact_for_at_least_99_percent` (F-pg + trusted anchor) | passing |
+| A2 | `crates/seam/tests/acceptance_a_anchor.rs::a2_anchor_full_population_mean_recall_within_0_005` (F-pg + trusted anchor) | passing |
+| A3 | `crates/seam/tests/acceptance_a_anchor.rs::a3_anchor_train_p10_within_0_01` (F-pg + trusted anchor) | passing |
+| A4 | `crates/seam/tests/acceptance_a_anchor.rs::a4_anchor_recommended_ef_identical` (F-pg + trusted anchor) | passing |
+| A5 | `crates/seam/tests/acceptance_a_anchor.rs::a5_anchor_holdout_quantile_and_transfer_match` (F-pg + trusted anchor) | passing |
 | B1 | `crates/seam/tests/acceptance_b_estimator.rs::b1_recall_set_intersection_and_short_results` | passing |
 | B2 | `crates/seam/src/database.rs::tests::b2_f_pg_ground_truth_tie_break_prefers_key_7_over_9` (F-pg); `crates/seam/src/database.rs::tests::b2_ground_truth_sql_quotes_identifiers_and_tie_breaks_by_key` | passing |
 | B3 | `crates/seam/tests/acceptance_b_estimator.rs::b3_quantile_type7_linear_and_singleton` | passing |
@@ -31,19 +33,22 @@ owner-approved manual-review exception recorded in `docs/REVIEW_MAP.md`.
 | C4 | `crates/seam/tests/acceptance_c_durability.rs::c4_empty_round_reports_insufficient_samples_and_full_gap` | passing |
 | C5 | `crates/seam/tests/acceptance_c_durability.rs::c5_config_validation_distinct_errors_and_password_env_guidance`; `crates/seam/src/config.rs::tests::c5_missing_password_env_is_rejected_only_when_configured`; `crates/seam/src/config.rs::tests::c5_duplicate_data_source_pair_is_rejected`; `crates/seam/src/config.rs::tests::rejects_zero_client_timeout` | passing |
 | C6 | `crates/seam/tests/acceptance_c_durability.rs::c6_phase_a_abort_forces_insufficient_despite_cached_min_samples`; `crates/seam/src/pipeline.rs::tests::c6_table_smaller_than_k_stops_after_first_scan_despite_cached_population`; `crates/seam/src/tuner.rs::tests::c6_f_pg_table_smaller_stops_after_one_exact_and_other_cohort_continues` (F-pg) | passing |
-| C7 | Manual Gate 3 checklist: `docs/REVIEW_MAP.md`, “C7 deferred manual review” | deferred — manual-review deferral approved by owner; transaction-construction sign-off pending |
+| C7 | Manual Gate 3 checklist: `docs/REVIEW_MAP.md`, “C7 deferred manual review” | deferred-with-my-approval — owner completed and approved the manual transaction review on 2026-07-17 |
 | C8 | `crates/seam/tests/acceptance_c_durability.rs::c8_phase_b_reproducible_except_computed_at` | passing |
 | D1 | `crates/seam/src/pacer.rs::tests::d1_duty_cycle_20_percent_wall_time_bound` | passing |
 | D2 | No test — criterion and `max_concurrent_queries` were removed by owner decision | deferred-with-my-approval — removal approved 2026-07-17; row retained as the required sign-off record |
 | D3 | `crates/seam/src/tuner.rs::tests::d3_f_pg_one_millisecond_timeout_fails_without_retries_or_leaks` (F-pg) | passing |
 
-C7 is deferred with the owner's explicit approval in this task. D2 is the
-sole dropped criterion: the owner explicitly removed the concurrency
-configuration and acceptance requirement on 2026-07-17. Its row remains so
-that the deletion cannot silently disappear from project history.
+C7 is deferred from machine gating with the owner's explicit approval, and
+its required manual transaction review was completed and approved on
+2026-07-17. D2 is the sole dropped criterion: the owner explicitly removed
+the concurrency configuration and acceptance requirement on 2026-07-17. Its
+row remains so that the deletion cannot silently disappear from project
+history.
 
 F-pg fixture precondition: the owner directed an ascending deterministic seed
 search. Seed `0` is the first candidate and passes the strengthened PostgreSQL
 boundary-gap check for all 500 queries; its minimum observed gap is
-`1.3683911141981753e-6`. A1–A5 remain blocked until Stage 4 implementation,
-not by fixture generation.
+`1.3683911141981753e-6`. The Stage 4 harness resets generated tuner and anchor
+artifacts before each fixture run, preserving the shared query order while
+preventing cached intermediates from masking an end-to-end regression.

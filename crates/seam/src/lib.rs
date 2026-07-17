@@ -8,6 +8,7 @@
 mod accounting;
 pub mod aggregate;
 pub mod config;
+pub mod daemon;
 mod database;
 pub mod intermediate;
 pub mod math;

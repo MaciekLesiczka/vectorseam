@@ -65,6 +65,11 @@ pub struct Tuner {
 }
 
 impl Tuner {
+    /// Returns the validated collector storage-window duration.
+    pub(crate) fn storage_window_seconds(&self) -> u32 {
+        self.config.storage.window_seconds
+    }
+
     /// Creates the local storage adapter and connects each configured data source.
     ///
     /// Database connection failures remain retryable so cached Phase B work

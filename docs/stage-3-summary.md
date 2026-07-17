@@ -24,11 +24,12 @@
 ## Red or deferred
 
 - A1–A5 remain blocked until Stage 4 anchor reproduction and wire-up.
-- C7 is deferred with owner approval to the explicit manual transaction
-  checklist in `docs/REVIEW_MAP.md`; reviewer sign-off is pending.
+- C7 is deferred from machine gating with owner approval; the explicit manual
+  transaction checklist in `docs/REVIEW_MAP.md` was completed and approved
+  on 2026-07-17.
 - D2 remains recorded as the owner-approved removed criterion.
 
 ## Open questions
 
-No unresolved Stage 3 specification question remains. The Gate 3 human action
-is the C7/transaction-construction review, not a spec decision.
+No unresolved Stage 3 specification question remains. The C7 manual review is
+complete, and Gate 3 is approved.

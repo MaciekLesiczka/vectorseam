@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -60,7 +60,7 @@ seam-f-pg-fixture: seam-postgres-up
 	DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
 		$(CARGO) run --release -p seam --example f_pg_fixture
 
-seam-anchor: setup
+seam-anchor: seam-f-pg-fixture setup
 	$(UV) run python -m seam_harness.anchor \
 		--fixture-root "$(SEAM_F_PG_ROOT)" \
 		--dsn "$(SEAM_DATABASE_URL)"
@@ -70,7 +70,13 @@ seam-f-pg-tests: seam-f-pg-fixture
 		SEAM_DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_TEST_PG_PASSWORD=password \
 		$(CARGO) test -p seam --lib
 
-seam-f-pg-harness: seam-f-pg-tests seam-anchor
+seam-anchor-tests: seam-anchor
+	SEAM_REQUIRE_F_PG=1 SEAM_PG_PORT="$(SEAM_PG_PORT)" \
+		SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
+		SEAM_TEST_PG_PASSWORD=password \
+		$(CARGO) test -p seam --test acceptance_a_anchor
+
+seam-f-pg-harness: seam-f-pg-tests seam-anchor-tests
 
 test-seam-f-agg:
 	$(CARGO) test -p seam \

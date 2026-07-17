@@ -8,10 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 async-trait.workspace = true
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
 bytes.workspace = true
+clap.workspace = true
 futures-util.workspace = true
 humantime = "2.4.0"
 object_store.workspace = true
@@ -26,6 +28,7 @@ tokio.workspace = true
 tokio-postgres = "0.7.15"
 tokio-util.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 ulid.workspace = true
 vectorseam-core = { path = "../vectorseam-core" }
 
@@ -44,6 +47,10 @@ path = "src/lib.rs"
 [[example]]
 name = "f_pg_fixture"
 path = "examples/f_pg_fixture.rs"
+
+[[bin]]
+name = "seam"
+path = "src/main.rs"
 
 [[bench]]
 name = "phase_b"

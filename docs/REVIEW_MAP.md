@@ -1,7 +1,6 @@
 # Tuner review map
 
-This map covers the Stage 1 harness, Stage 2 estimator, and Stage 3
-measurement/durability implementation.
+This map covers the complete Stage 1–4 tuner implementation.
 
 ## Tier 1 — semantically rich / critical
 
@@ -43,9 +42,15 @@ measurement/durability implementation.
   and estimator invariants.
 - `python/seam_harness/anchor.py` — independent FNV split adapter that reuses
   the trusted anchor modules for all benchmark math.
+- `crates/seam/tests/acceptance_a_anchor.rs` and
+  `crates/seam/tests/support/anchor.rs` — run the real tuner once against the
+  ordered F-pg segment, read its durable intermediate and round output, and
+  compare A1–A5 against the trusted anchor artifact without duplicating
+  anchor math.
 - `crates/seam/tests/support/f_agg.rs` and
   `crates/seam/examples/f_pg_fixture.rs` — frozen-schema and seeded PostgreSQL
-  fixtures, including query ordering, no ties, boundary gap, HNSW, and B2.
+  fixtures, including query ordering, clean-run artifact reset, no ties,
+  boundary gap, HNSW, and B2.
 
 ## Tier 2 — standard
 
@@ -53,15 +58,15 @@ measurement/durability implementation.
   long-lived runtime per data source, once-per-round reconnect, connection
   abandonment, per-cohort failure isolation, and bounded connection-driver
   shutdown.
+- `crates/seam/src/daemon.rs` — immediate/periodic single-flight scheduling,
+  skipped-tick accounting, wall-clock projection, signal ownership, and
+  ordered tuner shutdown.
 - `crates/seam/src/model.rs` — pure aggregation contracts and ordered round
   JSON types.
 - `crates/seam/tests/acceptance_c_durability.rs` — cached database-down,
   config, empty-round, abort, and reproducibility acceptance.
 - `crates/seam/tests/f_agg_builders.rs` — schema, compression, metadata,
   crash-shape, ULID-order, and segment round-trip checks.
-- `crates/seam/tests/acceptance_a_anchor.rs` and
-  `crates/seam/tests/support/anchor.rs` — Stage 4 anchor comparison skeleton
-  and artifact loader.
 - `tests/seam/docker-compose.yml` — isolated pgvector service.
 - `crates/seam/benches/phase_b.rs` and
   `docs/phase-b-benchmark-baseline.md` — fixed hot-path workloads and the
@@ -72,6 +77,8 @@ measurement/durability implementation.
 - `crates/seam/src/config.rs` — YAML parsing, defaults, references,
   data-source uniqueness, conditional password-environment validation,
   duration/grid/window checks, and identifier validation.
+- `crates/seam/src/main.rs` — `--config`/`SEAM_CONFIG`, logging setup,
+  one-time config loading, and Tokio runtime entry.
 - `crates/seam/src/lib.rs` — module wiring.
 - `crates/seam/tests/support/mod.rs` — test support wiring.
 - `Makefile` and `.github/workflows/ci.yml` — database-free and Docker gate
@@ -111,11 +118,18 @@ attempt per sample with no retries. D1 uses paused Tokio time and the frozen
 has a ten-second overall deadline whose forced fallback aborts remaining
 driver handles.
 
-The highest-value human review is `database.rs`, followed by the compact
-`measure.rs`/`pipeline.rs` durability chain. C7 deliberately rests on that
-manual database review rather than a pausing proxy. Please confirm that the
-single borrowed `Transaction` and statement order satisfy the checklist
-below.
+I am confident in the Stage 4 anchor reproduction. The fixture is reset before
+the run, Python computes its side through the existing
+`ground_truth.py`/`sweep.py`/`analyze.py` functions, and the five Rust tests
+measure through `Tuner`, read the durable parquet pair, and assert the frozen
+A tolerances. The real Docker run passed all five criteria. The daemon keeps
+one round future in the current task, advances past crossed tick boundaries
+without queuing work, and uses an owned signal task to cancel cooldown or
+remaining cohort work before shutting down the database drivers.
+
+The highest-value human review remains `database.rs`, followed by the compact
+`measure.rs`/`pipeline.rs` durability chain. The owner completed the C7 manual
+review against that path on 2026-07-17.
 
 Deliberate MVP corner cut: there is no connection pool or concurrent
 statement execution. Each validated unique `(server, database)` pair owns
@@ -155,12 +169,26 @@ Changes from the first Stage 3 approach:
   it during the round, making the spec's every-sample timeout deterministic
   without changing the production query or tolerance.
 
-No unresolved spec question remains in Stage 3.
+Stage 4 deviations from the initial skeleton:
+
+- The A-suite skeleton originally loaded only the Python artifact and left
+  five ignored placeholders. It now uses one `OnceLock`-owned real tuner run
+  shared by the five criterion tests; this avoids five competing measurement
+  passes while preserving a separately named assertion for every A criterion.
+- The daemon does not await a plain `tokio::time::Interval` after each round.
+  An overdue interval tick would complete immediately and turn skipped work
+  into a queued catch-up round. The implemented monotonic deadline calculation
+  advances over every crossed boundary and schedules only the next future
+  tick.
+
+No unresolved A–D specification question remains. Optional P1 `seam plan`
+was not implemented in Stage 4 and remains a product-priority call; it is not
+an A–D acceptance criterion.
 
 ## C7 deferred manual review — Gate 3
 
 Deferral approved by the owner on 2026-07-16. No pausing proxy and no C7-lite
-instrumentation test are required. Before Gate 3 approval, a human reviews
+instrumentation test are required. For Gate 3 approval, a human reviewed
 `crates/seam/src/database.rs` and confirms:
 
 1. One `DatabaseConnection.client` supplies every statement for one sample.
@@ -174,4 +202,5 @@ instrumentation test are required. Before Gate 3 approval, a human reviews
    connection explicitly roll back; a connection-level/client-timeout error
    abandons the connection and never reuses uncertain protocol state.
 
-Gate 3 sign-off record (reviewer, date, commit): pending.
+Gate 3 sign-off record: owner, 2026-07-17, approved against the Stage 3
+working tree before Stage 4 began.

@@ -1717,6 +1717,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "bytes",
+ "clap",
  "criterion",
  "futures-util",
  "humantime",
@@ -1737,6 +1738,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "ulid",
  "vectorseam-core",
 ]
