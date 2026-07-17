@@ -25,8 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.0
-      - run: make build-rust
-      - run: make test-rust
+      - run: make test-rust-msrv
 
   python:
     name: Python

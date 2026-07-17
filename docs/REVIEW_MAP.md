@@ -82,7 +82,7 @@ This map covers the complete Stage 1–4 tuner implementation.
 - `crates/seam/src/lib.rs` — module wiring.
 - `crates/seam/tests/support/mod.rs` — test support wiring.
 - `Makefile` and `.github/workflows/ci.yml` — database-free and Docker gate
-  entry points.
+  entry points, including the clean-room Rust 1.85 MSRV gate.
 - `crates/seam/Cargo.toml` and workspace `Cargo.toml` — dependency wiring.
 - `agents.md` — binding project and Tokio guidance.
 
@@ -190,6 +190,17 @@ stronger A4 fixture target `value: 0.8`; the anchor and tuner must now select
 the literal mid-grid ef `80`. Optional P1 `seam plan` was not implemented in
 Stage 4 and remains a product-priority call; it is not an A–D acceptance
 criterion.
+
+Post-Gate-4 MSRV correction: the original local check invoked Rust 1.85
+Cargo but allowed it to find a newer Homebrew `rustc` on `PATH`, while the
+shared target directory could also reuse dependencies built by that newer
+compiler. `serde-saphyr` is now pinned to the newest release verified with
+Rust 1.85 (`0.0.11`). `make test-rust-msrv` resolves both Cargo and rustc
+through rustup, verifies their exact versions, cleans a dedicated target
+directory, checks all locked targets, and runs the locked workspace tests.
+The GitHub MSRV job uses that same local entry point. I am confident this
+closes both the immediate dependency failure and the false-green path that
+hid it.
 
 ## C7 deferred manual review — Gate 3
 

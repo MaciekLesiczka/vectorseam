@@ -1,7 +1,9 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
+RUST_MSRV ?= 1.85.0
+RUST_MSRV_TARGET_DIR ?= $(CURDIR)/target/msrv-$(RUST_MSRV)
 PYTHON_FRAME_BENCH_JSON ?= .benchmarks/frame.json
 PYTHON_VECTOR_CAPTURE_BENCH_JSON ?= .benchmarks/vector_capture.json
 ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
@@ -96,6 +98,23 @@ build-rust:
 
 test-rust:
 	$(CARGO) test --workspace
+
+# Resolve both executables through rustup: `rustup run cargo` can otherwise
+# spawn a newer `rustc` found first on PATH. The dedicated target is cleaned
+# so dependencies are always compiled by the actual MSRV compiler.
+test-rust-msrv:
+	@set -eu; \
+		msrv_cargo="$$(rustup which --toolchain $(RUST_MSRV) cargo)"; \
+		msrv_rustc="$$(rustup which --toolchain $(RUST_MSRV) rustc)"; \
+		test "$$("$$msrv_cargo" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
+		test "$$("$$msrv_rustc" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
+		echo "MSRV cargo: $$("$$msrv_cargo" --version)"; \
+		echo "MSRV rustc: $$("$$msrv_rustc" --version)"; \
+		CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" "$$msrv_cargo" clean; \
+		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+			"$$msrv_cargo" check --workspace --all-targets --locked; \
+		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+			"$$msrv_cargo" test --workspace --locked
 
 lint-rust:
 	$(CARGO) fmt --all -- --check

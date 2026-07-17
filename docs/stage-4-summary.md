@@ -22,6 +22,12 @@
   Stage 3 finish-and-observe behavior before owned database drivers shut down.
 - CI keeps F-agg database-free on every push and runs F-pg plus A1–A5 in the
   Docker harness job.
+- The Rust 1.85 gate now runs through `make test-rust-msrv`, which pins both
+  Cargo and rustc to the MSRV, cleans an isolated target directory, checks
+  every locked Rust target, and runs the locked workspace tests.
+- `serde-saphyr` is pinned to `0.0.11`, the newest release verified to compile
+  on Rust 1.85; newer releases use language and library features beyond the
+  workspace MSRV.
 
 ## Red or deferred
 
