@@ -45,6 +45,12 @@ pub(crate) enum SampleMeasureError {
     /// A database operation failed; the sample is counted and the part continues.
     #[error("database sample measurement failed: {0}")]
     Database(String),
+    /// The connection became unusable; the current part must remain unmeasured.
+    #[error("database connection unavailable: {0}")]
+    Connection(String),
+    /// Cancellation arrived during the cooldown before a transaction started.
+    #[error("sample measurement cancelled before transaction start")]
+    CancelledBeforeTransaction,
     /// The exact query proved that fewer than `k` rows are visible.
     #[error("table returned {returned} rows, fewer than k={k}")]
     TableSmallerThanK {
@@ -63,6 +69,7 @@ pub(crate) trait SampleMeasurer {
         &mut self,
         vector: &[f32],
         config: &AggregationConfig,
+        cancellation: &CancellationToken,
     ) -> Result<SampleMeasurement, SampleMeasureError>;
 }
 
@@ -168,6 +175,12 @@ pub(crate) enum PreparePartError {
     /// A duplicate count did not fit the durable int32 field.
     #[error("segment duplicate count does not fit int32")]
     DuplicateCount,
+    /// A sweep result count did not fit the durable int32 field.
+    #[error("sweep result count {0} does not fit int32")]
+    ResultCount(usize),
+    /// The measured-row count did not fit the durable uint64 metadata field.
+    #[error("measured row count {0} does not fit uint64")]
+    MeasuredCount(usize),
 }
 
 /// A fully measured part ready for truth-then-sweep persistence.
@@ -183,6 +196,7 @@ pub(crate) struct MeasuredPart {
 pub(crate) enum MeasurePartOutcome {
     Complete(Box<MeasuredPart>),
     TableSmallerThanK(PhaseAAbort),
+    ConnectionUnavailable(String),
     Cancelled,
 }
 
@@ -312,11 +326,17 @@ pub(crate) async fn measure_prepared_part<M: SampleMeasurer + Send + ?Sized>(
             failed_count += 1;
             continue;
         };
-        let measured = match measurer.measure_sample(vector, config).await {
+        let measured = match measurer.measure_sample(vector, config, cancellation).await {
             Ok(measured) => measured,
             Err(SampleMeasureError::Database(_error)) => {
                 failed_count += 1;
                 continue;
+            }
+            Err(SampleMeasureError::Connection(error)) => {
+                return Ok(MeasurePartOutcome::ConnectionUnavailable(error));
+            }
+            Err(SampleMeasureError::CancelledBeforeTransaction) => {
+                return Ok(MeasurePartOutcome::Cancelled);
             }
             Err(SampleMeasureError::TableSmallerThanK { returned, k }) => {
                 return Ok(MeasurePartOutcome::TableSmallerThanK(
@@ -351,7 +371,7 @@ pub(crate) async fn measure_prepared_part<M: SampleMeasurer + Send + ?Sized>(
                 record_index: sample.record_index,
                 ef: sweep.ef,
                 result_count: i32::try_from(sweep.returned_keys.len())
-                    .map_err(|_error| PreparePartError::DuplicateCount)?,
+                    .map_err(|_error| PreparePartError::ResultCount(sweep.returned_keys.len()))?,
                 returned_keys: sweep.returned_keys,
                 recall: sweep.recall,
                 latency_ms: sweep.latency_ms,
@@ -359,8 +379,8 @@ pub(crate) async fn measure_prepared_part<M: SampleMeasurer + Send + ?Sized>(
         }
     }
 
-    let measured_count =
-        u64::try_from(truth_rows.len()).map_err(|_error| PreparePartError::DuplicateCount)?;
+    let measured_count = u64::try_from(truth_rows.len())
+        .map_err(|_error| PreparePartError::MeasuredCount(truth_rows.len()))?;
     Ok(MeasurePartOutcome::Complete(Box::new(MeasuredPart {
         metadata: IntermediateMetadata {
             format_version: 1,
@@ -409,6 +429,7 @@ mod tests {
             &mut self,
             _vector: &[f32],
             config: &AggregationConfig,
+            _cancellation: &CancellationToken,
         ) -> Result<SampleMeasurement, SampleMeasureError> {
             self.calls += 1;
             Ok(SampleMeasurement {

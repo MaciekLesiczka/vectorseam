@@ -1,6 +1,7 @@
 //! One-connection PostgreSQL measurement and transaction construction.
 
 use std::env;
+use std::future::Future;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -10,15 +11,35 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, Config as PostgresConfig, IsolationLevel, NoTls, Row, Transaction};
-use tracing::warn;
+use tokio_util::sync::CancellationToken;
 
 use crate::config::{BudgetConfig, DataSourceConfig};
 use crate::math::recall_at_k;
 use crate::measure::{SampleMeasureError, SampleMeasurement, SampleMeasurer, SampleSweepResult};
 use crate::model::AggregationConfig;
-use crate::pacer::{DutyCyclePacer, PacerError};
+use crate::pacer::{CancelableRun, DutyCyclePacer, PacerError};
 
 const APPLICATION_NAME: &str = "vectorseam-seam";
+
+#[derive(Default)]
+struct StatementCounter {
+    #[cfg(test)]
+    count: u64,
+}
+
+impl StatementCounter {
+    fn increment(&mut self) {
+        #[cfg(test)]
+        {
+            self.count = self.count.saturating_add(1);
+        }
+    }
+
+    #[cfg(test)]
+    fn value(&self) -> u64 {
+        self.count
+    }
+}
 
 /// Creating, driving, or closing one PostgreSQL connection failed.
 #[derive(Debug, Error)]
@@ -33,6 +54,8 @@ pub(crate) enum DatabaseConnectionError {
     Pacer(#[from] PacerError),
     #[error("could not connect to PostgreSQL: {0}")]
     Connect(#[source] tokio_postgres::Error),
+    #[error("PostgreSQL connection attempt exceeded client timeout {timeout:?}")]
+    ConnectTimeout { timeout: Duration },
     #[error("PostgreSQL connection driver failed: {0}")]
     Driver(#[source] tokio_postgres::Error),
     #[error("PostgreSQL connection driver task failed: {0}")]
@@ -49,8 +72,8 @@ pub(crate) struct DatabaseConnection {
     driver: Option<JoinHandle<Result<(), tokio_postgres::Error>>>,
     pacer: DutyCyclePacer,
     statement_timeout: Duration,
-    /// Client-side count of issued statements; read by acceptance tests.
-    statement_count: u64,
+    client_timeout: Duration,
+    statement_counter: StatementCounter,
     #[cfg(test)]
     sample_transaction_count: u64,
 }
@@ -68,7 +91,8 @@ impl DatabaseConnection {
             .port(port)
             .dbname(&data_source.database)
             .user(&data_source.user)
-            .application_name(APPLICATION_NAME);
+            .application_name(APPLICATION_NAME)
+            .connect_timeout(budget.client_timeout);
         if let Some(name) = data_source.password_env.as_deref() {
             let password = env::var(name).map_err(|error| match error {
                 env::VarError::NotPresent => DatabaseConnectionError::MissingPasswordEnvironment {
@@ -83,17 +107,21 @@ impl DatabaseConnection {
             config.password(password);
         }
 
-        let (client, connection) = config
-            .connect(NoTls)
-            .await
-            .map_err(DatabaseConnectionError::Connect)?;
+        let (client, connection) =
+            tokio::time::timeout(budget.client_timeout, config.connect(NoTls))
+                .await
+                .map_err(|_elapsed| DatabaseConnectionError::ConnectTimeout {
+                    timeout: budget.client_timeout,
+                })?
+                .map_err(DatabaseConnectionError::Connect)?;
         let driver = tokio::spawn(connection);
         Ok(Self {
             client: Some(client),
             driver: Some(driver),
             pacer: DutyCyclePacer::new(budget.db_share)?,
             statement_timeout: budget.statement_timeout,
-            statement_count: 0,
+            client_timeout: budget.client_timeout,
+            statement_counter: StatementCounter::default(),
             #[cfg(test)]
             sample_transaction_count: 0,
         })
@@ -111,14 +139,46 @@ impl DatabaseConnection {
             .map_err(DatabaseConnectionError::Driver)
     }
 
+    /// Aborts an unusable socket driver and observes its task termination.
+    pub(crate) async fn abandon(mut self) -> Result<(), DatabaseConnectionError> {
+        drop(self.client.take());
+        let Some(driver) = self.driver.take() else {
+            return Ok(());
+        };
+        driver.abort();
+        match driver.await {
+            Err(error) if error.is_cancelled() => Ok(()),
+            Err(error) => Err(DatabaseConnectionError::DriverTask(error)),
+            Ok(Err(error)) => Err(DatabaseConnectionError::Driver(error)),
+            Ok(Ok(())) => Ok(()),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn statement_count(&self) -> u64 {
-        self.statement_count
+        self.statement_counter.value()
     }
 
     #[cfg(test)]
     pub(crate) fn sample_transaction_count(&self) -> u64 {
         self.sample_transaction_count
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn backend_process_id(&self) -> Result<i32, tokio_postgres::Error> {
+        let client = self
+            .client
+            .as_ref()
+            .expect("test backend PID requested only for a connected client");
+        client
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await?
+            .try_get(0)
+    }
+
+    /// Whether the socket driver has closed and this connection must be replaced.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.client.as_ref().is_none_or(Client::is_closed)
     }
 
     #[cfg(test)]
@@ -128,30 +188,40 @@ impl DatabaseConnection {
         config: &AggregationConfig,
     ) -> Result<(Vec<i64>, Vec<f64>), SampleMeasureError> {
         let statement_timeout = self.statement_timeout;
-        let statements = &mut self.statement_count;
+        let client_timeout = self.client_timeout;
+        let statements = &mut self.statement_counter;
         let client = self.client.as_mut().ok_or_else(closed_sample_error)?;
         self.pacer
             .run(async {
-                let transaction = begin_sample_transaction(statements, client).await?;
+                let transaction =
+                    begin_sample_transaction(statements, client_timeout, client).await?;
                 let result = async {
                     execute_counted(
                         statements,
+                        client_timeout,
                         &transaction,
                         &statement_timeout_sql(statement_timeout),
                     )
                     .await?;
-                    execute_counted(statements, &transaction, "SET LOCAL enable_indexscan = off")
-                        .await?;
+                    execute_counted(
+                        statements,
+                        client_timeout,
+                        &transaction,
+                        "SET LOCAL enable_indexscan = off",
+                    )
+                    .await?;
                     let vector = Vector::from(vector.to_vec());
-                    *statements = statements.saturating_add(1);
-                    let rows = transaction
-                        .query(&ground_truth_sql(config), &[&vector])
-                        .await
-                        .map_err(database_sample_error)?;
+                    statements.increment();
+                    let rows = client_operation(
+                        client_timeout,
+                        "ground-truth query",
+                        transaction.query(&ground_truth_sql(config), &[&vector]),
+                    )
+                    .await?;
                     decode_ground_truth(&rows)
                 }
                 .await;
-                finish_transaction(statements, transaction, result).await
+                finish_transaction(statements, client_timeout, transaction, result).await
             })
             .await
     }
@@ -171,57 +241,98 @@ impl SampleMeasurer for DatabaseConnection {
         &mut self,
         vector: &[f32],
         config: &AggregationConfig,
+        cancellation: &CancellationToken,
     ) -> Result<SampleMeasurement, SampleMeasureError> {
-        #[cfg(test)]
-        {
-            self.sample_transaction_count += 1;
-        }
         let statement_timeout = self.statement_timeout;
-        let statements = &mut self.statement_count;
+        let client_timeout = self.client_timeout;
+        let statements = &mut self.statement_counter;
         let client = self.client.as_mut().ok_or_else(closed_sample_error)?;
-        self.pacer
-            .run(run_sample_transaction(
-                client,
-                statements,
-                statement_timeout,
-                vector,
-                config,
-            ))
-            .await
+        #[cfg(test)]
+        let work = {
+            let sample_transaction_count = &mut self.sample_transaction_count;
+            async move {
+                *sample_transaction_count += 1;
+                run_sample_transaction(
+                    client,
+                    statements,
+                    statement_timeout,
+                    client_timeout,
+                    vector,
+                    config,
+                )
+                .await
+            }
+        };
+        #[cfg(not(test))]
+        let work = run_sample_transaction(
+            client,
+            statements,
+            statement_timeout,
+            client_timeout,
+            vector,
+            config,
+        );
+        let outcome = self
+            .pacer
+            .run_cancelable_before_start(cancellation, work)
+            .await?;
+        match outcome {
+            CancelableRun::Completed(measurement) => Ok(measurement),
+            CancelableRun::CancelledBeforeStart => {
+                Err(SampleMeasureError::CancelledBeforeTransaction)
+            }
+        }
     }
 }
 
 /// One whole paced unit: `BEGIN` through `COMMIT`/`ROLLBACK`, back-to-back.
 async fn run_sample_transaction(
     client: &mut Client,
-    statements: &mut u64,
+    statements: &mut StatementCounter,
     statement_timeout: Duration,
+    client_timeout: Duration,
     vector: &[f32],
     config: &AggregationConfig,
 ) -> Result<SampleMeasurement, SampleMeasureError> {
-    let transaction = begin_sample_transaction(statements, client).await?;
-    let result =
-        measure_in_transaction(statements, statement_timeout, &transaction, vector, config).await;
-    finish_transaction(statements, transaction, result).await
+    let transaction = begin_sample_transaction(statements, client_timeout, client).await?;
+    let result = measure_in_transaction(
+        statements,
+        statement_timeout,
+        client_timeout,
+        &transaction,
+        vector,
+        config,
+    )
+    .await;
+    finish_transaction(statements, client_timeout, transaction, result).await
 }
 
 async fn measure_in_transaction(
-    statements: &mut u64,
+    statements: &mut StatementCounter,
     statement_timeout: Duration,
+    client_timeout: Duration,
     transaction: &Transaction<'_>,
     vector: &[f32],
     config: &AggregationConfig,
 ) -> Result<SampleMeasurement, SampleMeasureError> {
     let timeout_sql = statement_timeout_sql(statement_timeout);
-    execute_counted(statements, transaction, &timeout_sql).await?;
-    execute_counted(statements, transaction, "SET LOCAL enable_indexscan = off").await?;
+    execute_counted(statements, client_timeout, transaction, &timeout_sql).await?;
+    execute_counted(
+        statements,
+        client_timeout,
+        transaction,
+        "SET LOCAL enable_indexscan = off",
+    )
+    .await?;
 
     let query_vector = Vector::from(vector.to_vec());
-    *statements = statements.saturating_add(1);
-    let truth_rows = transaction
-        .query(&ground_truth_sql(config), &[&query_vector])
-        .await
-        .map_err(database_sample_error)?;
+    statements.increment();
+    let truth_rows = client_operation(
+        client_timeout,
+        "ground-truth query",
+        transaction.query(&ground_truth_sql(config), &[&query_vector]),
+    )
+    .await?;
     if truth_rows.len() < config.k as usize {
         return Err(SampleMeasureError::TableSmallerThanK {
             returned: truth_rows.len(),
@@ -230,22 +341,31 @@ async fn measure_in_transaction(
     }
     let (gt_keys, gt_distances) = decode_ground_truth(&truth_rows)?;
 
-    execute_counted(statements, transaction, "SET LOCAL enable_indexscan = on").await?;
+    execute_counted(
+        statements,
+        client_timeout,
+        transaction,
+        "SET LOCAL enable_indexscan = on",
+    )
+    .await?;
     let ann_sql = ann_sql(config);
     let mut sweeps = Vec::with_capacity(config.ef_grid.len());
     for &ef in &config.ef_grid {
         execute_counted(
             statements,
+            client_timeout,
             transaction,
             &format!("SET LOCAL hnsw.ef_search = {ef}"),
         )
         .await?;
-        *statements = statements.saturating_add(1);
+        statements.increment();
         let started = Instant::now();
-        let rows = transaction
-            .query(&ann_sql, &[&query_vector])
-            .await
-            .map_err(database_sample_error)?;
+        let rows = client_operation(
+            client_timeout,
+            "ANN query",
+            transaction.query(&ann_sql, &[&query_vector]),
+        )
+        .await?;
         let elapsed = started.elapsed();
         let returned_keys = decode_keys(&rows)?;
         let recall = recall_at_k(&gt_keys, &returned_keys, config.k)
@@ -265,55 +385,70 @@ async fn measure_in_transaction(
 }
 
 async fn begin_sample_transaction<'client>(
-    statements: &mut u64,
+    statements: &mut StatementCounter,
+    client_timeout: Duration,
     client: &'client mut Client,
 ) -> Result<Transaction<'client>, SampleMeasureError> {
-    *statements = statements.saturating_add(1);
-    client
-        .build_transaction()
-        .isolation_level(IsolationLevel::RepeatableRead)
-        .start()
-        .await
-        .map_err(database_sample_error)
+    statements.increment();
+    client_operation(
+        client_timeout,
+        "begin transaction",
+        client
+            .build_transaction()
+            .isolation_level(IsolationLevel::RepeatableRead)
+            .start(),
+    )
+    .await
 }
 
 fn closed_sample_error() -> SampleMeasureError {
-    SampleMeasureError::Database("PostgreSQL connection is closed".to_owned())
+    SampleMeasureError::Connection("PostgreSQL connection is closed".to_owned())
 }
 
 async fn execute_counted(
-    statements: &mut u64,
+    statements: &mut StatementCounter,
+    client_timeout: Duration,
     transaction: &Transaction<'_>,
     sql: &str,
 ) -> Result<(), SampleMeasureError> {
-    *statements = statements.saturating_add(1);
-    transaction
-        .batch_execute(sql)
-        .await
-        .map_err(database_sample_error)
+    statements.increment();
+    client_operation(
+        client_timeout,
+        "execute transaction setting",
+        transaction.batch_execute(sql),
+    )
+    .await
 }
 
 async fn finish_transaction<T>(
-    statements: &mut u64,
+    statements: &mut StatementCounter,
+    client_timeout: Duration,
     transaction: Transaction<'_>,
     result: Result<T, SampleMeasureError>,
 ) -> Result<T, SampleMeasureError> {
-    *statements = statements.saturating_add(1);
+    if matches!(result, Err(SampleMeasureError::Connection(_))) {
+        return result;
+    }
+    statements.increment();
     match result {
         Ok(value) => {
-            transaction.commit().await.map_err(database_sample_error)?;
-            Ok(value)
-        }
-        Err(primary) => match transaction.rollback().await {
-            Ok(()) => Err(primary),
-            Err(rollback) if matches!(&primary, SampleMeasureError::TableSmallerThanK { .. }) => {
-                warn!(
-                    %rollback,
-                    "rollback failed after table-smaller-than-k detection; preserving cohort abort"
-                );
-                Err(primary)
+            match client_operation(client_timeout, "commit transaction", transaction.commit()).await
+            {
+                Ok(()) => Ok(value),
+                Err(error) => Err(SampleMeasureError::Connection(format!(
+                    "transaction commit failed: {error}"
+                ))),
             }
-            Err(rollback) => Err(SampleMeasureError::Database(format!(
+        }
+        Err(primary) => match client_operation(
+            client_timeout,
+            "rollback transaction",
+            transaction.rollback(),
+        )
+        .await
+        {
+            Ok(()) => Err(primary),
+            Err(rollback) => Err(SampleMeasureError::Connection(format!(
                 "{primary}; transaction rollback also failed: {rollback}"
             ))),
         },
@@ -321,7 +456,27 @@ async fn finish_transaction<T>(
 }
 
 fn database_sample_error(error: tokio_postgres::Error) -> SampleMeasureError {
-    SampleMeasureError::Database(error.to_string())
+    if error.is_closed() {
+        SampleMeasureError::Connection(error.to_string())
+    } else {
+        SampleMeasureError::Database(error.to_string())
+    }
+}
+
+async fn client_operation<T, F>(
+    client_timeout: Duration,
+    operation: &'static str,
+    future: F,
+) -> Result<T, SampleMeasureError>
+where
+    F: Future<Output = Result<T, tokio_postgres::Error>>,
+{
+    match tokio::time::timeout(client_timeout, future).await {
+        Ok(result) => result.map_err(database_sample_error),
+        Err(_elapsed) => Err(SampleMeasureError::Connection(format!(
+            "{operation} exceeded client timeout {client_timeout:?}"
+        ))),
+    }
 }
 
 fn decode_ground_truth(rows: &[Row]) -> Result<(Vec<i64>, Vec<f64>), SampleMeasureError> {
@@ -485,6 +640,19 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn client_operation_timeout_is_a_connection_failure() {
+        let pending = std::future::pending::<Result<(), tokio_postgres::Error>>();
+
+        let error = client_operation(Duration::from_millis(10), "fixture operation", pending)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, SampleMeasureError::Connection(_)));
+        assert!(error.to_string().contains("fixture operation"));
+        assert!(error.to_string().contains("10ms"));
+    }
+
     #[tokio::test]
     async fn b2_f_pg_ground_truth_tie_break_prefers_key_7_over_9() {
         if std::env::var_os("SEAM_REQUIRE_F_PG").is_none() {
@@ -500,6 +668,7 @@ mod tests {
         let budget = BudgetConfig {
             db_share: 1.0,
             statement_timeout: Duration::from_secs(5),
+            client_timeout: Duration::from_secs(10),
         };
         let mut connection = DatabaseConnection::connect(&data_source, &budget)
             .await

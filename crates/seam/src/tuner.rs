@@ -12,7 +12,7 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
 
-use crate::config::Config;
+use crate::config::{BudgetConfig, Config, DataSourceConfig};
 use crate::database::DatabaseConnection;
 use crate::measure::{SampleMeasureError, SampleMeasurement, SampleMeasurer};
 use crate::model::{AggregationConfig, RoundOutput};
@@ -67,8 +67,8 @@ pub struct Tuner {
 impl Tuner {
     /// Creates the local storage adapter and connects each configured data source.
     ///
-    /// Database connection failures are deliberately degraded into failed-sample
-    /// measurers so cached Phase B work can still publish.
+    /// Database connection failures remain retryable so cached Phase B work
+    /// can publish without poisoning pending parts.
     pub async fn start(config: Config) -> Result<Self, TunerStartError> {
         let root = config.storage.root.clone();
         let store = tokio::task::spawn_blocking(move || {
@@ -95,19 +95,7 @@ impl Tuner {
     pub(crate) async fn start_with_store(config: Config, store: Arc<dyn ObjectStore>) -> Self {
         let mut data_sources = BTreeMap::new();
         for (name, data_source) in &config.data_sources {
-            let runtime = match DatabaseConnection::connect(data_source, &config.budget).await {
-                Ok(connection) => DataSourceRuntime::Connected(Box::new(connection)),
-                Err(error) => {
-                    warn!(
-                        data_source = %name,
-                        server = %data_source.server,
-                        database = %data_source.database,
-                        %error,
-                        "database unavailable; uncached samples will be recorded as failed"
-                    );
-                    DataSourceRuntime::Unavailable(error.to_string())
-                }
-            };
+            let runtime = connect_data_source(name, data_source, &config.budget, "startup").await;
             data_sources.insert(name.clone(), runtime);
         }
         Self {
@@ -125,6 +113,7 @@ impl Tuner {
         computed_at_us: u64,
         cancellation: &CancellationToken,
     ) -> RoundRunReport {
+        self.reconnect_unavailable_data_sources().await;
         let mut report = RoundRunReport::default();
         let cohorts = self.config.cohorts.keys().cloned().collect::<Vec<_>>();
         for cohort in cohorts {
@@ -185,6 +174,37 @@ impl Tuner {
         report
     }
 
+    async fn reconnect_unavailable_data_sources(&mut self) {
+        let candidates = self
+            .config
+            .data_sources
+            .iter()
+            .filter_map(|(name, config)| {
+                let reconnect = match self.data_sources.get(name) {
+                    Some(DataSourceRuntime::Connected(connection)) => connection.is_closed(),
+                    Some(DataSourceRuntime::Unavailable(_)) | None => true,
+                };
+                reconnect.then(|| (name.clone(), config.clone()))
+            })
+            .collect::<Vec<_>>();
+
+        for (name, config) in candidates {
+            if let Some(DataSourceRuntime::Connected(connection)) = self.data_sources.remove(&name)
+            {
+                if let Err(error) = (*connection).abandon().await {
+                    warn!(
+                        data_source = %name,
+                        %error,
+                        "failed to observe closed database connection before reconnect"
+                    );
+                }
+            }
+            let runtime =
+                connect_data_source(&name, &config, &self.config.budget, "round start").await;
+            self.data_sources.insert(name, runtime);
+        }
+    }
+
     /// Drops every client and observes every owned connection-driver task.
     pub async fn shutdown(self) {
         let close_all = async move {
@@ -217,10 +237,56 @@ impl SampleMeasurer for DataSourceRuntime {
         &mut self,
         vector: &[f32],
         config: &AggregationConfig,
+        cancellation: &CancellationToken,
     ) -> Result<SampleMeasurement, SampleMeasureError> {
-        match self {
-            Self::Connected(connection) => connection.measure_sample(vector, config).await,
-            Self::Unavailable(error) => Err(SampleMeasureError::Database(error.clone())),
+        let result = match self {
+            Self::Connected(connection) => {
+                connection
+                    .measure_sample(vector, config, cancellation)
+                    .await
+            }
+            Self::Unavailable(error) => Err(SampleMeasureError::Connection(error.clone())),
+        };
+        if let Err(SampleMeasureError::Connection(error)) = &result {
+            let unavailable = error.clone();
+            let previous = std::mem::replace(self, DataSourceRuntime::Unavailable(unavailable));
+            if let DataSourceRuntime::Connected(connection) = previous {
+                if let Err(abandon_error) = (*connection).abandon().await {
+                    warn!(%abandon_error, "failed to observe abandoned database connection");
+                }
+            }
+        }
+        result
+    }
+}
+
+async fn connect_data_source(
+    name: &str,
+    data_source: &DataSourceConfig,
+    budget: &BudgetConfig,
+    attempt: &'static str,
+) -> DataSourceRuntime {
+    match DatabaseConnection::connect(data_source, budget).await {
+        Ok(connection) => {
+            tracing::info!(
+                data_source = %name,
+                server = %data_source.server,
+                database = %data_source.database,
+                attempt,
+                "database connection established"
+            );
+            DataSourceRuntime::Connected(Box::new(connection))
+        }
+        Err(error) => {
+            warn!(
+                data_source = %name,
+                server = %data_source.server,
+                database = %data_source.database,
+                attempt,
+                %error,
+                "database unavailable; pending parts will remain unmeasured"
+            );
+            DataSourceRuntime::Unavailable(error.to_string())
         }
     }
 }
@@ -307,6 +373,7 @@ mod tests {
             .collect::<Vec<_>>();
         seed_segment(&store, "acceptance/d3-timeout", PART_ULID, &vectors).await;
         let mut tuner = Tuner::start_with_store(d3_config(), Arc::clone(&store)).await;
+        let backend_process_id = backend_process_id(&tuner).await;
         // Keep the exact scan blocked so the frozen 1 ms timeout is
         // deterministic even on a warm, unusually fast local PostgreSQL.
         let (lock_client, lock_driver) = lock_fixture_table().await;
@@ -339,7 +406,110 @@ mod tests {
         lock_client.batch_execute("ROLLBACK").await.unwrap();
         drop(lock_client);
         lock_driver.await.unwrap().unwrap();
-        assert_eq!(active_tuner_statements().await, 0);
+        assert_eq!(active_tuner_statements(backend_process_id).await, 0);
+        tuner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn c2_f_pg_connection_outage_reconnects_next_round_without_durable_failure() {
+        if !f_pg_required() {
+            return;
+        }
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let query = axis_vector(0.75);
+        seed_segment(
+            &store,
+            "acceptance/reconnect",
+            PART_ULID,
+            std::slice::from_ref(&query),
+        )
+        .await;
+        let mut config = reconnect_config();
+        let healthy_server = config.data_sources["primary"].server.clone();
+        config.data_sources.get_mut("primary").unwrap().server = "127.0.0.1:1".to_owned();
+        let mut tuner = Tuner::start_with_store(config, Arc::clone(&store)).await;
+
+        let first = tuner
+            .run_round(
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-15T12:10:00Z".to_owned(),
+                1_784_117_400_000_000,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert!(first.published.is_empty());
+        assert!(first.failed_cohorts.contains_key("acceptance/reconnect"));
+        assert!(!intermediate_exists(&store, "acceptance/reconnect").await);
+
+        tuner.config.data_sources.get_mut("primary").unwrap().server = healthy_server;
+        let second = tuner
+            .run_round(
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-15T12:10:01Z".to_owned(),
+                1_784_117_401_000_000,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        let output = &second.published["acceptance/reconnect"];
+        assert_eq!(output.samples.measured, 1);
+        assert_eq!(output.samples.failed, 0);
+        assert!(second.failed_cohorts.is_empty());
+        assert!(intermediate_exists(&store, "acceptance/reconnect").await);
+        tuner.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn c2_f_pg_client_timeout_discards_part_then_reconnects_next_round() {
+        if !f_pg_required() {
+            return;
+        }
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let query = axis_vector(0.65);
+        seed_segment(
+            &store,
+            "acceptance/client-timeout",
+            PART_ULID,
+            std::slice::from_ref(&query),
+        )
+        .await;
+        let (lock_client, lock_driver) = lock_client_timeout_fixture_table().await;
+        let mut tuner = Tuner::start_with_store(client_timeout_config(), Arc::clone(&store)).await;
+
+        let first = tuner
+            .run_round(
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-15T12:10:00Z".to_owned(),
+                1_784_117_400_000_000,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert!(first.published.is_empty());
+        assert!(
+            first
+                .failed_cohorts
+                .contains_key("acceptance/client-timeout")
+        );
+        assert!(!intermediate_exists(&store, "acceptance/client-timeout").await);
+
+        lock_client.batch_execute("ROLLBACK").await.unwrap();
+        drop(lock_client);
+        lock_driver.await.unwrap().unwrap();
+        tuner.config.budget.client_timeout = Duration::from_secs(2);
+        let second = tuner
+            .run_round(
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-15T12:10:01Z".to_owned(),
+                1_784_117_401_000_000,
+                &CancellationToken::new(),
+            )
+            .await;
+
+        let output = &second.published["acceptance/client-timeout"];
+        assert_eq!(output.samples.measured, 1);
+        assert_eq!(output.samples.failed, 0);
+        assert!(second.failed_cohorts.is_empty());
+        assert!(intermediate_exists(&store, "acceptance/client-timeout").await);
         tuner.shutdown().await;
     }
 
@@ -410,6 +580,52 @@ mod tests {
         config
     }
 
+    fn reconnect_config() -> Config {
+        let mut config = base_config(Duration::from_secs(5));
+        config.budget.client_timeout = Duration::from_secs(2);
+        config.indexes = BTreeMap::from([(
+            "fixture".to_owned(),
+            IndexConfig {
+                data_source: "primary".to_owned(),
+                table: "docs_seam_fixture".to_owned(),
+                key: "doc_id".to_owned(),
+                column: "embedding".to_owned(),
+            },
+        )]);
+        config.targets = BTreeMap::from([("recall".to_owned(), target(10))]);
+        config.cohorts = BTreeMap::from([(
+            CohortName::try_from("acceptance/reconnect").unwrap(),
+            CohortConfig {
+                index: "fixture".to_owned(),
+                target: "recall".to_owned(),
+            },
+        )]);
+        config
+    }
+
+    fn client_timeout_config() -> Config {
+        let mut config = base_config(Duration::from_secs(5));
+        config.budget.client_timeout = Duration::from_millis(250);
+        config.indexes = BTreeMap::from([(
+            "fixture".to_owned(),
+            IndexConfig {
+                data_source: "primary".to_owned(),
+                table: "docs_seam_client_timeout_fixture".to_owned(),
+                key: "doc_id".to_owned(),
+                column: "embedding".to_owned(),
+            },
+        )]);
+        config.targets = BTreeMap::from([("recall".to_owned(), target(10))]);
+        config.cohorts = BTreeMap::from([(
+            CohortName::try_from("acceptance/client-timeout").unwrap(),
+            CohortConfig {
+                index: "fixture".to_owned(),
+                target: "recall".to_owned(),
+            },
+        )]);
+        config
+    }
+
     fn base_config(statement_timeout: Duration) -> Config {
         let port = std::env::var("SEAM_PG_PORT").unwrap_or_else(|_| "55432".to_owned());
         Config {
@@ -427,6 +643,7 @@ mod tests {
             budget: BudgetConfig {
                 db_share: 1.0,
                 statement_timeout,
+                client_timeout: Duration::from_secs(10),
             },
             data_sources: BTreeMap::from([(
                 "primary".to_owned(),
@@ -470,7 +687,19 @@ mod tests {
         }
     }
 
-    async fn active_tuner_statements() -> i64 {
+    async fn backend_process_id(tuner: &Tuner) -> i32 {
+        match &tuner.data_sources["primary"] {
+            DataSourceRuntime::Connected(connection) => connection
+                .backend_process_id()
+                .await
+                .expect("F-pg backend PID query must succeed"),
+            DataSourceRuntime::Unavailable(error) => {
+                panic!("F-pg data source unexpectedly unavailable: {error}")
+            }
+        }
+    }
+
+    async fn active_tuner_statements(backend_process_id: i32) -> i64 {
         let (client, driver) = tokio_postgres::connect(&database_url(), NoTls)
             .await
             .expect("D3 activity-inspection connection must open");
@@ -479,9 +708,10 @@ mod tests {
             .query_one(
                 "SELECT count(*)::bigint
                  FROM pg_stat_activity
-                 WHERE application_name = 'vectorseam-seam'
+                 WHERE pid = $1
+                   AND application_name = 'vectorseam-seam'
                    AND state = 'active'",
-                &[],
+                &[&backend_process_id],
             )
             .await
             .unwrap()
@@ -506,6 +736,24 @@ mod tests {
             )
             .await
             .expect("D3 fixture table lock must be acquired");
+        (client, driver)
+    }
+
+    async fn lock_client_timeout_fixture_table() -> (
+        tokio_postgres::Client,
+        tokio::task::JoinHandle<Result<(), tokio_postgres::Error>>,
+    ) {
+        let (client, connection) = tokio_postgres::connect(&database_url(), NoTls)
+            .await
+            .expect("client-timeout fixture-lock connection must open");
+        let driver = tokio::spawn(connection);
+        client
+            .batch_execute(
+                "BEGIN;
+                 LOCK TABLE docs_seam_client_timeout_fixture IN ACCESS EXCLUSIVE MODE;",
+            )
+            .await
+            .expect("client-timeout fixture table lock must be acquired");
         (client, driver)
     }
 
@@ -551,6 +799,14 @@ mod tests {
             "cohorts/{cohort}/window={timestamp}/part-{part_ulid}.vseam"
         ));
         store.put(&path, PutPayload::from(bytes)).await.unwrap();
+    }
+
+    async fn intermediate_exists(store: &Arc<dyn ObjectStore>, cohort: &str) -> bool {
+        let timestamp = format_window_timestamp(WINDOW_START).unwrap();
+        let path = Path::from(format!(
+            "measurements/{cohort}/window={timestamp}/part-{PART_ULID}.truth.parquet"
+        ));
+        store.head(&path).await.is_ok()
     }
 
     fn frame(cohort: &str, vector: &[f32]) -> Vec<u8> {

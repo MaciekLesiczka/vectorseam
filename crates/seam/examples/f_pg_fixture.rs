@@ -293,7 +293,16 @@ async fn load_main_table(
              );
              INSERT INTO docs_seam_timeout_fixture (doc_id, embedding)
              SELECT doc_id, embedding FROM docs_seam_fixture;
-             ANALYZE docs_seam_timeout_fixture;",
+             ANALYZE docs_seam_timeout_fixture;
+
+             DROP TABLE IF EXISTS docs_seam_client_timeout_fixture;
+             CREATE TABLE docs_seam_client_timeout_fixture (
+                 doc_id bigint PRIMARY KEY,
+                 embedding vector(64) NOT NULL
+             );
+             INSERT INTO docs_seam_client_timeout_fixture (doc_id, embedding)
+             SELECT doc_id, embedding FROM docs_seam_fixture;
+             ANALYZE docs_seam_client_timeout_fixture;",
         )
         .await?;
     Ok(())

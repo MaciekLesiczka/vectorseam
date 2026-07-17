@@ -6,16 +6,20 @@
   parquet encoding, and truth-before-sweep durability.
 - Object-store window listing/diffing, crash resume, config-fingerprint
   remeasurement, cached database-down publication, round/latest publication,
-  and graceful cancellation without a partial round.
+  noncanonical-name skipping, retryable connection outages, and graceful
+  cancellation without a partial round.
 - One serialized PostgreSQL connection and duty-cycle pacer per data source;
   one `REPEATABLE READ` transaction per sample with bound vectors, quoted
   identifiers, exact-query tie-break, ascending ef sweep, statement timeout,
-  explicit rollback, and supervised shutdown.
-- F-agg acceptance/property suite, F-pg B2/C6/D3 suite, full workspace tests,
-  clippy, warning-free rustdoc, Rust 1.85 MSRV check, and the Phase B Criterion
-  baseline. D3 uses a locked, dedicated F-pg table to make the frozen 1 ms
-  timeout deterministic and counts sample transactions to prove there are no
-  retries.
+  client operation deadline, explicit rollback, once-per-round reconnect,
+  and supervised shutdown. Cooldown cancellation is allowed only before the
+  transaction starts.
+- F-agg acceptance/property suite, F-pg B2/C2/C6/D3 suite, full workspace
+  tests, clippy, warning-free rustdoc, Rust 1.85 MSRV check, and the Phase B
+  Criterion baseline. C2 covers both startup outage and in-flight client
+  timeout recovery. D3 uses a locked, dedicated F-pg table to make the frozen
+  1 ms timeout deterministic and counts sample transactions to prove there
+  are no retries.
 
 ## Red or deferred
 

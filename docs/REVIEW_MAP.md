@@ -8,15 +8,18 @@ measurement/durability implementation.
 - `crates/seam/src/database.rs` — constructs the one-connection,
   `REPEATABLE READ` sample transaction, quotes identifiers, binds pgvector
   values, orders exact results by distance/key, deliberately omits the ANN
-  key tie-break, applies `SET LOCAL`, and owns commit/rollback sequencing.
+  key tie-break, applies `SET LOCAL`, owns commit/rollback sequencing, and
+  classifies bounded client operations as durable or connection-level.
 - `crates/seam/src/measure.rs` — parses `.vseam` records through
   vectorseam-core, performs first-occurrence exact-byte deduplication, hashes
-  raw payloads, distinguishes semantic sample failures from the
-  table-smaller cohort abort, and builds durable rows.
+  raw payloads, distinguishes durable sample failures, retryable connection
+  loss, cancellation, and the table-smaller cohort abort, and builds durable
+  rows.
 - `crates/seam/src/pacer.rs` — enforces cooldown between whole sample
   transactions from each transaction's observed wall time, never sleeping
   inside an open transaction (owner decision, 2026-07-17); an error path must
-  consume the same budget as success.
+  consume the same budget as success, and only the pre-transaction cooldown
+  is cancellation-aware.
 - `crates/seam/src/pipeline.rs` — owns window-scoped listing, source/header
   membership, incomplete/malformed/config-mismatched pair handling,
   truth-before-sweep durability, cancellation boundaries, Phase A abort
@@ -47,8 +50,9 @@ measurement/durability implementation.
 ## Tier 2 — standard
 
 - `crates/seam/src/tuner.rs` — sequential multi-cohort orchestration, one
-  long-lived runtime per data source, database-down degradation, per-cohort
-  failure isolation, and bounded connection-driver shutdown.
+  long-lived runtime per data source, once-per-round reconnect, connection
+  abandonment, per-cohort failure isolation, and bounded connection-driver
+  shutdown.
 - `crates/seam/src/model.rs` — pure aggregation contracts and ordered round
   JSON types.
 - `crates/seam/tests/acceptance_c_durability.rs` — cached database-down,
@@ -88,18 +92,24 @@ store to prove truth precedes sweep and round history precedes latest, repairs
 an interrupted pair, measures only that part, and compares bytes with a clean
 run. Source storage/parse errors abort without publication under the
 owner-approved resolution; malformed intermediate pairs are remeasured.
-Cancellation is checked between samples, never by dropping an in-flight
-transaction, and a cancelled partial part and round are not published.
+Noncanonical `.vseam` names are skipped with a warning, while malformed
+canonical parts remain fail-visible. Connection loss discards the in-progress
+part and round publication, leaving it naturally retryable. Cancellation can
+interrupt the cooldown before a transaction; an in-flight transaction is
+never dropped, and a cancelled partial part and round are not published.
 
 I am confident in the database resource path. One `DatabaseConnection` owns
 one Tokio client and its supervised driver task; mutable single ownership and
 sequential cohort orchestration serialize all statements for the data source,
-while the pacer charges successes and failures. F-pg tests prove B2, C6, and
-D3; D3 holds a dedicated fixture table lock so the frozen 1 ms timeout is
-deterministic, and its transaction counter proves one attempt per sample with
-no retries. D1 uses paused Tokio time and the frozen 50-unit bounds.
-Shutdown drops clients, observes both task-result layers, and has a ten-second
-overall deadline whose forced fallback aborts remaining driver handles.
+while the pacer charges successes and failures. Every connect/protocol
+operation has the shared client deadline; connection-level failure abandons
+the driver and reconnects once at the next round start. F-pg tests prove B2,
+C2 recovery, C6, and D3; D3 holds a dedicated fixture table lock so the
+frozen 1 ms timeout is deterministic, and its transaction counter proves one
+attempt per sample with no retries. D1 uses paused Tokio time and the frozen
+50-unit bounds. Shutdown drops clients, observes both task-result layers, and
+has a ten-second overall deadline whose forced fallback aborts remaining
+driver handles.
 
 The highest-value human review is `database.rs`, followed by the compact
 `measure.rs`/`pipeline.rs` durability chain. C7 deliberately rests on that
@@ -123,9 +133,18 @@ Changes from the first Stage 3 approach:
   remeasurement.
 - C1 initially verified only final objects. It now records PUT order and
   asserts truth-before-sweep plus history-before-latest.
-- Connection failure is represented by the same `SampleMeasurer` boundary as
-  per-sample SQL failure, allowing cached aggregation to publish and uncached
-  valid samples to receive durable `failed_count` accounting without retries.
+- Connection failure was initially represented as an ordinary per-sample
+  error, which would have durably poisoned a part. It now has a typed path:
+  discard the in-progress part, publish no cohort round, abandon the
+  connection, and reconnect once next round. Server-confirmed errors on a
+  usable connection, including D3 timeouts, remain durable.
+- The source-header pass currently downloads and fully parses every in-scope
+  segment and pending parts are read twice. This is now an explicit MVP
+  corner cut; range-GET header parsing is the first recommended improvement,
+  followed by an in-memory ULID-keyed header cache.
+- Intermediate row-count conversions previously reused the unrelated
+  `DuplicateCount` error. They now report dedicated `ResultCount` and
+  `MeasuredCount` failures.
 - Large outcome/runtime enum variants were boxed after clippy identified
   avoidable stack-size inflation; behavior and public JSON were unchanged.
 - Local F-pg execution exposed a Colima host-forwarding issue. An explicit
@@ -151,6 +170,8 @@ instrumentation test are required. Before Gate 3 approval, a human reviews
 4. The ground-truth query completes before ascending ef sweep statements.
 5. The borrowed transaction is neither committed, rolled back, nor
    reacquired between ground truth and the final sweep; commit occurs only
-   after successful completion, while every error explicitly rolls back.
+   after successful completion. Server-confirmed errors on a usable
+   connection explicitly roll back; a connection-level/client-timeout error
+   abandons the connection and never reuses uncertain protocol state.
 
 Gate 3 sign-off record (reviewer, date, commit): pending.

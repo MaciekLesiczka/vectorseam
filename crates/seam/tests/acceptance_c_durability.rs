@@ -131,14 +131,15 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
         valid_yaml().replace("target: recall", "target: absent"),
         valid_yaml().replace("percentile: 0.95", "percentile: 1.0"),
         valid_yaml().replace("window: 1h", "window: 5min"),
+        valid_yaml().replace("storage:", "budget:\n  client_timeout: 0s\nstorage:"),
     ];
     let errors = cases
         .iter()
         .map(|yaml| Config::from_yaml_str(yaml).unwrap_err().to_string())
         .collect::<Vec<_>>();
 
-    assert_eq!(errors.len(), 10);
-    assert_eq!(errors.iter().collect::<HashSet<_>>().len(), 10);
+    assert_eq!(errors.len(), 11);
+    assert_eq!(errors.iter().collect::<HashSet<_>>().len(), 11);
     assert!(errors[0].contains("password_env"));
     assert!(errors[1].contains("password_env"));
     assert!(errors[2].contains("unknown data source"));
@@ -149,6 +150,7 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
     assert!(errors[7].contains("unknown"));
     assert!(errors[8].contains("percentile"));
     assert!(errors[9].contains("window"));
+    assert!(errors[10].contains("client_timeout"));
 }
 
 #[test]

@@ -56,10 +56,12 @@ pub struct StorageConfig {
 /// Database traffic controls.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BudgetConfig {
-    /// Maximum statement wall-time share per worker.
+    /// Maximum database-transaction wall-time share per data source.
     pub db_share: f64,
     /// Per-statement PostgreSQL timeout.
     pub statement_timeout: Duration,
+    /// Client deadline for connecting and for each PostgreSQL protocol operation.
+    pub client_timeout: Duration,
 }
 
 /// One uniquely addressed PostgreSQL connection target.
@@ -182,6 +184,11 @@ struct RawBudgetConfig {
         deserialize_with = "deserialize_duration"
     )]
     statement_timeout: Duration,
+    #[serde(
+        default = "default_client_timeout",
+        deserialize_with = "deserialize_duration"
+    )]
+    client_timeout: Duration,
 }
 
 impl Default for RawBudgetConfig {
@@ -189,6 +196,7 @@ impl Default for RawBudgetConfig {
         Self {
             db_share: default_db_share(),
             statement_timeout: default_statement_timeout(),
+            client_timeout: default_client_timeout(),
         }
     }
 }
@@ -345,6 +353,7 @@ impl Config {
             budget: BudgetConfig {
                 db_share: raw.budget.db_share,
                 statement_timeout: raw.budget.statement_timeout,
+                client_timeout: raw.budget.client_timeout,
             },
             data_sources,
             indexes,
@@ -400,6 +409,9 @@ fn validate_budget(config: &RawBudgetConfig) -> Result<(), ConfigError> {
         return Err(invalid(
             "budget.statement_timeout must be greater than zero",
         ));
+    }
+    if config.client_timeout.is_zero() {
+        return Err(invalid("budget.client_timeout must be greater than zero"));
     }
     Ok(())
 }
@@ -579,6 +591,10 @@ fn default_statement_timeout() -> Duration {
     Duration::from_secs(5)
 }
 
+fn default_client_timeout() -> Duration {
+    Duration::from_secs(10)
+}
+
 fn invalid(message: impl Into<String>) -> ConfigError {
     ConfigError::Validation(message.into())
 }
@@ -624,6 +640,7 @@ cohorts:
         assert_eq!(config.calibration.split_seed, 7);
         assert_eq!(config.calibration.min_samples, 1000);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
+        assert_eq!(config.budget.client_timeout, Duration::from_secs(10));
         assert_eq!(config.indexes["fixture"].data_source, "primary");
         assert_eq!(config.data_sources["primary"].database, "postgres");
 
@@ -695,6 +712,15 @@ cohorts:
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
 
         assert!(error.contains("max_concurrent_queries"));
+    }
+
+    #[test]
+    fn rejects_zero_client_timeout() {
+        let yaml = VALID_CONFIG.replace("storage:", "budget:\n  client_timeout: 0s\nstorage:");
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+
+        assert!(error.contains("client_timeout"));
+        assert!(error.contains("greater than zero"));
     }
 
     #[test]

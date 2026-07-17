@@ -46,8 +46,6 @@ pub(crate) enum PipelineError {
         #[source]
         source: object_store::Error,
     },
-    #[error("source object {path:?} does not have a canonical part-<ulid>.vseam name")]
-    InvalidSourceName { path: String },
     #[error("part ULID {part_ulid:?} appears in more than one source object")]
     DuplicateSourcePart { part_ulid: String },
     #[error("source segment {path:?} is invalid: {source}")]
@@ -68,6 +66,8 @@ pub(crate) enum PipelineError {
         #[source]
         source: IntermediateError,
     },
+    #[error("database connection became unavailable while measuring part {part_ulid:?}: {error}")]
+    ConnectionUnavailable { part_ulid: String, error: String },
     #[error("incompatible part counter overflow")]
     IncompatibleCounterOverflow,
 }
@@ -207,6 +207,12 @@ pub(crate) async fn run_cohort_round(
                 phase_a_abort = Some(abort);
                 break;
             }
+            MeasurePartOutcome::ConnectionUnavailable(source_error) => {
+                return Err(PipelineError::ConnectionUnavailable {
+                    part_ulid: source.listed.part_ulid,
+                    error: source_error,
+                });
+            }
             MeasurePartOutcome::Cancelled => return Ok(CohortRoundOutcome::Cancelled),
         }
     }
@@ -291,7 +297,13 @@ async fn load_source_headers(
 ) -> Result<Vec<SourcePart>, PipelineError> {
     let mut by_ulid = BTreeMap::<String, SourcePart>::new();
     for (window_start, path) in objects {
-        let part_ulid = source_part_ulid(&path)?;
+        let Some(part_ulid) = source_part_ulid(&path) else {
+            warn!(
+                path = %path,
+                "ignoring source object without a canonical part-<ulid>.vseam name"
+            );
+            continue;
+        };
         let bytes = get_bytes(store, &path).await?;
         let prepared = prepare_segment(
             &bytes,
@@ -320,24 +332,12 @@ async fn load_source_headers(
     Ok(by_ulid.into_values().collect())
 }
 
-fn source_part_ulid(path: &Path) -> Result<String, PipelineError> {
-    let filename = path
-        .filename()
-        .ok_or_else(|| PipelineError::InvalidSourceName {
-            path: path.to_string(),
-        })?;
+fn source_part_ulid(path: &Path) -> Option<String> {
+    let filename = path.filename()?;
     let value = filename
         .strip_prefix("part-")
-        .and_then(|value| value.strip_suffix(".vseam"))
-        .ok_or_else(|| PipelineError::InvalidSourceName {
-            path: path.to_string(),
-        })?;
-    value
-        .parse::<Ulid>()
-        .map(|ulid| ulid.to_string())
-        .map_err(|_error| PipelineError::InvalidSourceName {
-            path: path.to_string(),
-        })
+        .and_then(|value| value.strip_suffix(".vseam"))?;
+    value.parse::<Ulid>().map(|ulid| ulid.to_string()).ok()
 }
 
 fn intermediate_paths(
@@ -444,6 +444,10 @@ mod tests {
         calls: usize,
     }
 
+    struct ConnectionUnavailableMeasurer {
+        calls: usize,
+    }
+
     struct CancellingMeasurer {
         calls: usize,
         cancellation: CancellationToken,
@@ -517,6 +521,7 @@ mod tests {
             &mut self,
             _vector: &[f32],
             config: &AggregationConfig,
+            _cancellation: &CancellationToken,
         ) -> Result<SampleMeasurement, SampleMeasureError> {
             self.calls += 1;
             Ok(successful_measurement(config))
@@ -529,6 +534,7 @@ mod tests {
             &mut self,
             _vector: &[f32],
             config: &AggregationConfig,
+            _cancellation: &CancellationToken,
         ) -> Result<SampleMeasurement, SampleMeasureError> {
             self.calls += 1;
             self.cancellation.cancel();
@@ -542,12 +548,28 @@ mod tests {
             &mut self,
             _vector: &[f32],
             config: &AggregationConfig,
+            _cancellation: &CancellationToken,
         ) -> Result<SampleMeasurement, SampleMeasureError> {
             self.calls += 1;
             Err(SampleMeasureError::TableSmallerThanK {
                 returned: usize::try_from(config.k).unwrap() - 1,
                 k: config.k,
             })
+        }
+    }
+
+    #[async_trait]
+    impl SampleMeasurer for ConnectionUnavailableMeasurer {
+        async fn measure_sample(
+            &mut self,
+            _vector: &[f32],
+            _config: &AggregationConfig,
+            _cancellation: &CancellationToken,
+        ) -> Result<SampleMeasurement, SampleMeasureError> {
+            self.calls += 1;
+            Err(SampleMeasureError::Connection(
+                "fixture connection outage".to_owned(),
+            ))
         }
     }
 
@@ -790,6 +812,74 @@ mod tests {
                 .await
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn c2_connection_outage_leaves_part_unmeasured_and_next_round_retries() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source(&store, FIRST_ULID, &[0.25, 0.5]).await;
+        let mut unavailable = ConnectionUnavailableMeasurer { calls: 0 };
+
+        let first = run_cohort_round(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:10:00Z".to_owned(),
+            1_783_512_600_000_000,
+            &mut unavailable,
+            &CancellationToken::new(),
+        )
+        .await;
+
+        assert!(matches!(
+            first,
+            Err(PipelineError::ConnectionUnavailable { .. })
+        ));
+        assert_eq!(unavailable.calls, 1);
+        assert!(
+            listed_under(store.as_ref(), "measurements")
+                .await
+                .is_empty()
+        );
+        assert!(
+            listed_under(store.as_ref(), "calibrations")
+                .await
+                .is_empty()
+        );
+
+        let mut recovered = CountingMeasurer { calls: 0 };
+        let second = run(Arc::clone(&store), aggregation_config(10), &mut recovered).await;
+        let CohortRoundOutcome::Published(output) = second else {
+            panic!("the recovered round must retry and publish the part");
+        };
+        assert_eq!(recovered.calls, 1);
+        assert_eq!(output.samples.measured, 1);
+        assert_eq!(output.samples.failed, 0);
+        assert_eq!(listed_under(store.as_ref(), "measurements").await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn noncanonical_vseam_name_is_skipped_without_wedging_cohort() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source(&store, FIRST_ULID, &[0.25, 0.5]).await;
+        let timestamp = format_window_timestamp(WINDOW_START).unwrap();
+        let stray = Path::from(format!(
+            "cohorts/{COHORT}/window={timestamp}/part-not-a-ulid.vseam"
+        ));
+        store
+            .put(&stray, PutPayload::from_static(b"stray object"))
+            .await
+            .unwrap();
+        let mut measurer = CountingMeasurer { calls: 0 };
+
+        let observed = run(Arc::clone(&store), aggregation_config(10), &mut measurer).await;
+
+        let CohortRoundOutcome::Published(output) = observed else {
+            panic!("a noncanonical stray object must not abort the cohort");
+        };
+        assert_eq!(measurer.calls, 1);
+        assert_eq!(output.samples.available, 1);
+        assert_eq!(output.parts_used, 1);
     }
 
     async fn run(

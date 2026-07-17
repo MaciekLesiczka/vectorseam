@@ -97,11 +97,13 @@ Each round, per configured cohort, has two phases:
    JSON: `calibrations/<cohort>/round-<ts>.json` plus an overwrite of
    `calibrations/<cohort>/latest.json`.
 
-Database unavailability or per-sample errors degrade Phase A (failed samples
-are counted, not retried within the round) but never block Phase B: the tuner
-always publishes from whatever intermediates exist. Rationale: a stale-but-
-honest output beats a silent gap, and the demo dashboard always has something
-to poll.
+Server-confirmed per-sample errors degrade Phase A (failed samples are
+counted, not retried within the round) but do not block Phase B. Database
+unavailability also does not block a fully cached cohort, but if a pending
+part needs the unavailable connection the cohort publishes nothing and leaves
+that part untouched for the next round (§3.2). Rationale: a stale-but-honest
+cached output is useful; a fresh-looking output that silently omits a pending
+part is not.
 
 ### 2.2 Estimator semantics
 
@@ -142,9 +144,12 @@ to poll.
   duplicate can never straddle the split, and membership survives the
   rolling window even when the surviving occurrence changes as old parts
   age out.
-- Samples whose measurement failed (SQL error, statement timeout, unsupported
-  dtype, dimension mismatch) are excluded from the population and reported
-  as a count. Only dtype `F32` frames are supported.
+- Sample-local frame failures (unsupported dtype or dimension mismatch) and
+  database failures confirmed while the connection remains usable
+  (server-confirmed SQL error or statement timeout) are excluded from the
+  population and reported as a count. Connection-level failures instead
+  leave the whole current part unmeasured (§3.2). Only dtype `F32` frames are
+  supported.
 
 #### Ground truth and ef sweep — one transaction per sample
 
@@ -437,6 +442,7 @@ storage:
 budget:                           # database traffic control, see §3.1
   db_share: 0.10
   statement_timeout: 5s
+  client_timeout: 10s
 
 data_sources:
   primary:
@@ -524,8 +530,9 @@ optional advice.
   increasing, `min(grid) ≥ k` for every configured target (pgvector caps
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
-- `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`;
-  additionally, `round(train_fraction * 10000)` must be in `1..=9999`
+- `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
+  `statement_timeout > 0`, `client_timeout > 0`; additionally,
+  `round(train_fraction * 10000)` must be in `1..=9999`
 - `table`, `column`, `key` are valid PostgreSQL quoted/delimited identifiers:
   non-empty UTF-8, at most 63 bytes, and containing no NUL. They are always
   emitted quoted with embedded double quotes escaped.
@@ -653,15 +660,19 @@ separately by coverage rather than represented as a drop.
 Per unmeasured part:
 
 1. GET the `.vseam` object; parse with `vectorseam-core` (header + records).
+   A listed `*.vseam` object whose basename is not canonical
+   `part-<ULID>.vseam` is skipped with a warning. A malformed canonical part
+   remains fail-visible and aborts the cohort round (§3.2).
 2. Deduplicate within the part by exact vector bytes (§2.2): one
    measurement per distinct vector, identified by its first-occurrence
    `record_index`, with the occurrence count recorded as `dup_count`.
 3. For each distinct vector: parse the frame (dtype must be F32; the f32
    vector is passed as a pgvector value), run the single-sample transaction
-   of §2.2 under the traffic budget (§3.1). A failed sample increments
-   `failed_count`; the transaction is rolled back and the round continues —
-   except "table smaller than k", which aborts Phase A for the whole cohort
-   (§2.2).
+   of §2.2 under the traffic budget (§3.1). A server-confirmed failure while
+   the connection remains usable increments `failed_count`; the transaction
+   is rolled back and the round continues — except "table smaller than k",
+   which aborts Phase A for the whole cohort (§2.2). Connection-level failure
+   handling is defined in §3.2 and never produces a durable failed part.
 4. Buffer rows in memory (tuner memory is deliberately unbudgeted — parts
    are bounded by the collector's 32 MiB spill cap); write
    `*.truth.parquet` then `*.sweep.parquet`.
@@ -672,7 +683,9 @@ pacer per `(server, database)`. All statements for that PostgreSQL pair are
 serialized. The pacer sleeps only *between* sample transactions, never inside
 one (§3.1): a sample's statements run back-to-back so its `REPEATABLE READ`
 snapshot is held for the minimum possible time. Every transaction sets
-`statement_timeout` via `SET LOCAL`.
+`statement_timeout` via `SET LOCAL`. Unavailable or closed connections are
+reconnected once at the start of each round; healthy connections remain
+long-lived, and no reconnect is attempted mid-round.
 
 ### 2.6 Aggregate phase details
 
@@ -701,12 +714,15 @@ idempotent by design.
 
 ### 3.1 Database traffic control
 
-Goal: a skeptical operator can read two numbers from the config and bound
+Goal: a skeptical operator can read three numbers from the config and bound
 the tuner's worst-case database impact, PlanetScale-traffic-control style
-(budgets per workload slice), without any server-side installation:
+(budgets per workload slice), plus the client's maximum wait for a database
+operation, without any server-side installation:
 
 > One backend per `(server, database)`, busy at most `db_share` of wall-clock
-> time, and no measured statement longer than `statement_timeout`.
+> time; server-side statement execution is capped by `statement_timeout`,
+> while connection attempts and client protocol operations are capped by
+> `client_timeout`.
 
 Mechanisms, in priority order (P0 ships in the MVP; the human owner arbitrates
 anything beyond):
@@ -729,6 +745,11 @@ anything beyond):
 - **P0 — per-statement timeout**: `SET LOCAL statement_timeout` (default 5 s)
   on every transaction; a timed-out sample is a failed sample, never a retry
   storm.
+- **P0 — client operation timeout**: `client_timeout` (default 10 s) bounds
+  every connection attempt and each PostgreSQL protocol operation, including
+  `BEGIN`, settings, queries, and `COMMIT`/`ROLLBACK`. Expiry abandons the
+  connection instead of reusing uncertain protocol state; the current part
+  remains unmeasured and is retried after reconnect on the next round.
 - **P1 — plan mode**: `seam plan --config …` prints, per cohort, the pending
   part count, estimated statements, and worst-case busy seconds for the next
   round, then exits without touching the database (PlanetScale's "warn
@@ -751,8 +772,20 @@ cohort per instance) bounds the inflow in practice.
   JSON); `latest.json` is the only overwritten key. No local state, no WAL,
   no database writes: after a crash the tuner restarts, re-lists storage,
   and resumes with at most one part of redone work (§2.4).
-- Per-sample failures are counted in `failed_count` and reported in the round.
-  Any storage listing or GET failure, or a source-segment parse failure, aborts
+- Server-confirmed per-sample failures on a still-usable connection are
+  counted in `failed_count` and reported in the round. PostgreSQL statement
+  timeout is in this class.
+- Startup connection failure, a closed `tokio-postgres` connection, client
+  operation timeout, or failed transaction cleanup is connection-level. If
+  one occurs while measuring a part, the tuner abandons that connection,
+  discards all buffered rows for the in-progress part, writes neither
+  intermediate, and aborts that cohort without publishing. Other cohorts
+  sharing the source issue no database work for the rest of the round,
+  although a fully cached cohort may still aggregate and publish as in C2.
+  At the next round start the tuner makes one reconnect attempt for each
+  unavailable/closed data source; successful reconnect makes the untouched
+  source part naturally retryable.
+- Any storage listing or GET failure, or a source-segment parse failure, aborts
   that cohort's round without publishing and logs the object key; the next tick
   retries naturally.
   A malformed intermediate pair is treated as incomplete and remeasured from
@@ -760,10 +793,11 @@ cohort per instance) bounds the inflow in practice.
   failed-part counter because publishing from a source segment whose header
   cannot be decoded would make availability, drop, and coverage accounting
   unknowable.
-- Graceful shutdown (SIGTERM/SIGINT): finish or abandon the in-flight
-  sample's transaction, skip remaining work, exit without publishing a
-  partial round. Nothing is lost — the next run redoes only the unfinished
-  part.
+- Graceful shutdown (SIGTERM/SIGINT): cancellation interrupts a duty-cycle
+  cooldown before the next transaction starts. Once a transaction starts it
+  is awaited through `COMMIT`/`ROLLBACK`; it is never dropped mid-flight.
+  Remaining work is skipped and no partial round is published. Nothing is
+  lost — the next run redoes only the unfinished part.
 
 ### 3.3 Implementation constraints
 
@@ -806,6 +840,13 @@ can come back as prioritized improvements:
   Consequence: sustained sample flow beyond the duty-cycle budget makes
   rounds fall behind and outputs go stale; the database stays protected
   (§3.1). Revisit with a deterministic per-part cap if staleness bites.
+- **Source headers require full object reads.** Every round currently GETs
+  and parses every in-scope `.vseam` object to validate its header, including
+  already measured parts; pending parts are fetched and parsed a second time.
+  With the default 24-hour window this can mean roughly 144 objects per
+  cohort every 10 minutes, each up to the collector's 32 MiB spill cap.
+  Revisit first with a header-only range GET and then, if needed, an in-memory
+  header cache keyed by canonical part ULID.
 - **No observation-coverage signal.** An in-scope storage window with no
   parts can mean zero traffic or a down/late collector; the tuner cannot
   tell them apart and reports both as `empty_window_fraction`. Future
@@ -829,9 +870,9 @@ can come back as prioritized improvements:
 - **Population is distinct query vectors, not traffic-weighted queries.**
   `dup_count` in the intermediates allows re-weighting later without
   re-measurement (§2.2).
-- **One shared traffic-policy value.** Every data source uses the same
-  top-level `db_share` and `statement_timeout`; per-data-source overrides are
-  deferred until operators demonstrate a need.
+- **One shared traffic policy.** Every data source uses the same
+  top-level `db_share`, `statement_timeout`, and `client_timeout`;
+  per-data-source overrides are deferred until operators demonstrate a need.
 - **No database connection pool or concurrent statements per PostgreSQL
   instance.** Each `(server, database)` pair has one serialized connection and
   pacer. Consequence: independent samples cannot use parallel database
@@ -927,7 +968,11 @@ shuffles are not part of the contract):
   round equals a never-crashed run on the same data.
 - **C2 database down**: with intermediates present and the database
   unreachable → Phase B still publishes; `samples.measured` reflects cached
-  work only; process exits 0 at shutdown.
+  work only; process exits 0 at shutdown. With a pending part, a
+  connection-level failure writes no intermediate and publishes no cohort
+  round; after the data source becomes reachable, the next round reconnects
+  once, measures that same part, and publishes it with no durable outage
+  failures.
 - **C3 config fingerprint**: intermediates written with k = 10 are ignored
   and re-measured after k changes to 20; `incompatible_parts` > 0 in the
   next round.
@@ -938,7 +983,8 @@ shuffles are not part of the contract):
   `(server, database)` data-source pair, index with unknown data source, ef
   grid containing a value < k or > 1000 or non-increasing, cohort with
   unknown index/target, `percentile: 1.0`, `window <
-  storage.window_seconds` — fails startup with a distinct error; the
+  storage.window_seconds`, `client_timeout: 0s` — fails startup with a
+  distinct error; the
   credential errors name the expected `password_env` mechanism.
 - **C6 table smaller than k**: a cohort whose table has fewer than k rows →
   Phase A aborts for that cohort after the first ground-truth result (at

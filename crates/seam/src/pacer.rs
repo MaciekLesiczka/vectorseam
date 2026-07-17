@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio::time::{Instant, sleep_until};
+use tokio_util::sync::CancellationToken;
 
 /// Invalid duty-cycle pacing configuration.
 #[derive(Debug, Error)]
@@ -34,6 +35,15 @@ pub(crate) struct PacerSnapshot {
     pub(crate) total_busy: Duration,
 }
 
+/// Result of waiting for the next paced unit to become eligible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancelableRun<T> {
+    /// The cooldown elapsed and the unit ran to completion.
+    Completed(T),
+    /// Cancellation won while waiting; the unit was never polled.
+    CancelledBeforeStart,
+}
+
 impl DutyCyclePacer {
     pub(crate) fn new(db_share: f64) -> Result<Self, PacerError> {
         if !(db_share.is_finite() && db_share > 0.0 && db_share <= 1.0) {
@@ -51,12 +61,42 @@ impl DutyCyclePacer {
     /// transaction or a single statement — after the prior cooldown, then
     /// charges its full wall time to the duty cycle. Failed units consume
     /// the same budget as successful ones.
+    #[cfg(test)]
     pub(crate) async fn run<F, T, E>(&mut self, work: F) -> Result<T, E>
     where
         F: Future<Output = Result<T, E>>,
     {
         sleep_until(self.next_allowed).await;
+        self.run_ready(work).await
+    }
 
+    /// Waits cancellation-safely for the prior cooldown, then runs `work`
+    /// without racing it against cancellation.
+    ///
+    /// A cancelled wait never polls `work`. Once `work` starts, it is always
+    /// awaited to completion so callers can place a whole transaction in the
+    /// non-cancellable region.
+    pub(crate) async fn run_cancelable_before_start<F, T, E>(
+        &mut self,
+        cancellation: &CancellationToken,
+        work: F,
+    ) -> Result<CancelableRun<T>, E>
+    where
+        F: Future<Output = Result<T, E>>,
+    {
+        tokio::select! {
+            _ = sleep_until(self.next_allowed) => {}
+            () = cancellation.cancelled() => {
+                return Ok(CancelableRun::CancelledBeforeStart);
+            }
+        }
+        self.run_ready(work).await.map(CancelableRun::Completed)
+    }
+
+    async fn run_ready<F, T, E>(&mut self, work: F) -> Result<T, E>
+    where
+        F: Future<Output = Result<T, E>>,
+    {
         let started = Instant::now();
         let result = work.await;
         let elapsed = started.elapsed();
@@ -146,5 +186,51 @@ mod tests {
             .unwrap();
         // 200 ms cooldown from the first 50 ms unit, then the 20 ms unit.
         assert_eq!(unit_started.elapsed(), Duration::from_millis(220));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_cooldown_never_starts_the_next_unit() {
+        let mut pacer = DutyCyclePacer::new(0.20).unwrap();
+        pacer
+            .run(async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok::<_, ()>(())
+            })
+            .await
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let mut started = false;
+
+        let outcome = pacer
+            .run_cancelable_before_start(&cancellation, async {
+                started = true;
+                Ok::<_, ()>(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, CancelableRun::CancelledBeforeStart);
+        assert!(!started);
+        assert_eq!(pacer.snapshot().work_count, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_after_start_does_not_interrupt_the_unit() {
+        let mut pacer = DutyCyclePacer::new(1.0).unwrap();
+        let cancellation = CancellationToken::new();
+        let cancellation_from_work = cancellation.clone();
+
+        let outcome = pacer
+            .run_cancelable_before_start(&cancellation, async move {
+                cancellation_from_work.cancel();
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                Ok::<_, ()>("finished")
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, CancelableRun::Completed("finished"));
+        assert_eq!(pacer.snapshot().total_busy, Duration::from_millis(20));
     }
 }
