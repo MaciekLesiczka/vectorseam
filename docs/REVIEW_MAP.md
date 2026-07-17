@@ -126,6 +126,10 @@ A tolerances. The real Docker run passed all five criteria. The daemon keeps
 one round future in the current task, advances past crossed tick boundaries
 without queuing work, and uses an owned signal task to cancel cooldown or
 remaining cohort work before shutting down the database drivers.
+Database-backed tests are explicitly ignored outside their Docker targets,
+and assert `SEAM_REQUIRE_F_PG` when forced to run. The anchor target deletes
+the old comparison before generation and requires a non-empty replacement,
+so a missing environment flag or stale comparison is fail-visible.
 
 The highest-value human review remains `database.rs`, followed by the compact
 `measure.rs`/`pipeline.rs` durability chain. The owner completed the C7 manual
@@ -183,7 +187,11 @@ Stage 4 deviations from the initial skeleton:
 
 No unresolved A–D specification question remains. Optional P1 `seam plan`
 was not implemented in Stage 4 and remains a product-priority call; it is not
-an A–D acceptance criterion.
+an A–D acceptance criterion. The owner also identified a possible stronger
+A4 fixture variant at `value: 0.8`, which would select a mid-grid ef. The
+current A-suite remains at the frozen §5 value `0.9`; B5 independently gates
+smallest-clearing mid-grid selection. Changing A4 requires explicit approval
+to amend the frozen spec.
 
 ## C7 deferred manual review — Gate 3
 

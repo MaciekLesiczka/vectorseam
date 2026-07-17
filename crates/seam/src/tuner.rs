@@ -321,10 +321,9 @@ mod tests {
     const PART_ULID: &str = "01K0A000000000000000000000";
 
     #[tokio::test]
+    #[ignore = "requires the Docker F-pg fixture; run make seam-f-pg-tests"]
     async fn c6_f_pg_table_smaller_stops_after_one_exact_and_other_cohort_continues() {
-        if !f_pg_required() {
-            return;
-        }
+        require_f_pg();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let query = axis_vector(1.0);
         seed_segment(
@@ -368,10 +367,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the Docker F-pg fixture; run make seam-f-pg-tests"]
     async fn d3_f_pg_one_millisecond_timeout_fails_without_retries_or_leaks() {
-        if !f_pg_required() {
-            return;
-        }
+        require_f_pg();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let vectors = (0..20)
             .map(|index| axis_vector(0.10 + index as f32 * 0.01))
@@ -416,10 +414,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the Docker F-pg fixture; run make seam-f-pg-tests"]
     async fn c2_f_pg_connection_outage_reconnects_next_round_without_durable_failure() {
-        if !f_pg_required() {
-            return;
-        }
+        require_f_pg();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let query = axis_vector(0.75);
         seed_segment(
@@ -465,10 +462,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the Docker F-pg fixture; run make seam-f-pg-tests"]
     async fn c2_f_pg_client_timeout_discards_part_then_reconnects_next_round() {
-        if !f_pg_required() {
-            return;
-        }
+        require_f_pg();
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let query = axis_vector(0.65);
         seed_segment(
@@ -841,7 +837,10 @@ mod tests {
         vector
     }
 
-    fn f_pg_required() -> bool {
-        std::env::var_os("SEAM_REQUIRE_F_PG").is_some()
+    fn require_f_pg() {
+        assert!(
+            std::env::var_os("SEAM_REQUIRE_F_PG").is_some(),
+            "ignored F-pg tests must run through make seam-f-pg-tests"
+        );
     }
 }

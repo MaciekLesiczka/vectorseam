@@ -9,6 +9,10 @@
 - The fixture generator removes prior tuner/anchor artifacts before each run,
   so cached intermediates cannot turn the anchor gate into a read-only
   comparison.
+- Ordinary `cargo test` reports every F-pg/A test as ignored. The Docker
+  targets explicitly run those ignored tests, and each test asserts the
+  harness environment instead of silently returning. The anchor recipe
+  deletes and then requires a fresh non-empty `comparison.json`.
 - The `seam` binary accepts `--config` or `SEAM_CONFIG`, loads and validates
   YAML once, starts an immediate round, then schedules serialized periodic
   rounds. Tick boundaries crossed by a running round are skipped rather than
@@ -26,8 +30,12 @@
 - D2 remains the owner-approved removed concurrency criterion.
 - Optional P1 `seam plan` was not implemented. It is outside A1–D3 and is
   flagged for the owner's product-priority call.
+- A4 retains the frozen `value: 0.9`, whose fixture result is the maximum ef.
+  B5 covers mid-grid smallest-clearing selection. Switching the A fixture to
+  `value: 0.8` remains an optional spec-amendment decision.
 
 ## Open questions
 
-No A1–D3 specification question is open. The only priority decision is
-whether P1 plan mode should be scheduled as follow-up work.
+No A1–D3 specification question is open. Priority decisions are whether P1
+plan mode should be scheduled and whether the owner wants to amend A4's
+frozen target for a stronger mid-grid anchor fixture.

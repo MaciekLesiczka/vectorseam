@@ -61,20 +61,22 @@ seam-f-pg-fixture: seam-postgres-up
 		$(CARGO) run --release -p seam --example f_pg_fixture
 
 seam-anchor: seam-f-pg-fixture setup
+	rm -f "$(SEAM_F_PG_ROOT)/anchor/comparison.json"
 	$(UV) run python -m seam_harness.anchor \
 		--fixture-root "$(SEAM_F_PG_ROOT)" \
 		--dsn "$(SEAM_DATABASE_URL)"
+	test -s "$(SEAM_F_PG_ROOT)/anchor/comparison.json"
 
 seam-f-pg-tests: seam-f-pg-fixture
 	SEAM_REQUIRE_F_PG=1 SEAM_PG_PORT="$(SEAM_PG_PORT)" \
 		SEAM_DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_TEST_PG_PASSWORD=password \
-		$(CARGO) test -p seam --lib
+		$(CARGO) test -p seam --lib -- --ignored
 
 seam-anchor-tests: seam-anchor
 	SEAM_REQUIRE_F_PG=1 SEAM_PG_PORT="$(SEAM_PG_PORT)" \
 		SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
 		SEAM_TEST_PG_PASSWORD=password \
-		$(CARGO) test -p seam --test acceptance_a_anchor
+		$(CARGO) test -p seam --test acceptance_a_anchor -- --ignored
 
 seam-f-pg-harness: seam-f-pg-tests seam-anchor-tests
 

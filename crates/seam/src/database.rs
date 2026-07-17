@@ -654,10 +654,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires the Docker F-pg fixture; run make seam-f-pg-tests"]
     async fn b2_f_pg_ground_truth_tie_break_prefers_key_7_over_9() {
-        if std::env::var_os("SEAM_REQUIRE_F_PG").is_none() {
-            return;
-        }
+        require_f_pg();
         let port = std::env::var("SEAM_PG_PORT").unwrap_or_else(|_| "55432".to_owned());
         let data_source = DataSourceConfig {
             server: format!("127.0.0.1:{port}"),
@@ -688,5 +687,12 @@ mod tests {
             assert!(!keys.contains(&9));
         }
         connection.close().await.unwrap();
+    }
+
+    fn require_f_pg() {
+        assert!(
+            std::env::var_os("SEAM_REQUIRE_F_PG").is_some(),
+            "ignored F-pg tests must run through make seam-f-pg-tests"
+        );
     }
 }

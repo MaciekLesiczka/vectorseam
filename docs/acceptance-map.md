@@ -5,8 +5,10 @@ currently required behavior is machine-gated. The F-agg suite runs without a
 database; tests marked F-pg are executed by `make seam-f-pg-tests` after the
 deterministic fixture is loaded. Suite A is executed by
 `make seam-anchor-tests` after the trusted Python anchor output is generated.
-C7 is the owner-approved manual-review exception recorded in
-`docs/REVIEW_MAP.md`.
+All database-backed tests are marked `#[ignore]` in ordinary `cargo test`;
+their Docker targets explicitly run ignored tests with `SEAM_REQUIRE_F_PG=1`,
+which the tests assert. C7 is the owner-approved manual-review exception
+recorded in `docs/REVIEW_MAP.md`.
 
 | Criterion | Test path and name | Status |
 |---|---|---|
@@ -51,4 +53,6 @@ search. Seed `0` is the first candidate and passes the strengthened PostgreSQL
 boundary-gap check for all 500 queries; its minimum observed gap is
 `1.3683911141981753e-6`. The Stage 4 harness resets generated tuner and anchor
 artifacts before each fixture run, preserving the shared query order while
-preventing cached intermediates from masking an end-to-end regression.
+preventing cached intermediates from masking an end-to-end regression. The
+anchor target also removes `comparison.json` immediately before the Python
+driver and asserts that a non-empty replacement exists before Rust tests run.

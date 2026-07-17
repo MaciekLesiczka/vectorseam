@@ -64,10 +64,9 @@ struct AnchorComparison {
 }
 
 #[test]
+#[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a1_anchor_recall_exact_for_at_least_99_percent() {
-    let Some(comparison) = comparison_if_required() else {
-        return;
-    };
+    let comparison = required_comparison();
     assert!(
         comparison.exact_recall_fraction >= 0.99,
         "observed exact recall fraction {}",
@@ -76,10 +75,9 @@ fn a1_anchor_recall_exact_for_at_least_99_percent() {
 }
 
 #[test]
+#[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a2_anchor_full_population_mean_recall_within_0_005() {
-    let Some(comparison) = comparison_if_required() else {
-        return;
-    };
+    let comparison = required_comparison();
     assert!(
         comparison
             .mean_recall_absolute_differences
@@ -91,10 +89,9 @@ fn a2_anchor_full_population_mean_recall_within_0_005() {
 }
 
 #[test]
+#[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a3_anchor_train_p10_within_0_01() {
-    let Some(comparison) = comparison_if_required() else {
-        return;
-    };
+    let comparison = required_comparison();
     assert!(
         comparison
             .train_quantile_absolute_differences
@@ -106,10 +103,9 @@ fn a3_anchor_train_p10_within_0_01() {
 }
 
 #[test]
+#[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a4_anchor_recommended_ef_identical() {
-    let Some(comparison) = comparison_if_required() else {
-        return;
-    };
+    let comparison = required_comparison();
     assert_eq!(
         comparison.tuner_recommended_ef,
         comparison.anchor_recommended_ef
@@ -117,10 +113,9 @@ fn a4_anchor_recommended_ef_identical() {
 }
 
 #[test]
+#[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a5_anchor_holdout_quantile_and_transfer_match() {
-    let Some(comparison) = comparison_if_required() else {
-        return;
-    };
+    let comparison = required_comparison();
     assert!(
         comparison.test_quantile_absolute_difference <= 0.01,
         "observed holdout quantile difference {}",
@@ -129,14 +124,15 @@ fn a5_anchor_holdout_quantile_and_transfer_match() {
     assert_eq!(comparison.tuner_transferred, comparison.anchor_transferred);
 }
 
-fn comparison_if_required() -> Option<&'static AnchorComparison> {
-    std::env::var_os("SEAM_REQUIRE_F_PG")?;
-    Some(
-        COMPARISON
-            .get_or_init(|| build_comparison().map_err(|error| format!("{error:#}")))
-            .as_ref()
-            .unwrap_or_else(|error| panic!("build A-suite comparison: {error}")),
-    )
+fn required_comparison() -> &'static AnchorComparison {
+    assert!(
+        std::env::var_os("SEAM_REQUIRE_F_PG").is_some(),
+        "ignored anchor tests must run through make seam-anchor-tests"
+    );
+    COMPARISON
+        .get_or_init(|| build_comparison().map_err(|error| format!("{error:#}")))
+        .as_ref()
+        .unwrap_or_else(|error| panic!("build A-suite comparison: {error}"))
 }
 
 fn build_comparison() -> Result<AnchorComparison> {
