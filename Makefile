@@ -1,12 +1,19 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency build-rust test-rust lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
+RUST_MSRV ?= 1.85.0
+RUST_MSRV_TARGET_DIR ?= $(CURDIR)/target/msrv-$(RUST_MSRV)
 PYTHON_FRAME_BENCH_JSON ?= .benchmarks/frame.json
 PYTHON_VECTOR_CAPTURE_BENCH_JSON ?= .benchmarks/vector_capture.json
 ANN_RECALL_LATENCY_COMPOSE := python/ann-recall-latency/docker-compose.yml
 ANN_RECALL_LATENCY_POSTGRES_DATA := $(CURDIR)/python/ann-recall-latency/data/postgres
 ANN_RECALL_LATENCY_DOCKER_COMPOSE := ANN_RECALL_LATENCY_POSTGRES_DATA="$(ANN_RECALL_LATENCY_POSTGRES_DATA)" docker compose -f $(ANN_RECALL_LATENCY_COMPOSE)
+SEAM_COMPOSE := tests/seam/docker-compose.yml
+SEAM_PG_PORT ?= 55432
+SEAM_DATABASE_URL ?= postgresql://postgres:password@localhost:$(SEAM_PG_PORT)/postgres
+SEAM_F_PG_ROOT ?= $(CURDIR)/target/seam-fixtures/f-pg
+SEAM_DOCKER_COMPOSE := SEAM_PG_PORT="$(SEAM_PG_PORT)" docker compose -f $(SEAM_COMPOSE)
 
 postgres:
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) up -d postgres
@@ -45,11 +52,69 @@ all-ann-recall-latency: setup postgres
 	$(UV) run python python/ann-recall-latency/sweep.py --dataset all
 	$(UV) run python python/ann-recall-latency/analyze.py
 
+seam-postgres-up:
+	$(SEAM_DOCKER_COMPOSE) up -d --wait postgres
+
+seam-postgres-down:
+	$(SEAM_DOCKER_COMPOSE) down --volumes
+
+seam-f-pg-fixture: seam-postgres-up
+	DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
+		$(CARGO) run --release -p seam --example f_pg_fixture
+
+seam-anchor: seam-f-pg-fixture setup
+	rm -f "$(SEAM_F_PG_ROOT)/anchor/comparison.json"
+	$(UV) run python -m seam_harness.anchor \
+		--fixture-root "$(SEAM_F_PG_ROOT)" \
+		--dsn "$(SEAM_DATABASE_URL)"
+	test -s "$(SEAM_F_PG_ROOT)/anchor/comparison.json"
+
+seam-f-pg-tests: seam-f-pg-fixture
+	SEAM_REQUIRE_F_PG=1 SEAM_PG_PORT="$(SEAM_PG_PORT)" \
+		SEAM_DATABASE_URL="$(SEAM_DATABASE_URL)" SEAM_TEST_PG_PASSWORD=password \
+		$(CARGO) test -p seam --lib -- --ignored
+
+seam-anchor-tests: seam-anchor
+	SEAM_REQUIRE_F_PG=1 SEAM_PG_PORT="$(SEAM_PG_PORT)" \
+		SEAM_F_PG_ROOT="$(SEAM_F_PG_ROOT)" \
+		SEAM_TEST_PG_PASSWORD=password \
+		$(CARGO) test -p seam --test acceptance_a_anchor -- --ignored
+
+seam-f-pg-harness: seam-f-pg-tests seam-anchor-tests
+
+test-seam-f-agg:
+	$(CARGO) test -p seam \
+		--lib \
+		--test f_agg_builders \
+		--test acceptance_b_estimator \
+		--test acceptance_c_durability \
+		--test estimator_properties
+
+bench-seam-phase-b:
+	$(CARGO) bench -p seam --bench phase_b -- --noplot
+
 build-rust:
 	$(CARGO) build --workspace
 
 test-rust:
 	$(CARGO) test --workspace
+
+# Resolve both executables through rustup: `rustup run cargo` can otherwise
+# spawn a newer `rustc` found first on PATH. The dedicated target is cleaned
+# so dependencies are always compiled by the actual MSRV compiler.
+test-rust-msrv:
+	@set -eu; \
+		msrv_cargo="$$(rustup which --toolchain $(RUST_MSRV) cargo)"; \
+		msrv_rustc="$$(rustup which --toolchain $(RUST_MSRV) rustc)"; \
+		test "$$("$$msrv_cargo" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
+		test "$$("$$msrv_rustc" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
+		echo "MSRV cargo: $$("$$msrv_cargo" --version)"; \
+		echo "MSRV rustc: $$("$$msrv_rustc" --version)"; \
+		CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" "$$msrv_cargo" clean; \
+		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+			"$$msrv_cargo" check --workspace --all-targets --locked; \
+		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+			"$$msrv_cargo" test --workspace --locked
 
 lint-rust:
 	$(CARGO) fmt --all -- --check
@@ -97,3 +162,4 @@ clean:
 	rm -rf .venv
 	$(CARGO) clean
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) down
+	$(SEAM_DOCKER_COMPOSE) down --volumes
