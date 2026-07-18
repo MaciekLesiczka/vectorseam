@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency demo-postgres-up demo-postgres-down demo-load-data seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -14,6 +14,7 @@ SEAM_PG_PORT ?= 55432
 SEAM_DATABASE_URL ?= postgresql://postgres:password@localhost:$(SEAM_PG_PORT)/postgres
 SEAM_F_PG_ROOT ?= $(CURDIR)/target/seam-fixtures/f-pg
 SEAM_DOCKER_COMPOSE := SEAM_PG_PORT="$(SEAM_PG_PORT)" docker compose -f $(SEAM_COMPOSE)
+DEMO_COMPOSE := demo/docker-compose.yml
 
 postgres:
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) up -d postgres
@@ -51,6 +52,15 @@ all-ann-recall-latency: setup postgres
 	$(UV) run python python/ann-recall-latency/ground_truth.py --dataset all
 	$(UV) run python python/ann-recall-latency/sweep.py --dataset all
 	$(UV) run python python/ann-recall-latency/analyze.py
+
+demo-postgres-up:
+	docker compose -f $(DEMO_COMPOSE) up -d --wait postgres
+
+demo-postgres-down:
+	docker compose -f $(DEMO_COMPOSE) down
+
+demo-load-data: setup demo-postgres-up
+	$(UV) run python demo/scripts/load_data.py
 
 seam-postgres-up:
 	$(SEAM_DOCKER_COMPOSE) up -d --wait postgres
@@ -129,8 +139,9 @@ doc-rust:
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --workspace --no-deps
 
 test-python: setup
-	$(UV) run python -m compileall python
+	$(UV) run python -m compileall python demo
 	$(UV) run python -m unittest discover -s python/vectorseam/tests
+	$(UV) run python -m unittest discover -s demo/tests
 
 bench-python: bench-python-frame bench-python-vector-capture
 

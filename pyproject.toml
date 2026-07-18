@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 dependencies = [
+    "fastapi>=0.115",
     "matplotlib==3.10.9",
     "numpy>=1.24",
     "psycopg[binary]>=3.2",
@@ -18,6 +19,7 @@ dependencies = [
     "torch>=2.13.0",
     "sentence-transformers",
     "tqdm>=4.68",
+    "uvicorn>=0.34",
 ]
 
 [project.optional-dependencies]
