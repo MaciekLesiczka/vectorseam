@@ -34,7 +34,8 @@
   `latest.json`.
 - E1–E5 run without PostgreSQL and cover history/latest publication,
   idempotent carry, target-unmet precedence, restart survival, fingerprint
-  invalidation, bootstrap, malformed JSON, and pre-extension JSON.
+  invalidation, silent bootstrap, malformed/pre-extension warnings, and
+  transient carry-source GET failure without publication or chain loss.
 
 ## Red or deferred
 

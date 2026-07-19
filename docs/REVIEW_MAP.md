@@ -135,15 +135,18 @@ the old comparison before generation and requires a non-empty replacement,
 so a missing environment flag or stale comparison is fail-visible.
 
 I am confident in the effective-recommendation extension. The async pipeline
-performs exactly one best-effort `latest.json` GET before publication and
-passes the deserialized prior round into the pure estimator; missing,
-unreadable, malformed, and pre-extension records cannot wedge a cohort.
+performs exactly one `latest.json` GET before publication and passes the
+deserialized prior round into the pure estimator. Not-found bootstrap is
+silent; malformed, unreadable-body, and pre-extension content warn and
+degrade to no carry; every other GET failure aborts publication, preserving
+the stored chain for retry.
 `ok` and `target_unmet` always publish their current recommendation with the
 current round end as `source_round`; insufficient rounds alone may carry,
 and only after exact cohort/index/grid/k/value/percentile matching. E1–E5
 cover durable history/latest output, idempotent republication, newest
 target-unmet precedence, restart behavior, every required fingerprint field,
-bootstrap, corruption, and legacy JSON. C6 additionally proves that a
+bootstrap logging, corruption, legacy JSON, and injected transient GET
+failure. C6 additionally proves that a
 table-smaller-than-k abort retains the previous recommendation, and E1
 separately covers a round in which every live-connection sample fails.
 

@@ -221,7 +221,7 @@ pub(crate) async fn run_cohort_round(
         return Ok(CohortRoundOutcome::Cancelled);
     }
     let (history_path, latest_path) = round_paths(&config.cohort, round_end)?;
-    let previous_round = load_previous_round(store.as_ref(), &latest_path).await;
+    let previous_round = load_previous_round(store.as_ref(), &latest_path).await?;
     let input = AggregationInput {
         config,
         round_end,
@@ -396,16 +396,19 @@ async fn get_bytes(store: &dyn ObjectStore, path: &Path) -> Result<Bytes, Pipeli
         })
 }
 
-async fn load_previous_round(store: &dyn ObjectStore, path: &Path) -> Option<RoundOutput> {
+async fn load_previous_round(
+    store: &dyn ObjectStore,
+    path: &Path,
+) -> Result<Option<RoundOutput>, PipelineError> {
     let result = match store.get(path).await {
         Ok(result) => result,
-        Err(error) => {
-            warn!(
-                path = %path,
-                %error,
-                "previous latest round is unavailable; effective recommendation will not carry"
-            );
-            return None;
+        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(source) => {
+            return Err(PipelineError::Storage {
+                operation: "GET",
+                path: path.to_string(),
+                source,
+            });
         }
     };
     let bytes = match result.bytes().await {
@@ -416,20 +419,42 @@ async fn load_previous_round(store: &dyn ObjectStore, path: &Path) -> Option<Rou
                 %error,
                 "previous latest round body is unreadable; effective recommendation will not carry"
             );
-            return None;
+            return Ok(None);
         }
     };
-    match serde_json::from_slice(&bytes) {
-        Ok(round) => Some(round),
+    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
         Err(error) => {
             warn!(
                 path = %path,
                 %error,
                 "previous latest round is malformed; effective recommendation will not carry"
             );
-            None
+            return Ok(None);
         }
+    };
+    let has_effective_field = value
+        .as_object()
+        .is_some_and(|object| object.contains_key("effective"));
+    let round = match serde_json::from_value(value) {
+        Ok(round) => round,
+        Err(error) => {
+            warn!(
+                path = %path,
+                %error,
+                "previous latest round is malformed; effective recommendation will not carry"
+            );
+            return Ok(None);
+        }
+    };
+    if !has_effective_field {
+        warn!(
+            path = %path,
+            "previous latest round predates effective recommendations; effective recommendation will not carry"
+        );
+        return Ok(None);
     }
+    Ok(Some(round))
 }
 
 async fn put_bytes(
@@ -453,6 +478,7 @@ mod tests {
     use super::*;
 
     use std::fmt;
+    use std::io::Write;
     use std::sync::Mutex;
 
     use async_trait::async_trait;
@@ -462,6 +488,8 @@ mod tests {
         CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
         PutMultipartOptions, PutOptions, PutResult, Result as StoreResult,
     };
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::fmt::MakeWriter;
     use vectorseam_core::cohort::CohortName;
     use vectorseam_core::frame::{FIXED_FRAME_HEADER_LEN, FRAME_MAGIC, FRAME_VERSION};
     use vectorseam_core::segment::{SegmentHeader, SegmentRecordRef, write_segment};
@@ -504,6 +532,7 @@ mod tests {
         inner: InMemory,
         puts: Mutex<Vec<Path>>,
         gets: Mutex<Vec<Path>>,
+        fail_next_get: Mutex<Option<Path>>,
     }
 
     impl RecordingStore {
@@ -513,6 +542,10 @@ mod tests {
 
         fn take_gets(&self) -> Vec<Path> {
             std::mem::take(&mut *self.gets.lock().unwrap())
+        }
+
+        fn fail_next_get(&self, path: Path) {
+            *self.fail_next_get.lock().unwrap() = Some(path);
         }
     }
 
@@ -544,6 +577,21 @@ mod tests {
 
         async fn get_opts(&self, location: &Path, options: GetOptions) -> StoreResult<GetResult> {
             self.gets.lock().unwrap().push(location.clone());
+            let should_fail = {
+                let mut fail_next_get = self.fail_next_get.lock().unwrap();
+                if fail_next_get.as_ref() == Some(location) {
+                    fail_next_get.take();
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_fail {
+                return Err(object_store::Error::Generic {
+                    store: "RecordingStore",
+                    source: Box::new(std::io::Error::other("injected GET failure")),
+                });
+            }
             self.inner.get_opts(location, options).await
         }
 
@@ -565,6 +613,54 @@ mod tests {
         async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> StoreResult<()> {
             self.inner.copy_opts(from, to, options).await
         }
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct LogCapture {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl LogCapture {
+        fn contents(&self) -> String {
+            String::from_utf8(self.bytes.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    struct LogWriter {
+        bytes: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for LogWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.bytes.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> MakeWriter<'writer> for LogCapture {
+        type Writer = LogWriter;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            LogWriter {
+                bytes: Arc::clone(&self.bytes),
+            }
+        }
+    }
+
+    fn warning_capture() -> (LogCapture, tracing::Dispatch) {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_target(false)
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(capture.clone())
+            .finish();
+        (capture, tracing::Dispatch::new(subscriber))
     }
 
     #[async_trait]
@@ -1143,12 +1239,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e5_bootstrap_corrupt_and_pre_effective_latest_publish_null_effective() {
+    async fn e5_bootstrap_content_and_get_failure_policy_preserves_effective_chain() {
         let round_end = WINDOW_START + u64::from(WINDOW_SECONDS);
         let (_, latest_path) = round_paths(COHORT, round_end).unwrap();
 
         let missing_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         let mut missing_measurer = CountingMeasurer { calls: 0 };
+        let (missing_logs, missing_subscriber) = warning_capture();
         let missing = run_at(
             Arc::clone(&missing_store),
             aggregation_config(10),
@@ -1156,11 +1253,13 @@ mod tests {
             "2026-07-08T12:10:00Z",
             &mut missing_measurer,
         )
+        .with_subscriber(missing_subscriber)
         .await;
         let CohortRoundOutcome::Published(missing) = missing else {
             panic!("bootstrap round must publish");
         };
         assert_eq!(missing.effective, None);
+        assert_eq!(missing_logs.contents(), "");
         let missing_latest: serde_json::Value = serde_json::from_slice(
             &get_bytes(missing_store.as_ref(), &latest_path)
                 .await
@@ -1175,6 +1274,7 @@ mod tests {
             .await
             .unwrap();
         let mut corrupt_measurer = CountingMeasurer { calls: 0 };
+        let (corrupt_logs, corrupt_subscriber) = warning_capture();
         let corrupt = run_at(
             Arc::clone(&corrupt_store),
             aggregation_config(10),
@@ -1182,11 +1282,15 @@ mod tests {
             "2026-07-08T12:10:00Z",
             &mut corrupt_measurer,
         )
+        .with_subscriber(corrupt_subscriber)
         .await;
         let CohortRoundOutcome::Published(corrupt) = corrupt else {
             panic!("corrupt-carry round must publish");
         };
         assert_eq!(corrupt.effective, None);
+        let corrupt_logs = corrupt_logs.contents();
+        assert_eq!(corrupt_logs.lines().count(), 1);
+        assert!(corrupt_logs.contains("previous latest round is malformed"));
         let corrupt_latest: serde_json::Value = serde_json::from_slice(
             &get_bytes(corrupt_store.as_ref(), &latest_path)
                 .await
@@ -1226,6 +1330,7 @@ mod tests {
             .unwrap();
 
         let mut legacy_measurer = CountingMeasurer { calls: 0 };
+        let (legacy_logs, legacy_subscriber) = warning_capture();
         let legacy = run_at(
             Arc::clone(&legacy_store),
             aggregation_config(10),
@@ -1233,11 +1338,15 @@ mod tests {
             "2026-07-08T12:20:00Z",
             &mut legacy_measurer,
         )
+        .with_subscriber(legacy_subscriber)
         .await;
         let CohortRoundOutcome::Published(legacy) = legacy else {
             panic!("pre-effective carry round must publish");
         };
         assert_eq!(legacy.effective, None);
+        let legacy_logs = legacy_logs.contents();
+        assert_eq!(legacy_logs.lines().count(), 1);
+        assert!(legacy_logs.contains("predates effective recommendations"));
         let legacy_latest: serde_json::Value = serde_json::from_slice(
             &get_bytes(legacy_store.as_ref(), &latest_path)
                 .await
@@ -1245,6 +1354,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(legacy_latest["effective"], serde_json::Value::Null);
+
+        let failing_store = Arc::new(RecordingStore::default());
+        let failing_store_dyn: Arc<dyn ObjectStore> = failing_store.clone();
+        seed_source_vectors_at(
+            &failing_store_dyn,
+            WINDOW_START,
+            FIRST_ULID,
+            &fixture_vectors(0.0),
+        )
+        .await;
+        let mut seed_measurer = CountingMeasurer { calls: 0 };
+        let seed = run_at(
+            Arc::clone(&failing_store_dyn),
+            aggregation_config(10),
+            round_end,
+            "2026-07-08T12:10:00Z",
+            &mut seed_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(seed) = seed else {
+            panic!("carry seed round must publish");
+        };
+        assert_eq!(seed.effective.as_ref().unwrap().recommended_ef, 20);
+        let stored_latest = get_bytes(failing_store_dyn.as_ref(), &latest_path)
+            .await
+            .unwrap();
+        failing_store.take_puts();
+        failing_store.fail_next_get(latest_path.clone());
+
+        let failed_round_end = WINDOW_START + 2 * u64::from(WINDOW_SECONDS);
+        let mut failed_measurer = CountingMeasurer { calls: 0 };
+        let failed = run_cohort_round(
+            Arc::clone(&failing_store_dyn),
+            aggregation_config(10),
+            failed_round_end,
+            "2026-07-08T12:20:00Z".to_owned(),
+            failed_round_end * 1_000_000,
+            &mut failed_measurer,
+            &CancellationToken::new(),
+        )
+        .await;
+        assert!(matches!(
+            failed,
+            Err(PipelineError::Storage {
+                operation: "GET",
+                ref path,
+                ..
+            }) if path == &latest_path.to_string()
+        ));
+        assert!(failing_store.take_puts().is_empty());
+
+        let stored_after_failure = get_bytes(failing_store_dyn.as_ref(), &latest_path)
+            .await
+            .unwrap();
+        assert_eq!(stored_after_failure, stored_latest);
+        let (failed_history_path, _) = round_paths(COHORT, failed_round_end).unwrap();
+        assert!(matches!(
+            failing_store_dyn.get(&failed_history_path).await,
+            Err(object_store::Error::NotFound { .. })
+        ));
     }
 
     #[tokio::test]

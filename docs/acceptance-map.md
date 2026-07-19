@@ -45,7 +45,7 @@ recorded in `docs/REVIEW_MAP.md`.
 | E2 | `crates/seam/src/pipeline.rs::tests::e2_newest_target_unmet_signal_wins_and_is_then_carried` | passing |
 | E3 | `crates/seam/src/pipeline.rs::tests::e3_carry_survives_fresh_pipeline_invocation_using_only_storage` | passing |
 | E4 | `crates/seam/src/pipeline.rs::tests::e4_fingerprint_change_resets_effective_for_all_required_fields` | passing |
-| E5 | `crates/seam/src/pipeline.rs::tests::e5_bootstrap_corrupt_and_pre_effective_latest_publish_null_effective` | passing |
+| E5 | `crates/seam/src/pipeline.rs::tests::e5_bootstrap_content_and_get_failure_policy_preserves_effective_chain` | passing |
 
 C7 is deferred from machine gating with the owner's explicit approval, and
 its required manual transaction review was completed and approved on
