@@ -181,7 +181,7 @@ fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
 #[test]
 fn c8_phase_b_reproducible_except_computed_at() {
     let root = tempdir().unwrap();
-    let metadata = PartMetadata::default();
+    let fixture_metadata = PartMetadata::default();
     let truth = TruthRow {
         record_index: 0,
         vector_hash: 0xaf63_dc4c_8601_ec8c,
@@ -190,7 +190,7 @@ fn c8_phase_b_reproducible_except_computed_at() {
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
-    let sweeps = metadata
+    let sweeps = fixture_metadata
         .ef_grid
         .iter()
         .map(|ef| SweepRow {
@@ -202,11 +202,18 @@ fn c8_phase_b_reproducible_except_computed_at() {
             result_count: 10,
         })
         .collect::<Vec<_>>();
-    let pair = write_intermediate_pair(root.path(), &metadata, &[truth], &sweeps).unwrap();
+    let pair = write_intermediate_pair(root.path(), &fixture_metadata, &[truth], &sweeps).unwrap();
     let intermediate = read_intermediate_pair(&pair.truth_path, &pair.sweep_path).unwrap();
 
     let mut first_input = aggregation_input(vec![intermediate.clone()]);
     first_input.computed_at = "2026-07-08T12:10:01Z".to_owned();
+    let previous = aggregate(&aggregation_input(vec![IntermediatePart {
+        metadata: metadata(100),
+        samples: measured_samples(100),
+    }]))
+    .unwrap();
+    assert!(previous.effective.is_some());
+    first_input.previous_round = Some(previous);
     let mut second_input = first_input.clone();
     second_input.computed_at = "2026-07-08T12:10:02Z".to_owned();
     second_input
@@ -280,6 +287,7 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,

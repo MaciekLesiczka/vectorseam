@@ -10,8 +10,8 @@ use crate::accounting::{
 };
 use crate::math::{MathError, is_train_member, split_threshold};
 use crate::model::{
-    AggregationConfig, AggregationInput, IntermediatePart, RoundOutput, RoundStatus, RoundTarget,
-    RoundWindow, SampleCounts,
+    AggregationConfig, AggregationInput, EffectiveRecommendation, IntermediatePart, RoundOutput,
+    RoundStatus, RoundTarget, RoundWindow, SampleCounts,
 };
 use crate::population::{
     deduplicate_samples, per_ef_summaries, select_and_validate, validate_population,
@@ -189,13 +189,32 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
                 Some(selection.test_quantile),
             ),
         };
+    let window_end = iso8601_seconds(input.round_end)?;
+    let effective = match (recommended_ef, confidence) {
+        (Some(recommended_ef), Some(confidence)) => Some(EffectiveRecommendation {
+            recommended_ef,
+            confidence,
+            source_round: window_end.clone(),
+            carried: false,
+        }),
+        (None, None) => input
+            .previous_round
+            .as_ref()
+            .filter(|previous| carry_fingerprint_matches(&input.config, previous))
+            .and_then(|previous| previous.effective.clone())
+            .map(|mut effective| {
+                effective.carried = true;
+                effective
+            }),
+        _ => unreachable!("selection always emits recommendation and confidence together"),
+    };
     Ok(RoundOutput {
         format_version: 1,
         cohort: input.config.cohort.clone(),
         computed_at: input.computed_at.clone(),
         window: RoundWindow {
             start: iso8601_seconds(lower)?,
-            end: iso8601_seconds(input.round_end)?,
+            end: window_end,
             duration_seconds: input.config.window_duration_seconds,
         },
         target: RoundTarget {
@@ -216,6 +235,7 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         transferred,
         train_quantile_recall: train_quantile,
         test_quantile_recall: test_quantile,
+        effective,
         samples,
         dropped_frame_fraction: drop_fraction,
         coverage,
@@ -223,6 +243,15 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         incompatible_parts,
         per_ef,
     })
+}
+
+fn carry_fingerprint_matches(config: &AggregationConfig, previous: &RoundOutput) -> bool {
+    previous.cohort == config.cohort
+        && previous.index == config.index
+        && previous.ef_grid == config.ef_grid
+        && previous.target.k == config.k
+        && previous.target.value == config.value
+        && previous.target.percentile == config.percentile
 }
 
 /// Serializes a round record with deterministic struct-field ordering.

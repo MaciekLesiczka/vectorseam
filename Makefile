@@ -99,21 +99,26 @@ build-rust:
 test-rust:
 	$(CARGO) test --workspace
 
-# Resolve both executables through rustup: `rustup run cargo` can otherwise
-# spawn a newer `rustc` found first on PATH. The dedicated target is cleaned
-# so dependencies are always compiled by the actual MSRV compiler.
+# Resolve every compiler executable through rustup: `rustup run cargo` can
+# otherwise spawn a newer `rustc` or `rustdoc` found first on PATH. The
+# dedicated target is cleaned so dependencies are always compiled by MSRV.
 test-rust-msrv:
 	@set -eu; \
 		msrv_cargo="$$(rustup which --toolchain $(RUST_MSRV) cargo)"; \
 		msrv_rustc="$$(rustup which --toolchain $(RUST_MSRV) rustc)"; \
+		msrv_rustdoc="$$(rustup which --toolchain $(RUST_MSRV) rustdoc)"; \
 		test "$$("$$msrv_cargo" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
 		test "$$("$$msrv_rustc" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
+		test "$$("$$msrv_rustdoc" --version | cut -d ' ' -f 2)" = "$(RUST_MSRV)"; \
 		echo "MSRV cargo: $$("$$msrv_cargo" --version)"; \
 		echo "MSRV rustc: $$("$$msrv_rustc" --version)"; \
+		echo "MSRV rustdoc: $$("$$msrv_rustdoc" --version)"; \
 		CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" "$$msrv_cargo" clean; \
-		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+		RUSTC="$$msrv_rustc" RUSTDOC="$$msrv_rustdoc" \
+			CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
 			"$$msrv_cargo" check --workspace --all-targets --locked; \
-		RUSTC="$$msrv_rustc" CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
+		RUSTC="$$msrv_rustc" RUSTDOC="$$msrv_rustdoc" \
+			CARGO_TARGET_DIR="$(RUST_MSRV_TARGET_DIR)" \
 			"$$msrv_cargo" test --workspace --locked
 
 lint-rust:

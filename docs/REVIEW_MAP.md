@@ -1,6 +1,7 @@
 # Tuner review map
 
-This map covers the complete Stage 1–4 tuner implementation.
+This map covers the complete Stage 1–4 tuner implementation and the
+effective-recommendation extension.
 
 ## Tier 1 — semantically rich / critical
 
@@ -22,7 +23,8 @@ This map covers the complete Stage 1–4 tuner implementation.
 - `crates/seam/src/pipeline.rs` — owns window-scoped listing, source/header
   membership, incomplete/malformed/config-mismatched pair handling,
   truth-before-sweep durability, cancellation boundaries, Phase A abort
-  precedence, and history-before-latest publication.
+  precedence, best-effort prior-state loading, and history-before-latest
+  publication.
 - `crates/seam/src/math.rs` — owns recall set semantics, exact FNV-1a and split
   membership, type-7 interpolation, ef selection, and beta-posterior
   confidence.
@@ -33,7 +35,10 @@ This map covers the complete Stage 1–4 tuner implementation.
   inputs.
 - `crates/seam/src/aggregate.rs` — composes compatibility filtering,
   deterministic splitting, counters, typed Phase A abort precedence, and
-  ordered round records from the focused Tier 1 primitives.
+  ordered round records, including current-versus-carried effective
+  recommendation selection and its exact config fingerprint.
+- `crates/seam/src/model.rs` — owns the pure previous-round input contract and
+  additive effective-recommendation JSON schema.
 - `crates/seam/src/intermediate.rs` — validates the frozen parquet schemas and
   pair metadata, cross-checks `measured_count`, encodes zstd pairs, and joins
   authoritative stored sweep observations without reimplementing recall.
@@ -61,8 +66,6 @@ This map covers the complete Stage 1–4 tuner implementation.
 - `crates/seam/src/daemon.rs` — immediate/periodic single-flight scheduling,
   skipped-tick accounting, wall-clock projection, signal ownership, and
   ordered tuner shutdown.
-- `crates/seam/src/model.rs` — pure aggregation contracts and ordered round
-  JSON types.
 - `crates/seam/tests/acceptance_c_durability.rs` — cached database-down,
   config, empty-round, abort, and reproducibility acceptance.
 - `crates/seam/tests/f_agg_builders.rs` — schema, compression, metadata,
@@ -131,6 +134,19 @@ and assert `SEAM_REQUIRE_F_PG` when forced to run. The anchor target deletes
 the old comparison before generation and requires a non-empty replacement,
 so a missing environment flag or stale comparison is fail-visible.
 
+I am confident in the effective-recommendation extension. The async pipeline
+performs exactly one best-effort `latest.json` GET before publication and
+passes the deserialized prior round into the pure estimator; missing,
+unreadable, malformed, and pre-extension records cannot wedge a cohort.
+`ok` and `target_unmet` always publish their current recommendation with the
+current round end as `source_round`; insufficient rounds alone may carry,
+and only after exact cohort/index/grid/k/value/percentile matching. E1–E5
+cover durable history/latest output, idempotent republication, newest
+target-unmet precedence, restart behavior, every required fingerprint field,
+bootstrap, corruption, and legacy JSON. C6 additionally proves that a
+table-smaller-than-k abort retains the previous recommendation, and E1
+separately covers a round in which every live-connection sample fails.
+
 The highest-value human review remains `database.rs`, followed by the compact
 `measure.rs`/`pipeline.rs` durability chain. The owner completed the C7 manual
 review against that path on 2026-07-17.
@@ -185,22 +201,22 @@ Stage 4 deviations from the initial skeleton:
   advances over every crossed boundary and schedules only the next future
   tick.
 
-No unresolved A–D specification question remains. The owner approved the
+No unresolved A–E specification question remains. The owner approved the
 stronger A4 fixture target `value: 0.8`; the anchor and tuner must now select
 the literal mid-grid ef `80`. Optional P1 `seam plan` was not implemented in
-Stage 4 and remains a product-priority call; it is not an A–D acceptance
+Stage 4 and remains a product-priority call; it is not an A–E acceptance
 criterion.
 
 Post-Gate-4 MSRV correction: the original local check invoked Rust 1.85
 Cargo but allowed it to find a newer Homebrew `rustc` on `PATH`, while the
 shared target directory could also reuse dependencies built by that newer
 compiler. `serde-saphyr` is now pinned to the newest release verified with
-Rust 1.85 (`0.0.11`). `make test-rust-msrv` resolves both Cargo and rustc
+Rust 1.85 (`0.0.11`). `make test-rust-msrv` resolves Cargo, rustc, and rustdoc
 through rustup, verifies their exact versions, cleans a dedicated target
-directory, checks all locked targets, and runs the locked workspace tests.
-The GitHub MSRV job uses that same local entry point. I am confident this
-closes both the immediate dependency failure and the false-green path that
-hid it.
+directory, checks all locked targets, and runs the locked workspace tests and
+doctests. The GitHub MSRV job uses that same local entry point. I am confident
+this closes both the immediate dependency failure and the false-green paths
+that hid it.
 
 ## C7 deferred manual review — Gate 3
 

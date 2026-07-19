@@ -91,6 +91,7 @@ fn aggregation_input() -> AggregationInput {
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: vec![ListedPart {
             part_ulid: metadata.part_ulid.clone(),
             window_start: metadata.window_start,

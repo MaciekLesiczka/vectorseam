@@ -167,6 +167,8 @@ pub struct AggregationInput {
     pub phase_a_abort: Option<PhaseAAbort>,
     /// Incompatible pairs Phase A observed and replaced before aggregation.
     pub phase_a_incompatible_parts: u64,
+    /// Previous published round loaded from storage, if readable.
+    pub previous_round: Option<RoundOutput>,
     /// All listed part headers that may overlap the round.
     pub listed_parts: Vec<ListedPart>,
     /// All durable intermediate pairs that may overlap the round.
@@ -268,6 +270,19 @@ pub struct PerEfSummary {
     pub latency_p50_ms: f64,
 }
 
+/// Client-facing recommendation to apply until a newer round supersedes it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct EffectiveRecommendation {
+    /// Recommended `hnsw.ef_search`.
+    pub recommended_ef: i32,
+    /// Holdout posterior confidence from the source round.
+    pub confidence: f64,
+    /// Round end that computed this recommendation.
+    pub source_round: String,
+    /// Whether this round carried the recommendation from prior state.
+    pub carried: bool,
+}
+
 /// Complete deterministic round record.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RoundOutput {
@@ -299,6 +314,9 @@ pub struct RoundOutput {
     pub train_quantile_recall: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
+    /// Last known good recommendation a consumer should apply now.
+    #[serde(default)]
+    pub effective: Option<EffectiveRecommendation>,
     /// Sample counters.
     pub samples: SampleCounts,
     /// Collector-side drop fraction.
