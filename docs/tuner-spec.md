@@ -89,11 +89,13 @@ Each round, per configured cohort, has two phases:
    spelled out in §2.2 — and finally write the part's `truth` and `sweep`
    parquet files (in that order).
 
-**Phase B — aggregate** (pure function of the intermediates, no database):
+**Phase B — aggregate** (pure function of the intermediates and previous
+published state, no database):
 
 4. Read all in-scope, metadata-compatible intermediates, split samples into
    train/holdout, compute per-ef compliance quantiles, select the recommended
-   ef, compute transfer and confidence (§2.2), and publish the round result
+   ef, compute transfer and confidence, derive the `effective` recommendation
+   from the previous `latest.json` (§2.2), and publish the round result
    JSON: `calibrations/<cohort>/round-<ts>.json` plus an overwrite of
    `calibrations/<cohort>/latest.json`.
 
@@ -358,7 +360,11 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
   emission. Rationale: an ef recommendation from a tail quantile with too few
   tail points is noise; publishing an explicit refusal keeps the "app stays at
   its conservative default until the tuner speaks" demo narrative honest.
-  Demo configs simply lower the threshold.
+  Demo configs simply lower the threshold. The refusal is scoped to *this
+  round's* fields: a previously calibrated ef is still served through the
+  `effective` block (see "Effective recommendation" below), so the
+  conservative default applies only until the tuner first speaks, not again
+  on every transient gap.
 - The same `insufficient_samples` output is published if the realized train or
   holdout split is empty. This is checked after splitting even when
   `samples.unique >= min_samples`, because type-7 quantiles are undefined for
@@ -415,12 +421,52 @@ value`.
   target". It expresses transferability only — dropped-frame and
   missing-window fractions are reported separately and never folded in.
 
+#### Effective recommendation (last known good)
+
+`recommended_ef` describes what *this round* computed, and stays honestly
+`null` when the round refuses selection. The client-facing signal is a
+separate `effective` block — the ef a consumer should apply right now —
+published in every round record (schema in §2.4):
+
+- **Decision — carry the last known good recommendation.** A round whose
+  `recommended_ef` is non-null (`ok` or `target_unmet`) sets `effective`
+  from itself (`carried: false`). An `insufficient_samples` round copies the
+  previous round's `effective` unchanged (`carried: true`). Rationale: an
+  application that has been applying a calibrated ef must not be knocked
+  back to its conservative default by one sampling blip or table incident —
+  and the fix cannot live in clients, because a freshly started client whose
+  first poll lands on an insufficient round has nothing to remember.
+  `target_unmet` deliberately overrides an older `ok`: max(grid) is the
+  newest honest signal and the most protective actionable setting.
+- **The carry source is storage, never memory.** Before publishing, the
+  round GETs the cohort's current `latest.json` (one GET per cohort per
+  round) and takes its `effective` block as the carry source, so the chain
+  survives restarts. A missing, unreadable, or malformed `latest.json` — or
+  one written before this field existed — is treated as an absent carry
+  source (`effective: null`) with a warning, never as a fatal error:
+  `latest.json` is overwritten on every publish, so treating a bad copy as
+  fatal would wedge the cohort permanently.
+- **Config-fingerprint invalidation.** The carry source is used only when
+  the previous round record's `cohort`, `index`, `ef_grid`, and `target`
+  fields (`k`, `value`, `percentile`) all equal the current configuration;
+  otherwise `effective` resets to `null`. Same philosophy as §2.4
+  intermediate compatibility: never serve a recommendation calibrated for a
+  different target or index. Carrying preserves this check inductively —
+  every published `effective` is consistent with its own round's top-level
+  fields — so validating against the previous round's fields alone is
+  sufficient.
+- **No expiry.** The tuner never silently decays `effective` to `null`;
+  staleness is visible through `source_round`, and any maximum-age policy
+  belongs to the consumer. Before the first successful round `effective` is
+  `null` — the app stays at its conservative default until the tuner speaks,
+  but never re-enters that state on a transient gap.
+
 #### Determinism summary
 
 Phase B is a pure, order-independent, bit-reproducible function of
-(intermediates, config). Phase A is deterministic per sample given the table
-snapshot its transaction ran under, and not reproducible afterward; this is
-recorded, accepted drift.
+(intermediates, config, previous `effective` carry source). Phase A is
+deterministic per sample given the table snapshot its transaction ran under,
+and not reproducible afterward; this is recorded, accepted drift.
 
 ### 2.3 Configuration
 
@@ -622,6 +668,13 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "transferred": true,               // test quantile >= value; null when insufficient_samples
   "train_quantile_recall": 0.90,     // null when insufficient_samples
   "test_quantile_recall": 0.90,      // null when insufficient_samples
+  "effective": {                     // last known good — what a client applies now (§2.2);
+                                     // null only before any round has ever recommended
+    "recommended_ef": 200,           // never null inside a non-null block
+    "confidence": 0.971,             // confidence as of source_round
+    "source_round": "2026-07-15T12:00:00Z",  // round_end that computed it
+    "carried": false                 // true when copied from a previous round
+  },
   "samples": { "available": 5400,    // sum(record_count) of in-scope parts
                "measured": 5310,     // distinct vectors with intermediate rows
                "failed": 12,
@@ -654,6 +707,11 @@ they are reported alongside it so the consumer can judge both independently.
 When the in-scope headers have `sum(received_frame_count) = 0`, including an
 empty round, `dropped_frame_fraction` is defined as `0.0`; absence is reported
 separately by coverage rather than represented as a drop.
+`effective` is an additive extension: `format_version` stays 1, and a round
+record without the field (written before it existed) is read as
+`effective: null` when used as a carry source (§2.2). Because every round
+record embeds the `effective` block, the immutable `round-<ts>.json` history
+also records what was in effect at each point in time.
 
 ### 2.5 Measure phase details
 
@@ -703,12 +761,17 @@ long-lived, and no reconnect is attempted mid-round.
 5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
-7. Compose the round JSON (all counters from part headers and file
+7. GET the cohort's current `latest.json` and derive this round's
+   `effective` block per §2.2 (missing, malformed, pre-`effective`, or
+   fingerprint-incompatible → no carry source).
+8. Compose the round JSON (all counters from part headers and file
    metadata); PUT `round-<ts>.json`, then `latest.json`.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
-idempotent by design.
+idempotent by design. This includes `effective`: a recommending round
+re-derives the block from itself, and an insufficient round re-carries the
+same block it already published, so republication never changes or loses it.
 
 ## 3. Non-functional requirements
 
@@ -1001,9 +1064,10 @@ code with that split; numpy RNG shuffles are not part of the contract):
   later sample of the same round has the poison key in its `gt_keys`
   (cross-sample drift is real and accepted, per §2.2).
 - **C8 Phase B reproducibility**: running aggregation twice over identical
-  intermediates and config yields byte-identical round JSON except
-  `computed_at` — the accepted drift lives entirely in Phase A; everything
-  downstream of the intermediates is deterministic.
+  intermediates, config, and previous-`effective` carry source yields
+  byte-identical round JSON except `computed_at` — the accepted drift lives
+  entirely in Phase A; everything downstream of the intermediates is
+  deterministic.
 
 ### D. Resource ceilings (metric: database busy wall-time duty cycle over
 paced units — whole sample transactions — measured at the tuner's database
@@ -1016,3 +1080,30 @@ client)
 - **D3 statement timeout**: `statement_timeout = 1ms` on F-pg → every sample
   fails within the round (no retries, counted), the round completes, and no
   tuner statement remains running server-side afterward.
+
+### E. Effective recommendation (no database: hand-crafted intermediates or
+mock-measured local store)
+
+- **E1 carry on insufficient**: an `ok` round selecting ef `X`, followed by
+  an `insufficient_samples` round over the same storage → the second round
+  publishes `recommended_ef: null` but `effective = {recommended_ef: X,
+  carried: true, source_round: <first round_end>}`, with `confidence` equal
+  to the first round's, in both `round-<ts>.json` and `latest.json`;
+  republishing the insufficient round's `round_end` again yields the
+  identical `effective` block.
+- **E2 newest honest signal wins**: an `ok` round at ef `X` followed by a
+  `target_unmet` round → `effective.recommended_ef = max(grid)` with
+  `carried: false`; a subsequent `insufficient_samples` round carries the
+  `target_unmet` value, not the older `ok` one.
+- **E3 carry survives restart**: publish an `ok` round, discard all
+  in-memory state (a fresh pipeline/tuner instance over the same store),
+  run an `insufficient_samples` round → `effective` still carries the first
+  round's recommendation; storage is the only carry source.
+- **E4 fingerprint reset**: an `ok` round published under `k = 10`, then the
+  target changes to `k = 20` and the next round is `insufficient_samples` →
+  `effective` is `null`, never a recommendation calibrated for a different
+  target; an `ef_grid` change behaves identically.
+- **E5 bootstrap and malformed carry source**: with no `latest.json`, an
+  insufficient first round publishes `effective: null`; with a corrupt
+  `latest.json`, or one lacking the `effective` field, the round still
+  publishes (warning logged) and `effective` is `null`.

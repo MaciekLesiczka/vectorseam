@@ -139,6 +139,7 @@ fn b8_window_membership_six_slots_and_one_sixth_empty() {
         computed_at: "1970-01-01T12:07:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts,
         intermediates: Vec::new(),
     };
@@ -164,6 +165,7 @@ fn b9_no_double_count_across_overlapping_rounds_in_phase_b() {
         computed_at: "1970-01-01T02:00:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: listed_parts.clone(),
         intermediates: Vec::new(),
     };
@@ -207,6 +209,7 @@ fn b11_drop_fraction_is_two_fifteenths() {
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: vec![
             ListedPart {
                 part_ulid: "part-a".to_owned(),
@@ -251,6 +254,7 @@ fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: vec![
             listed_from_intermediate(&first),
             listed_from_intermediate(&second),
@@ -361,6 +365,7 @@ fn populated_input(
         computed_at: "2026-07-08T12:10:00Z".to_owned(),
         phase_a_abort: None,
         phase_a_incompatible_parts: 0,
+        previous_round: None,
         listed_parts: vec![ListedPart {
             part_ulid: DEFAULT_PART_ULID.to_owned(),
             window_start: DEFAULT_WINDOW_START,

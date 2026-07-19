@@ -220,18 +220,20 @@ pub(crate) async fn run_cohort_round(
     if cancellation.is_cancelled() {
         return Ok(CohortRoundOutcome::Cancelled);
     }
+    let (history_path, latest_path) = round_paths(&config.cohort, round_end)?;
+    let previous_round = load_previous_round(store.as_ref(), &latest_path).await;
     let input = AggregationInput {
         config,
         round_end,
         computed_at,
         phase_a_abort,
         phase_a_incompatible_parts,
+        previous_round,
         listed_parts: sources.iter().map(|source| source.listed.clone()).collect(),
         intermediates: compatible.into_values().collect(),
     };
     let output = aggregate(&input)?;
     let round_bytes = Bytes::from(round_json_bytes(&output)?);
-    let (history_path, latest_path) = round_paths(&input.config.cohort, round_end)?;
     put_bytes(store.as_ref(), &history_path, round_bytes.clone()).await?;
     put_bytes(store.as_ref(), &latest_path, round_bytes).await?;
     Ok(CohortRoundOutcome::Published(Box::new(output)))
@@ -394,6 +396,42 @@ async fn get_bytes(store: &dyn ObjectStore, path: &Path) -> Result<Bytes, Pipeli
         })
 }
 
+async fn load_previous_round(store: &dyn ObjectStore, path: &Path) -> Option<RoundOutput> {
+    let result = match store.get(path).await {
+        Ok(result) => result,
+        Err(error) => {
+            warn!(
+                path = %path,
+                %error,
+                "previous latest round is unavailable; effective recommendation will not carry"
+            );
+            return None;
+        }
+    };
+    let bytes = match result.bytes().await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            warn!(
+                path = %path,
+                %error,
+                "previous latest round body is unreadable; effective recommendation will not carry"
+            );
+            return None;
+        }
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(round) => Some(round),
+        Err(error) => {
+            warn!(
+                path = %path,
+                %error,
+                "previous latest round is malformed; effective recommendation will not carry"
+            );
+            None
+        }
+    }
+}
+
 async fn put_bytes(
     store: &dyn ObjectStore,
     path: &Path,
@@ -448,6 +486,14 @@ mod tests {
         calls: usize,
     }
 
+    struct TargetUnmetMeasurer {
+        calls: usize,
+    }
+
+    struct FailingMeasurer {
+        calls: usize,
+    }
+
     struct CancellingMeasurer {
         calls: usize,
         cancellation: CancellationToken,
@@ -457,11 +503,16 @@ mod tests {
     struct RecordingStore {
         inner: InMemory,
         puts: Mutex<Vec<Path>>,
+        gets: Mutex<Vec<Path>>,
     }
 
     impl RecordingStore {
         fn take_puts(&self) -> Vec<Path> {
             std::mem::take(&mut *self.puts.lock().unwrap())
+        }
+
+        fn take_gets(&self) -> Vec<Path> {
+            std::mem::take(&mut *self.gets.lock().unwrap())
         }
     }
 
@@ -492,6 +543,7 @@ mod tests {
         }
 
         async fn get_opts(&self, location: &Path, options: GetOptions) -> StoreResult<GetResult> {
+            self.gets.lock().unwrap().push(location.clone());
             self.inner.get_opts(location, options).await
         }
 
@@ -569,6 +621,39 @@ mod tests {
             self.calls += 1;
             Err(SampleMeasureError::Connection(
                 "fixture connection outage".to_owned(),
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl SampleMeasurer for TargetUnmetMeasurer {
+        async fn measure_sample(
+            &mut self,
+            _vector: &[f32],
+            config: &AggregationConfig,
+            _cancellation: &CancellationToken,
+        ) -> Result<SampleMeasurement, SampleMeasureError> {
+            self.calls += 1;
+            let mut measurement = successful_measurement(config);
+            for sweep in &mut measurement.sweeps {
+                sweep.returned_keys.clear();
+                sweep.recall = 0.0;
+            }
+            Ok(measurement)
+        }
+    }
+
+    #[async_trait]
+    impl SampleMeasurer for FailingMeasurer {
+        async fn measure_sample(
+            &mut self,
+            _vector: &[f32],
+            _config: &AggregationConfig,
+            _cancellation: &CancellationToken,
+        ) -> Result<SampleMeasurement, SampleMeasureError> {
+            self.calls += 1;
+            Err(SampleMeasureError::Database(
+                "fixture durable sample failure".to_owned(),
             ))
         }
     }
@@ -745,6 +830,421 @@ mod tests {
         );
         assert!(output.error.is_some());
         assert_eq!(output.recommended_ef, None);
+        let effective = output
+            .effective
+            .expect("the last successful recommendation must survive the table incident");
+        assert_eq!(effective.recommended_ef, 20);
+        assert!(effective.carried);
+        assert_eq!(effective.source_round, "2026-07-08T12:10:00Z");
+    }
+
+    #[tokio::test]
+    async fn e1_carry_on_insufficient_persists_to_history_latest_and_republication() {
+        let recording_store = Arc::new(RecordingStore::default());
+        let store: Arc<dyn ObjectStore> = recording_store.clone();
+        let vectors = fixture_vectors(0.0);
+        seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &vectors).await;
+        recording_store.take_gets();
+        let mut first_measurer = CountingMeasurer { calls: 0 };
+        let first = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:10:00Z",
+            &mut first_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(first) = first else {
+            panic!("first round must publish");
+        };
+        let first_effective = first.effective.as_ref().unwrap();
+        assert_eq!(first.status, crate::model::RoundStatus::Ok);
+        assert_eq!(first.recommended_ef, Some(20));
+        assert_eq!(first_effective.recommended_ef, 20);
+        assert!(!first_effective.carried);
+        assert_eq!(first_effective.source_round, "2026-07-08T12:10:00Z");
+        let (_, latest_path) =
+            round_paths(COHORT, WINDOW_START + u64::from(WINDOW_SECONDS)).unwrap();
+        assert_eq!(
+            recording_store
+                .take_gets()
+                .iter()
+                .filter(|path| *path == &latest_path)
+                .count(),
+            1
+        );
+
+        let insufficient_round_end = WINDOW_START + 2 * u64::from(WINDOW_SECONDS);
+        let mut second_measurer = CountingMeasurer { calls: 0 };
+        let second = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            insufficient_round_end,
+            "2026-07-08T12:20:00Z",
+            &mut second_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(second) = second else {
+            panic!("insufficient round must publish");
+        };
+        assert_eq!(
+            second.status,
+            crate::model::RoundStatus::InsufficientSamples
+        );
+        assert_eq!(second.recommended_ef, None);
+        let second_effective = second.effective.as_ref().unwrap();
+        assert_eq!(second_effective.recommended_ef, 20);
+        assert_eq!(second_effective.confidence, first_effective.confidence);
+        assert_eq!(second_effective.source_round, "2026-07-08T12:10:00Z");
+        assert!(second_effective.carried);
+
+        let (history_path, latest_path) = round_paths(COHORT, insufficient_round_end).unwrap();
+        assert_eq!(
+            recording_store
+                .take_gets()
+                .iter()
+                .filter(|path| *path == &latest_path)
+                .count(),
+            1
+        );
+        let history: RoundOutput =
+            serde_json::from_slice(&get_bytes(store.as_ref(), &history_path).await.unwrap())
+                .unwrap();
+        let latest: RoundOutput =
+            serde_json::from_slice(&get_bytes(store.as_ref(), &latest_path).await.unwrap())
+                .unwrap();
+        assert_eq!(history.effective, second.effective);
+        assert_eq!(latest.effective, second.effective);
+        recording_store.take_gets();
+
+        let mut republish_measurer = CountingMeasurer { calls: 0 };
+        let republished = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            insufficient_round_end,
+            "2026-07-08T12:20:01Z",
+            &mut republish_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(republished) = republished else {
+            panic!("republished insufficient round must publish");
+        };
+        assert_eq!(republished.effective, second.effective);
+        assert_eq!(
+            recording_store
+                .take_gets()
+                .iter()
+                .filter(|path| *path == &latest_path)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn e1_all_durable_sample_failures_carry_previous_effective() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
+        let mut first_measurer = CountingMeasurer { calls: 0 };
+        run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:10:00Z",
+            &mut first_measurer,
+        )
+        .await;
+
+        seed_source_vectors_at(
+            &store,
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            SECOND_ULID,
+            &fixture_vectors(1_000.0),
+        )
+        .await;
+        let mut failing_measurer = FailingMeasurer { calls: 0 };
+        let failed = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:20:00Z",
+            &mut failing_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(failed) = failed else {
+            panic!("failure-heavy round must publish");
+        };
+        assert_eq!(failing_measurer.calls, 100);
+        assert_eq!(
+            failed.status,
+            crate::model::RoundStatus::InsufficientSamples
+        );
+        assert_eq!(failed.samples.measured, 0);
+        assert_eq!(failed.samples.failed, 100);
+        assert_eq!(failed.recommended_ef, None);
+        let effective = failed.effective.as_ref().unwrap();
+        assert_eq!(effective.recommended_ef, 20);
+        assert_eq!(effective.source_round, "2026-07-08T12:10:00Z");
+        assert!(effective.carried);
+    }
+
+    #[tokio::test]
+    async fn e2_newest_target_unmet_signal_wins_and_is_then_carried() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
+        let mut first_measurer = CountingMeasurer { calls: 0 };
+        run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:10:00Z",
+            &mut first_measurer,
+        )
+        .await;
+
+        seed_source_vectors_at(
+            &store,
+            WINDOW_START + u64::from(WINDOW_SECONDS),
+            SECOND_ULID,
+            &fixture_vectors(1_000.0),
+        )
+        .await;
+        let mut unmet_measurer = TargetUnmetMeasurer { calls: 0 };
+        let unmet = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:20:00Z",
+            &mut unmet_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(unmet) = unmet else {
+            panic!("target-unmet round must publish");
+        };
+        assert_eq!(unmet.status, crate::model::RoundStatus::TargetUnmet);
+        assert_eq!(unmet.recommended_ef, Some(40));
+        let unmet_effective = unmet.effective.as_ref().unwrap();
+        assert_eq!(unmet_effective.recommended_ef, 40);
+        assert!(!unmet_effective.carried);
+        assert_eq!(unmet_effective.source_round, "2026-07-08T12:20:00Z");
+
+        let mut insufficient_measurer = CountingMeasurer { calls: 0 };
+        let insufficient = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + 3 * u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:30:00Z",
+            &mut insufficient_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(insufficient) = insufficient else {
+            panic!("insufficient round must publish");
+        };
+        assert_eq!(insufficient.recommended_ef, None);
+        let carried = insufficient.effective.as_ref().unwrap();
+        assert_eq!(carried.recommended_ef, 40);
+        assert_eq!(carried.confidence, unmet_effective.confidence);
+        assert_eq!(carried.source_round, "2026-07-08T12:20:00Z");
+        assert!(carried.carried);
+    }
+
+    #[tokio::test]
+    async fn e3_carry_survives_fresh_pipeline_invocation_using_only_storage() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
+        {
+            let mut first_measurer = CountingMeasurer { calls: 0 };
+            let first = run_at(
+                Arc::clone(&store),
+                aggregation_config(10),
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-08T12:10:00Z",
+                &mut first_measurer,
+            )
+            .await;
+            assert!(matches!(first, CohortRoundOutcome::Published(_)));
+        }
+
+        // `run_cohort_round` has no retained state; only the shared object
+        // store crosses this fresh invocation boundary.
+        let mut fresh_measurer = CountingMeasurer { calls: 0 };
+        let restarted = run_at(
+            Arc::clone(&store),
+            aggregation_config(10),
+            WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:20:00Z",
+            &mut fresh_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(restarted) = restarted else {
+            panic!("restarted insufficient round must publish");
+        };
+        let effective = restarted.effective.as_ref().unwrap();
+        assert_eq!(effective.recommended_ef, 20);
+        assert_eq!(effective.source_round, "2026-07-08T12:10:00Z");
+        assert!(effective.carried);
+    }
+
+    #[tokio::test]
+    async fn e4_fingerprint_change_resets_effective_for_all_required_fields() {
+        for changed in [
+            AggregationConfig {
+                cohort: "acceptance/other".to_owned(),
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                index: "other-index".to_owned(),
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                k: 20,
+                ef_grid: vec![20, 40],
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                ef_grid: vec![20, 60],
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                value: 0.8,
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                percentile: 0.9,
+                ..aggregation_config(10)
+            },
+        ] {
+            let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+            seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
+            let mut first_measurer = CountingMeasurer { calls: 0 };
+            run_at(
+                Arc::clone(&store),
+                aggregation_config(10),
+                WINDOW_START + u64::from(WINDOW_SECONDS),
+                "2026-07-08T12:10:00Z",
+                &mut first_measurer,
+            )
+            .await;
+
+            let mut changed_measurer = CountingMeasurer { calls: 0 };
+            let changed = run_at(
+                Arc::clone(&store),
+                changed,
+                WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
+                "2026-07-08T12:20:00Z",
+                &mut changed_measurer,
+            )
+            .await;
+            let CohortRoundOutcome::Published(changed) = changed else {
+                panic!("changed-fingerprint round must publish");
+            };
+            assert_eq!(changed.recommended_ef, None);
+            assert_eq!(changed.effective, None);
+        }
+    }
+
+    #[tokio::test]
+    async fn e5_bootstrap_corrupt_and_pre_effective_latest_publish_null_effective() {
+        let round_end = WINDOW_START + u64::from(WINDOW_SECONDS);
+        let (_, latest_path) = round_paths(COHORT, round_end).unwrap();
+
+        let missing_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let mut missing_measurer = CountingMeasurer { calls: 0 };
+        let missing = run_at(
+            Arc::clone(&missing_store),
+            aggregation_config(10),
+            round_end,
+            "2026-07-08T12:10:00Z",
+            &mut missing_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(missing) = missing else {
+            panic!("bootstrap round must publish");
+        };
+        assert_eq!(missing.effective, None);
+        let missing_latest: serde_json::Value = serde_json::from_slice(
+            &get_bytes(missing_store.as_ref(), &latest_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing_latest["effective"], serde_json::Value::Null);
+
+        let corrupt_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        corrupt_store
+            .put(&latest_path, PutPayload::from_static(b"not round JSON"))
+            .await
+            .unwrap();
+        let mut corrupt_measurer = CountingMeasurer { calls: 0 };
+        let corrupt = run_at(
+            Arc::clone(&corrupt_store),
+            aggregation_config(10),
+            round_end,
+            "2026-07-08T12:10:00Z",
+            &mut corrupt_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(corrupt) = corrupt else {
+            panic!("corrupt-carry round must publish");
+        };
+        assert_eq!(corrupt.effective, None);
+        let corrupt_latest: serde_json::Value = serde_json::from_slice(
+            &get_bytes(corrupt_store.as_ref(), &latest_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(corrupt_latest["effective"], serde_json::Value::Null);
+
+        let legacy_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        seed_source_vectors_at(
+            &legacy_store,
+            WINDOW_START,
+            FIRST_ULID,
+            &fixture_vectors(0.0),
+        )
+        .await;
+        let mut legacy_seed_measurer = CountingMeasurer { calls: 0 };
+        let legacy_seed = run_at(
+            Arc::clone(&legacy_store),
+            aggregation_config(10),
+            round_end,
+            "2026-07-08T12:10:00Z",
+            &mut legacy_seed_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(legacy_seed) = legacy_seed else {
+            panic!("legacy seed round must publish");
+        };
+        let mut legacy_json = serde_json::to_value(&legacy_seed).unwrap();
+        legacy_json.as_object_mut().unwrap().remove("effective");
+        legacy_store
+            .put(
+                &latest_path,
+                PutPayload::from(serde_json::to_vec(&legacy_json).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let mut legacy_measurer = CountingMeasurer { calls: 0 };
+        let legacy = run_at(
+            Arc::clone(&legacy_store),
+            aggregation_config(10),
+            WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
+            "2026-07-08T12:20:00Z",
+            &mut legacy_measurer,
+        )
+        .await;
+        let CohortRoundOutcome::Published(legacy) = legacy else {
+            panic!("pre-effective carry round must publish");
+        };
+        assert_eq!(legacy.effective, None);
+        let legacy_latest: serde_json::Value = serde_json::from_slice(
+            &get_bytes(legacy_store.as_ref(), &latest_path)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy_latest["effective"], serde_json::Value::Null);
     }
 
     #[tokio::test]
@@ -887,12 +1387,29 @@ mod tests {
         config: AggregationConfig,
         measurer: &mut (dyn SampleMeasurer + Send),
     ) -> CohortRoundOutcome {
-        run_cohort_round(
+        run_at(
             store,
             config,
             WINDOW_START + u64::from(WINDOW_SECONDS),
-            "2026-07-08T12:10:00Z".to_owned(),
-            1_783_512_600_000_000,
+            "2026-07-08T12:10:00Z",
+            measurer,
+        )
+        .await
+    }
+
+    async fn run_at(
+        store: Arc<dyn ObjectStore>,
+        config: AggregationConfig,
+        round_end: u64,
+        computed_at: &str,
+        measurer: &mut (dyn SampleMeasurer + Send),
+    ) -> CohortRoundOutcome {
+        run_cohort_round(
+            store,
+            config,
+            round_end,
+            computed_at.to_owned(),
+            round_end * 1_000_000,
             measurer,
             &CancellationToken::new(),
         )
@@ -909,6 +1426,15 @@ mod tests {
         part_ulid: &str,
         vectors: &[Vec<f32>],
     ) {
+        seed_source_vectors_at(store, WINDOW_START, part_ulid, vectors).await;
+    }
+
+    async fn seed_source_vectors_at(
+        store: &Arc<dyn ObjectStore>,
+        window_start: u64,
+        part_ulid: &str,
+        vectors: &[Vec<f32>],
+    ) {
         let frames = vectors
             .iter()
             .map(|vector| frame(COHORT, vector))
@@ -917,16 +1443,16 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, frame)| SegmentRecordRef {
-                receive_time: WINDOW_START * 1_000_000 + index as u64,
+                receive_time: window_start * 1_000_000 + index as u64,
                 frame,
             })
             .collect::<Vec<_>>();
         let bytes = write_segment(
             &SegmentHeader {
-                window_start: WINDOW_START,
+                window_start,
                 window_seconds: WINDOW_SECONDS,
-                first_receive: WINDOW_START * 1_000_000,
-                last_receive: WINDOW_START * 1_000_000 + vectors.len() as u64 - 1,
+                first_receive: window_start * 1_000_000,
+                last_receive: window_start * 1_000_000 + vectors.len() as u64 - 1,
                 received_frame_count: vectors.len() as u64,
                 record_count: vectors.len() as u64,
                 cohort: CohortName::try_from(COHORT).unwrap(),
@@ -934,11 +1460,17 @@ mod tests {
             &records,
         )
         .unwrap();
-        let timestamp = format_window_timestamp(WINDOW_START).unwrap();
+        let timestamp = format_window_timestamp(window_start).unwrap();
         let path = Path::from(format!(
             "cohorts/{COHORT}/window={timestamp}/part-{part_ulid}.vseam"
         ));
         store.put(&path, PutPayload::from(bytes)).await.unwrap();
+    }
+
+    fn fixture_vectors(offset: f32) -> Vec<Vec<f32>> {
+        (0..100)
+            .map(|value| vec![offset + value as f32, 1.0])
+            .collect()
     }
 
     fn aggregation_config(k: u32) -> AggregationConfig {

@@ -22,24 +22,31 @@
   Stage 3 finish-and-observe behavior before owned database drivers shut down.
 - CI keeps F-agg database-free on every push and runs F-pg plus A1–A5 in the
   Docker harness job.
-- The Rust 1.85 gate now runs through `make test-rust-msrv`, which pins both
-  Cargo and rustc to the MSRV, cleans an isolated target directory, checks
-  every locked Rust target, and runs the locked workspace tests.
+- The Rust 1.85 gate now runs through `make test-rust-msrv`, which pins Cargo,
+  rustc, and rustdoc to the MSRV, cleans an isolated target directory, checks
+  every locked Rust target, and runs the locked workspace tests and doctests.
 - `serde-saphyr` is pinned to `0.0.11`, the newest release verified to compile
   on Rust 1.85; newer releases use language and library features beyond the
   workspace MSRV.
+- Every round now publishes the additive `effective` recommendation. Current
+  `ok` and `target_unmet` results replace prior state; insufficient rounds
+  carry the fingerprint-compatible last known good value from durable
+  `latest.json`.
+- E1–E5 run without PostgreSQL and cover history/latest publication,
+  idempotent carry, target-unmet precedence, restart survival, fingerprint
+  invalidation, bootstrap, malformed JSON, and pre-extension JSON.
 
 ## Red or deferred
 
 - C7 remains the owner-approved manual-review exception; its required review
   was completed and approved on 2026-07-17.
 - D2 remains the owner-approved removed concurrency criterion.
-- Optional P1 `seam plan` was not implemented. It is outside A1–D3 and is
+- Optional P1 `seam plan` was not implemented. It is outside A1–E5 and is
   flagged for the owner's product-priority call.
 - The owner-approved A4 strengthening uses `value: 0.8`; both implementations
   must select the literal mid-grid ef `80`.
 
 ## Open questions
 
-No A1–D3 specification question is open. The only remaining priority decision
+No A1–E5 specification question is open. The only remaining priority decision
 is whether P1 plan mode should be scheduled as follow-up work.

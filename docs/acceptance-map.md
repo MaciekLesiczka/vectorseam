@@ -1,9 +1,10 @@
 # Tuner acceptance map
 
-Stage 4 is implemented. A criterion is marked `passing` only when all of its
-currently required behavior is machine-gated. The F-agg suite runs without a
-database; tests marked F-pg are executed by `make seam-f-pg-tests` after the
-deterministic fixture is loaded. Suite A is executed by
+Stage 4 and the effective-recommendation extension are implemented. A
+criterion is marked `passing` only when all of its currently required behavior
+is machine-gated. The F-agg and E suites run without a database; tests marked
+F-pg are executed by `make seam-f-pg-tests` after the deterministic fixture is
+loaded. Suite A is executed by
 `make seam-anchor-tests` after the trusted Python anchor output is generated.
 All database-backed tests are marked `#[ignore]` in ordinary `cargo test`;
 their Docker targets explicitly run ignored tests with `SEAM_REQUIRE_F_PG=1`,
@@ -40,6 +41,11 @@ recorded in `docs/REVIEW_MAP.md`.
 | D1 | `crates/seam/src/pacer.rs::tests::d1_duty_cycle_20_percent_wall_time_bound` | passing |
 | D2 | No test — criterion and `max_concurrent_queries` were removed by owner decision | deferred-with-my-approval — removal approved 2026-07-17; row retained as the required sign-off record |
 | D3 | `crates/seam/src/tuner.rs::tests::d3_f_pg_one_millisecond_timeout_fails_without_retries_or_leaks` (F-pg) | passing |
+| E1 | `crates/seam/src/pipeline.rs::tests::e1_carry_on_insufficient_persists_to_history_latest_and_republication`; `crates/seam/src/pipeline.rs::tests::e1_all_durable_sample_failures_carry_previous_effective`; `crates/seam/src/pipeline.rs::tests::c6_table_smaller_than_k_stops_after_first_scan_despite_cached_population` | passing |
+| E2 | `crates/seam/src/pipeline.rs::tests::e2_newest_target_unmet_signal_wins_and_is_then_carried` | passing |
+| E3 | `crates/seam/src/pipeline.rs::tests::e3_carry_survives_fresh_pipeline_invocation_using_only_storage` | passing |
+| E4 | `crates/seam/src/pipeline.rs::tests::e4_fingerprint_change_resets_effective_for_all_required_fields` | passing |
+| E5 | `crates/seam/src/pipeline.rs::tests::e5_bootstrap_corrupt_and_pre_effective_latest_publish_null_effective` | passing |
 
 C7 is deferred from machine gating with the owner's explicit approval, and
 its required manual transaction review was completed and approved on
