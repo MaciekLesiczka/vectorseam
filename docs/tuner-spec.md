@@ -441,11 +441,16 @@ published in every round record (schema in §2.4):
 - **The carry source is storage, never memory.** Before publishing, the
   round GETs the cohort's current `latest.json` (one GET per cohort per
   round) and takes its `effective` block as the carry source, so the chain
-  survives restarts. A missing, unreadable, or malformed `latest.json` — or
-  one written before this field existed — is treated as an absent carry
-  source (`effective: null`) with a warning, never as a fatal error:
-  `latest.json` is overwritten on every publish, so treating a bad copy as
-  fatal would wedge the cohort permanently.
+  survives restarts. Failure handling distinguishes three cases. Not-found
+  is the normal bootstrap state: no carry source, no warning. A record that
+  is malformed — or written before this field existed — is a persistent
+  condition: no carry source, a warning; treating it as fatal would wedge
+  the cohort, since `latest.json` is only rewritten by a successful publish.
+  Any other GET failure is transient storage trouble and aborts the cohort
+  round without publishing, exactly like every other storage failure (§3.2):
+  publishing with an absent carry source would durably replace the last
+  known good recommendation with `null` — the regression this block exists
+  to prevent — while aborting preserves the stored chain for the next tick.
 - **Config-fingerprint invalidation.** The carry source is used only when
   the previous round record's `cohort`, `index`, `ef_grid`, and `target`
   fields (`k`, `value`, `percentile`) all equal the current configuration;
@@ -762,8 +767,9 @@ long-lived, and no reconnect is attempted mid-round.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
 7. GET the cohort's current `latest.json` and derive this round's
-   `effective` block per §2.2 (missing, malformed, pre-`effective`, or
-   fingerprint-incompatible → no carry source).
+   `effective` block per §2.2 (not-found, malformed, pre-`effective`, or
+   fingerprint-incompatible → no carry source; any other GET failure aborts
+   the cohort round per §3.2).
 8. Compose the round JSON (all counters from part headers and file
    metadata); PUT `round-<ts>.json`, then `latest.json`.
 
@@ -850,7 +856,9 @@ cohort per instance) bounds the inflow in practice.
   source part naturally retryable.
 - Any storage listing or GET failure, or a source-segment parse failure, aborts
   that cohort's round without publishing and logs the object key; the next tick
-  retries naturally.
+  retries naturally. This includes the `effective` carry-source GET of
+  `latest.json`; only its not-found and malformed-content cases degrade to an
+  absent carry source instead (§2.2).
   A malformed intermediate pair is treated as incomplete and remeasured from
   scratch, overwriting truth then sweep. The round schema deliberately has no
   failed-part counter because publishing from a source segment whose header
@@ -1104,6 +1112,9 @@ mock-measured local store)
   `effective` is `null`, never a recommendation calibrated for a different
   target; an `ef_grid` change behaves identically.
 - **E5 bootstrap and malformed carry source**: with no `latest.json`, an
-  insufficient first round publishes `effective: null`; with a corrupt
-  `latest.json`, or one lacking the `effective` field, the round still
-  publishes (warning logged) and `effective` is `null`.
+  insufficient first round publishes `effective: null` and logs no carry
+  warning; with a corrupt `latest.json`, or one lacking the `effective`
+  field, the round still publishes (warning logged) and `effective` is
+  `null`; with a `latest.json` GET failing for any reason other than
+  not-found, the round aborts without publishing and the stored `effective`
+  chain is intact for the next round.
