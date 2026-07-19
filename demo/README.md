@@ -132,20 +132,27 @@ Round JSON first appears with honest `insufficient_samples` counts. Once at
 least 300 unique samples are in closed windows, the expected final artifact is:
 
 ```sh
-jq '{status, recommended_ef, confidence, samples}' \
+jq '{status, recommended_ef, confidence, effective, samples}' \
   demo/data/store/calibrations/superuser/latest.json
 ```
 
-It should report `status: "ok"` and settle near `recommended_ef: 60` (one
-adjacent grid step is tolerated in early rounds). Typical timings at 5 qps are
-up to two minutes for the first `.vseam`, three to four minutes for the first
-Parquet pair, and six to ten minutes for the first successful calibration.
-If artifacts take more than twice that long, check collector counters, then
-`samples.failed` for statement timeouts, then closed-window alignment.
+It should report `status: "ok"`, settle near `recommended_ef: 60`, and expose
+the same value as `effective.recommended_ef` with `carried: false` (one
+adjacent grid step is tolerated in early rounds). `recommended_ef` describes
+only the current round. If a later transient failure produces
+`insufficient_samples`, it becomes null while `effective` retains the last
+reliable recommendation with `carried: true`. M1 displays that value but does
+not apply it; recommendation consumption remains milestone 2.
+
+Typical timings at 5 qps are up to two minutes for the first `.vseam`, three
+to four minutes for the first Parquet pair, and six to ten minutes for the
+first successful calibration. If artifacts take more than twice that long,
+check collector counters, then `samples.failed` for statement timeouts, then
+closed-window alignment.
 
 For a continuously refreshed view, use:
 
 ```sh
-watch -n 5 "jq '{status, recommended_ef, confidence, samples}' \
+watch -n 5 "jq '{status, recommended_ef, confidence, effective, samples}' \
   demo/data/store/calibrations/superuser/latest.json"
 ```
