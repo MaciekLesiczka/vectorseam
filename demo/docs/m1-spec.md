@@ -133,7 +133,9 @@ python -m driver --queries demo/data/queries.txt --url http://127.0.0.1:8000 \
 - `--qps` (float, default 5) controls request rate; simple sleep pacing is
   fine.
 - Logs one line per N requests: request count, error count, rolling mean
-  latency. Non-200 responses are counted and skipped, never crash the loop.
+  latency, and the most recent error in that interval (including an HTTP
+  response body when available). Non-200 responses are counted and skipped,
+  never crash the loop.
 
 Known ceiling, not a bug: the query pool has 2,000 entries and the tuner
 dedups by vector hash, so `samples.unique` caps at 2,000 regardless of how

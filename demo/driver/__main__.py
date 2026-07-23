@@ -50,8 +50,10 @@ def _load_queries(path: pathlib.Path) -> list[str]:
     return queries
 
 
-def _send_query(url: str, query: str, timeout_seconds: float) -> int:
-    """Sends one query and returns the HTTP status code."""
+def _send_query(
+    url: str, query: str, timeout_seconds: float
+) -> tuple[int, str | None]:
+    """Sends one query and returns its status and optional HTTP error."""
     body = json.dumps({"query": query, "k": 10}).encode("utf-8")
     request = urllib.request.Request(
         url,
@@ -64,10 +66,18 @@ def _send_query(url: str, query: str, timeout_seconds: float) -> int:
             request, timeout=timeout_seconds
         ) as response:
             response.read()
-            return int(response.status)
+            return int(response.status), None
     except urllib.error.HTTPError as error:
-        error.read()
-        return int(error.code)
+        try:
+            response_body = (
+                error.read().decode("utf-8", errors="replace").strip()
+            )
+        finally:
+            error.close()
+        detail = f"HTTP {error.code} {error.reason}"
+        if response_body:
+            detail = f"{detail}: {response_body}"
+        return int(error.code), detail
 
 
 def _search_url(base_url: str) -> str:
@@ -92,6 +102,7 @@ def replay(
     latencies_ms: deque[float] = deque(maxlen=log_every)
     request_count = 0
     error_count = 0
+    last_error: str | None = None
     query_index = 0
     next_request_at = time.monotonic()
 
@@ -101,20 +112,26 @@ def replay(
         started_at = time.monotonic()
         request_count += 1
         try:
-            status = _send_query(search_url, query, timeout_seconds)
+            status, http_error = _send_query(
+                search_url, query, timeout_seconds
+            )
             if not 200 <= status < 300:
                 error_count += 1
-        except Exception:  # pylint: disable=broad-exception-caught
+                last_error = http_error or f"HTTP {status}"
+        except Exception as error:  # pylint: disable=broad-exception-caught
             error_count += 1
+            last_error = f"{type(error).__name__}: {error}"
         latencies_ms.append((time.monotonic() - started_at) * 1000.0)
 
         if request_count % log_every == 0:
             rolling_mean = statistics.fmean(latencies_ms)
             print(
                 f"requests={request_count} errors={error_count} "
-                f"rolling_mean_latency_ms={rolling_mean:.2f}",
+                f"rolling_mean_latency_ms={rolling_mean:.2f} "
+                f"last_error={last_error!r}",
                 flush=True,
             )
+            last_error = None
 
         next_request_at += request_interval
         delay = next_request_at - time.monotonic()
