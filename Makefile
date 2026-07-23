@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency demo-postgres-up demo-postgres-down demo-load-data seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency demo demo-dirs demo-images demo-postgres-up demo-postgres-down demo-load-data demo-down demo-clean seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -15,6 +15,22 @@ SEAM_DATABASE_URL ?= postgresql://postgres:password@localhost:$(SEAM_PG_PORT)/po
 SEAM_F_PG_ROOT ?= $(CURDIR)/target/seam-fixtures/f-pg
 SEAM_DOCKER_COMPOSE := SEAM_PG_PORT="$(SEAM_PG_PORT)" docker compose -f $(SEAM_COMPOSE)
 DEMO_COMPOSE := demo/docker-compose.yml
+DEMO_COMPOSE_PROJECT ?= demo
+DEMO_DATA_ROOT ?= $(CURDIR)/demo/data
+DEMO_POSTGRES_DATA ?= $(DEMO_DATA_ROOT)/postgres
+DEMO_STORE ?= $(DEMO_DATA_ROOT)/store
+DEMO_UID ?= $(shell id -u)
+DEMO_GID ?= $(shell id -g)
+API_LOGS ?= 0
+DETACHED ?= 0
+DEMO_TRUE_VALUES := 1 true yes on
+DEMO_UP_FLAGS := \
+	$(if $(filter $(DEMO_TRUE_VALUES),$(DETACHED)),--detach) \
+	$(if $(filter $(DEMO_TRUE_VALUES),$(API_LOGS)),,--no-attach api)
+DEMO_DOCKER_COMPOSE := DEMO_POSTGRES_DATA="$(DEMO_POSTGRES_DATA)" \
+	DEMO_STORE="$(DEMO_STORE)" \
+	DEMO_UID="$(DEMO_UID)" DEMO_GID="$(DEMO_GID)" \
+	docker compose -p $(DEMO_COMPOSE_PROJECT) -f $(DEMO_COMPOSE)
 
 postgres:
 	$(ANN_RECALL_LATENCY_DOCKER_COMPOSE) up -d postgres
@@ -53,14 +69,35 @@ all-ann-recall-latency: setup postgres
 	$(UV) run python python/ann-recall-latency/sweep.py --dataset all
 	$(UV) run python python/ann-recall-latency/analyze.py
 
-demo-postgres-up:
-	docker compose -f $(DEMO_COMPOSE) up -d --wait postgres
+demo-dirs:
+	mkdir -p "$(DEMO_POSTGRES_DATA)" "$(DEMO_STORE)"
 
-demo-postgres-down:
-	docker compose -f $(DEMO_COMPOSE) down
+demo-images:
+	docker build --file demo/Dockerfile.rust \
+		--tag vectorseam-demo-rust:local .
+	docker build --file demo/api/Dockerfile \
+		--tag vectorseam-demo-api:local .
+
+demo: demo-dirs demo-images
+	$(DEMO_DOCKER_COMPOSE) up $(DEMO_UP_FLAGS)
+
+demo-postgres-up: demo-dirs
+	$(DEMO_DOCKER_COMPOSE) up -d --wait postgres
+
+demo-postgres-down: demo-down
 
 demo-load-data: setup demo-postgres-up
 	$(UV) run python demo/scripts/load_data.py
+
+demo-down:
+	$(DEMO_DOCKER_COMPOSE) down
+
+demo-clean:
+	$(DEMO_DOCKER_COMPOSE) down --volumes --remove-orphans
+	@volumes="$$(docker volume ls -q \
+		--filter label=com.docker.compose.project=$(DEMO_COMPOSE_PROJECT))"; \
+	if [ -n "$$volumes" ]; then docker volume rm -f $$volumes; fi
+	rm -rf "$(DEMO_DATA_ROOT)"
 
 seam-postgres-up:
 	$(SEAM_DOCKER_COMPOSE) up -d --wait postgres

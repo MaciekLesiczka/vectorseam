@@ -1,6 +1,13 @@
+x-rust-service: &rust-service
+  image: vectorseam-demo-rust:local
+  pull_policy: never
+  init: true
+  user: "${DEMO_UID:-1000}:${DEMO_GID:-1000}"
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    attach: false
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
@@ -9,7 +16,7 @@ services:
       - "5432:5432"
     shm_size: "2gb"
     volumes:
-      - vectorseam-demo-postgres:/var/lib/postgresql/data
+      - ${DEMO_POSTGRES_DATA:-./data/postgres}:/var/lib/postgresql/data
     command:
       - postgres
       - -c
@@ -22,5 +29,67 @@ services:
       timeout: 5s
       retries: 12
 
-volumes:
-  vectorseam-demo-postgres:
+  collector:
+    <<: *rust-service
+    command:
+      - vectorseam-collector
+      - --listen
+      - 0.0.0.0:7737
+      - --storage-root
+      - /data/store
+      - --window-seconds
+      - "60"
+    environment:
+      RUST_LOG: info
+    ports:
+      - "7737:7737"
+    volumes:
+      - ${DEMO_STORE:-./data/store}:/data/store
+    stop_grace_period: 35s
+
+  api:
+    image: vectorseam-demo-api:local
+    pull_policy: never
+    init: true
+    user: "${DEMO_UID:-1000}:${DEMO_GID:-1000}"
+    environment:
+      COLLECTOR_HOST: collector
+      COLLECTOR_PORT: "7737"
+      DATABASE_URL: postgresql://postgres:password@postgres:5432/postgres
+      DEMO_EF_SEARCH: "100"
+      HOME: /tmp
+    ports:
+      - "8000:8000"
+    depends_on:
+      collector:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/openapi.json', timeout=5).read()"
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 3m
+    stop_grace_period: 10s
+
+  tuner:
+    <<: *rust-service
+    command:
+      - seam
+      - --config
+      - /config/seam.yaml
+    environment:
+      RUST_LOG: info
+      SEAM_PG_DEMO: password
+    volumes:
+      - ./config/seam.yaml:/config/seam.yaml:ro
+      - ${DEMO_STORE:-./data/store}:/data/store
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 15s

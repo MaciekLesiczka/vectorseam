@@ -4,7 +4,7 @@ calibration:
   min_samples: 300
 
 storage:
-  root: ./demo/data/store
+  root: /data/store
   window_seconds: 60
 
 budget:
@@ -14,7 +14,7 @@ budget:
 
 data_sources:
   demo:
-    server: localhost:5432
+    server: postgres:5432
     database: postgres
     user: postgres
     password_env: SEAM_PG_DEMO

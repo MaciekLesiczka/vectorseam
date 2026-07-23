@@ -1,0 +1,15 @@
+.git
+.venv
+.benchmarks
+target
+demo/data
+python/ann-recall-latency/data
+python/ann-recall-latency/results
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+dist
+build
+*.egg-info

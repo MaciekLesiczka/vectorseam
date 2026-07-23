@@ -1,6 +1,7 @@
 # VectorSeam M1 demo
 
-This demo runs one SuperUser cohort end to end:
+This demo runs one SuperUser cohort end to end. PostgreSQL, the collector, the
+API, and the tuner run in Docker Compose; the query driver runs on the host:
 
 ```
 live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json
@@ -9,11 +10,10 @@ live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json
 
 ## Prerequisites
 
-- Docker, a Rust toolchain compatible with the workspace MSRV, and
-  [uv](https://docs.astral.sh/uv/).
+- Docker and [uv](https://docs.astral.sh/uv/).
 - DuckDB's CLI for the optional sweep sanity query.
-- A local checkout of the pinned `BAAI/bge-small-en-v1.5` model, or network
-  access when the API first loads it.
+- Network access when a new API container first loads the pinned
+  `BAAI/bge-small-en-v1.5` model.
 - The three existing benchmark artifacts below. The demo never downloads data
   and reports the missing path if any input is absent.
 
@@ -28,59 +28,27 @@ environment, start pgvector, and load the data:
 
 ```sh
 uv sync
-make demo-postgres-up
-uv run python demo/scripts/load_data.py
+make demo-load-data
 ```
 
 The loader recreates `docs_superuser`, writes `demo/data/queries.txt`, and
-prints the 300,000-row count and HNSW build time. The Docker volume is
-persistent, so keep it running after the first load.
+prints the 300,000-row count and HNSW build time. PostgreSQL data lives in the
+gitignored host directory `demo/data/postgres`, so `make demo-down` and later
+Compose runs preserve the loaded table and index.
 
-## Pre-flight exact scan
-
-Measure one brute-force query before starting the tuner. Capture a vector
-literal, paste it in place of `<embedding>`, and retain the `Execution Time`
-reported by `EXPLAIN ANALYZE`:
-
-```sh
-docker compose -f demo/docker-compose.yml exec -T postgres \
-  psql -U postgres -d postgres -Atc \
-  'SELECT embedding FROM docs_superuser LIMIT 1'
-
-docker compose -f demo/docker-compose.yml exec -T postgres \
-  psql -U postgres -d postgres
-```
-
-```sql
-BEGIN;
-SET LOCAL enable_indexscan = off;
-EXPLAIN ANALYZE
-SELECT doc_id FROM docs_superuser
-ORDER BY embedding <=> '<embedding>' ASC, doc_id ASC
-LIMIT 10;
-ROLLBACK;
-```
-
-`demo/config/seam.yaml` uses a 30-second statement timeout. Increase it above
-the measured scan time if necessary; one scan multiplied by roughly 300
-samples is also a useful estimate for the first full measurement phase.
 
 ## Run the pipeline
 
-Start each long-running command in a separate terminal, in this order:
+Start the service stack in one terminal:
 
 ```sh
-cargo run -p vectorseam-collector -- \
-  --listen 127.0.0.1:7737 \
-  --storage-root ./demo/data/store \
-  --window-seconds 60
+make demo
 ```
 
-```sh
-DATABASE_URL=postgresql://postgres:password@127.0.0.1:5432/postgres \
-COLLECTOR_HOST=127.0.0.1 COLLECTOR_PORT=7737 DEMO_EF_SEARCH=100 \
-  uv run uvicorn demo.api.app:app --host 127.0.0.1 --port 8000
-```
+This is an attached Compose run. Collector and tuner logs stay in the
+foreground; PostgreSQL and API logs are suppressed. From another terminal,
+wait until `docker compose -f demo/docker-compose.yml ps` reports the API as
+healthy, then run the driver on the host:
 
 ```sh
 PYTHONPATH=demo uv run python -m driver \
@@ -90,10 +58,16 @@ PYTHONPATH=demo uv run python -m driver \
   --seed 7
 ```
 
-```sh
-SEAM_PG_DEMO=password \
-  cargo run -p seam -- --config demo/config/seam.yaml
-```
+Optional paremeters
+
+`API_LOGS=1` includes API startup and request logs in an attached run.
+`DETACHED=1` starts the stack in the background, where Compose does not stream
+any service logs. Follow operational logs afterward with
+`docker compose -f demo/docker-compose.yml logs -f collector tuner api`.
+
+The PostgreSQL data, collector segments, and tuner measurements/calibrations
+are bind-mounted under `demo/data`. They remain visible on the host and
+survive container replacement and `make demo-down`. The API is stateless.
 
 The API embeds and captures every query. Capture is best-effort, so searches
 continue normally while the collector is unavailable. The driver shuffles the
@@ -155,4 +129,17 @@ For a continuously refreshed view, use:
 ```sh
 watch -n 5 "jq '{status, recommended_ef, confidence, effective, samples}' \
   demo/data/store/calibrations/superuser/latest.json"
+```
+
+Stop the stack without deleting its data:
+
+```sh
+make demo-down
+```
+
+To tear down the stack and delete every demo artifact, including the loaded
+PostgreSQL cluster and any legacy Compose-managed volume, run:
+
+```sh
+make demo-clean
 ```

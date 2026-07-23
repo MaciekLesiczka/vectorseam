@@ -3,7 +3,7 @@
 Status: draft
 Scope: minimal end-to-end run proving SDK → collector → storage → tuner →
 `latest.json` works on one cohort, one index, one data source. No dashboard,
-no docker for app components, no HuggingFace sourcing.
+no Kubernetes, no HuggingFace sourcing.
 
 ## Goal
 
@@ -19,7 +19,10 @@ round, `effective.recommended_ef` matches `recommended_ef` and
 ```
 demo/
   README.md            # deliverable: end-to-end run instructions
+  Dockerfile.rust      # collector + tuner image
+  docker-compose.yml   # postgres, collector, API, tuner
   api/                 # FastAPI search service
+    Dockerfile
   driver/              # query replay script
   scripts/
     load_data.py       # loads postgres + emits queries.txt
@@ -27,6 +30,7 @@ demo/
     seam.yaml          # tuner demo config
   data/                # gitignored
     queries.txt        # produced by load_data.py
+    postgres/          # persistent postgres bind mount
     store/             # object store root (collector writes, tuner reads/writes)
 ```
 
@@ -45,8 +49,9 @@ naming the path. HuggingFace hosting is a later milestone.
 
 ### 1. Postgres
 
-pgvector image via docker, the only containerized piece. Persistent volume so
-the index build happens once. Same index parameters as the benchmark:
+pgvector image via Docker Compose. Its data directory is bind-mounted at
+`demo/data/postgres`, so the index build happens once and survives Compose
+down/up cycles. Same index parameters as the benchmark:
 HNSW, `m = 16`, `ef_construction = 64`, cosine (`vector_cosine_ops`), 384 dims.
 
 ### 2. `demo/scripts/load_data.py`
@@ -136,13 +141,15 @@ long the driver runs.
 
 ### 5. Collector
 
-Run locally: `cargo run -p <collector crate> -- <args/config>` with TCP
-listener on `7737` and storage root `demo/data/store`. Storage window 60 s.
-No collector code changes expected.
+Run in Docker Compose with TCP listener on `7737`, container storage root
+`/data/store`, and storage window 60 s. Bind-mount that root at the host path
+`demo/data/store`. No collector code changes expected.
 
 ### 6. Tuner
 
-`cargo run -p seam -- --config demo/config/seam.yaml`.
+Run in Docker Compose as `seam --config /config/seam.yaml`. Mount
+`demo/config/seam.yaml` read-only and share the collector's host-backed
+`demo/data/store` at `/data/store`.
 
 `demo/config/seam.yaml`:
 
@@ -153,7 +160,7 @@ calibration:
   min_samples: 300
 
 storage:
-  root: ./demo/data/store
+  root: /data/store
   window_seconds: 60
 
 budget:
@@ -163,7 +170,7 @@ budget:
 
 data_sources:
   demo:
-    server: localhost:5432
+    server: postgres:5432
     database: postgres
     user: postgres
     password_env: SEAM_PG_DEMO
@@ -188,36 +195,12 @@ cohorts:
     target: demo_recall
 ```
 
-## Pre-flight (do before wiring anything)
-
-Run one brute-force query manually against the loaded corpus:
-
-```sql
-BEGIN;
-SET LOCAL enable_indexscan = off;
-EXPLAIN ANALYZE
-SELECT doc_id FROM docs_superuser
-ORDER BY embedding <=> '<any embedding literal>' ASC, doc_id ASC
-LIMIT 10;
-ROLLBACK;
-```
-
-Record the time. Two consequences:
-
-1. If it exceeds `statement_timeout`, every tuner sample fails silently into
-   `failed_count` and the round stays `insufficient_samples` forever while
-   everything looks alive. Set the timeout comfortably above the measured
-   value.
-2. Scan time × ~300 samples ≈ Phase A duration = wait for the first real
-   round. At 500 ms/scan that is ~3 min; at 5 s/scan it is ~30 min and the
-   corpus is too big for comfortable iteration on this machine.
-
 ## Verification sequence
 
 Each artifact proves one arrow. Run in order:
 
-1. Start postgres, `load_data.py`, collector, API, driver. After the next
-   minute boundary + flush:
+1. Start postgres and `load_data.py`, start the Compose stack, then run the
+   host driver. After the next minute boundary + flush:
    `demo/data/store/cohorts/superuser/window=*/part-*.vseam` exists →
    SDK → collector → storage works. Collector counters: received ≈ records,
    drops ≈ 0.
@@ -258,11 +241,17 @@ invisible for up to ~2 min by design).
 1. `demo/api/`, `demo/driver/`, `demo/scripts/load_data.py`,
    `demo/config/seam.yaml` as specified.
 2. `demo/README.md` describing the full run end to end: prerequisites (local
-   data paths, docker, rust toolchain, python env), the exact command
-   sequence (postgres → load_data → collector → API → driver → tuner), what
-   files to expect where and roughly when, and the verification steps above
+   data paths, Docker, Python env), the exact command sequence (postgres →
+   load_data → Compose stack → host driver), what files to expect where and
+   roughly when, and the verification steps above
    including the duckdb sanity query and the pre-flight scan timing.
-3. A completed run on the local machine ending in
+3. Dockerfiles and a Compose definition for postgres, collector, API, and
+   tuner. The normal run is attached with collector/tuner logs visible and
+   postgres/API logs suppressed. API logs and detached mode are independent,
+   combinable parameters of the same Make target. All state is host-backed
+   under `demo/data` and a destructive Make target tears down Compose and
+   removes it.
+4. A completed run on the local machine ending in
    `calibrations/superuser/latest.json` with `status: "ok"` and a non-null,
    non-carried `effective` recommendation matching `recommended_ef`.
 
@@ -274,6 +263,6 @@ invisible for up to ~2 min by design).
 - API consuming `latest.json` / applying recommendations.
 - Adaptive sampling.
 - Second cohort, second corpus, hierarchical cohort names.
-- Docker compose for app components; k8s.
+- Kubernetes.
 - HuggingFace data hosting or any download logic.
 - Any collector or tuner code changes.
