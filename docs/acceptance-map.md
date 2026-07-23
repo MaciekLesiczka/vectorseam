@@ -24,7 +24,7 @@ recorded in `docs/REVIEW_MAP.md`.
 | B4 | `crates/seam/tests/acceptance_b_estimator.rs::b4_fnv1a_reference_split_fraction_and_membership_stability`; `crates/seam/tests/acceptance_b_estimator.rs::b4_b12_aggregate_survivor_movement_preserves_split_membership` | passing |
 | B5 | `crates/seam/tests/acceptance_b_estimator.rs::b5_selects_smallest_clearing_ef_40` | passing |
 | B6 | `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_uses_max_ef_and_keeps_transfer_fields` | passing |
-| B7 | `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_999_refuses_and_1000_emits`; `crates/seam/tests/acceptance_b_estimator.rs::b7_realized_empty_split_is_insufficient_even_at_min_samples` | passing |
+| B7 | `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_999_refuses_and_1000_emits`; `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_configuration_floor_is_10`; `crates/seam/tests/acceptance_b_estimator.rs::b7_realized_empty_split_is_insufficient_even_at_min_samples` | passing |
 | B8 | `crates/seam/src/accounting.rs::tests::b8_window_membership_enumerates_exactly_six_slots`; `crates/seam/tests/acceptance_b_estimator.rs::b8_window_membership_six_slots_and_one_sixth_empty` | passing |
 | B9 | `crates/seam/tests/acceptance_b_estimator.rs::b9_no_double_count_across_overlapping_rounds_in_phase_b`; `crates/seam/src/pipeline.rs::tests::b9_second_round_issues_zero_new_database_transactions` | passing |
 | B10 | `crates/seam/tests/acceptance_b_estimator.rs::b10_confidence_matches_closed_form_and_scipy_grid` | passing |

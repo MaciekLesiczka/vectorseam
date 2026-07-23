@@ -159,7 +159,7 @@ Run in Docker Compose as `seam --config /config/seam.yaml`. Mount
 calibration:
   interval: 1min
   ef_search: [10, 20, 40, 60, 80, 100, 150, 200, 300, 400]
-  min_samples: 300
+  min_samples: 10
 
 storage:
   root: /data/store
@@ -222,7 +222,7 @@ Each artifact proves one arrow. Run in order:
 3. `calibrations/superuser/round-*.json` appears with
    `status: "insufficient_samples"` and honest sample counts → Phase B works.
    Before the first recommendation, `effective` is null.
-4. Once `samples.unique ≥ 300` sits in closed windows: `status: "ok"`,
+4. Once `samples.unique ≥ 10` sits in closed windows: `status: "ok"`,
    `latest.json` updated, and `effective` matches the current recommendation
    with `carried: false` → full loop works.
 5. Final assertion: `recommended_ef` ≈ the benchmark's pick for the same

@@ -189,7 +189,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Owns the model, always-capture producer, and sender lifecycle."""
     settings = Settings.from_environment()
     model = SentenceTransformer(MODEL_NAME, revision=MODEL_REVISION)
-    producer = VectorCaptureProducer(sampler=ProbabilitySampler(1.0))
+    producer = VectorCaptureProducer()
     sender = VectorSocketSender(
         host=settings.collector_host,
         port=settings.collector_port,

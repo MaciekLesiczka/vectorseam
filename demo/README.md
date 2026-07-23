@@ -103,7 +103,7 @@ GROUP BY ef ORDER BY ef;
 ```
 
 Round JSON first appears with honest `insufficient_samples` counts. Once at
-least 300 unique samples are in closed windows, the expected final artifact is:
+least 10 unique samples are in closed windows, the expected final artifact is:
 
 ```sh
 jq '{status, recommended_ef, confidence, effective, samples, ground_truth_latency_mean_ms}' \

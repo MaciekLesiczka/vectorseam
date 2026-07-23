@@ -1,7 +1,7 @@
 calibration:
   interval: 1min
   ef_search: [10, 20, 40, 60, 80, 100, 150, 200, 300, 400]
-  min_samples: 300
+  min_samples: 10
 
 storage:
   root: /data/store

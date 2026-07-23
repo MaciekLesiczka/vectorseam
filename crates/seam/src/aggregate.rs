@@ -346,9 +346,9 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
         ));
     }
     split_threshold(config.train_fraction)?;
-    if config.min_samples < 100 {
+    if config.min_samples < 10 {
         return Err(AggregateError::InvalidConfig(
-            "min_samples must be >= 100".to_owned(),
+            "min_samples must be >= 10".to_owned(),
         ));
     }
     Ok(())

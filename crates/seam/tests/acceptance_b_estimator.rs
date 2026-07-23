@@ -95,6 +95,15 @@ fn b7_min_samples_999_refuses_and_1000_emits() {
 }
 
 #[test]
+fn b7_min_samples_configuration_floor_is_10() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+
+    let error = aggregate(&populated_input(10, 9, 0.9, &recalls)).unwrap_err();
+    assert!(error.to_string().contains("min_samples must be >= 10"));
+    assert!(aggregate(&populated_input(10, 10, 0.9, &recalls)).is_ok());
+}
+
+#[test]
 fn b7_realized_empty_split_is_insufficient_even_at_min_samples() {
     let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
     let mut input = populated_input(100, 100, 0.9, &recalls);
