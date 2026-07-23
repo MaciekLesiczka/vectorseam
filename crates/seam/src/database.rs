@@ -327,12 +327,14 @@ async fn measure_in_transaction(
 
     let query_vector = Vector::from(vector.to_vec());
     statements.increment();
+    let ground_truth_started = Instant::now();
     let truth_rows = client_operation(
         client_timeout,
         "ground-truth query",
         transaction.query(&ground_truth_sql(config), &[&query_vector]),
     )
     .await?;
+    let ground_truth_elapsed = ground_truth_started.elapsed();
     if truth_rows.len() < config.k as usize {
         return Err(SampleMeasureError::TableSmallerThanK {
             returned: truth_rows.len(),
@@ -380,6 +382,7 @@ async fn measure_in_transaction(
     Ok(SampleMeasurement {
         gt_keys,
         gt_distances,
+        ground_truth_latency_ms: ground_truth_elapsed.as_secs_f64() * 1_000.0,
         sweeps,
     })
 }

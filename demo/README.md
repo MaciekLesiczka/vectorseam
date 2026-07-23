@@ -106,7 +106,7 @@ Round JSON first appears with honest `insufficient_samples` counts. Once at
 least 300 unique samples are in closed windows, the expected final artifact is:
 
 ```sh
-jq '{status, recommended_ef, confidence, effective, samples}' \
+jq '{status, recommended_ef, confidence, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json
 ```
 
@@ -127,7 +127,7 @@ closed-window alignment.
 For a continuously refreshed view, use:
 
 ```sh
-watch -n 5 "jq '{status, recommended_ef, confidence, effective, samples}' \
+watch -n 5 "jq '{status, recommended_ef, confidence, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json"
 ```
 
