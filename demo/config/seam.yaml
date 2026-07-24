@@ -1,0 +1,39 @@
+calibration:
+  interval: 1min
+  ef_search: [10, 20, 40, 60, 80, 100, 150, 200, 300, 400]
+  min_samples: 10
+
+storage:
+  root: /data/store
+  window_seconds: 60
+
+budget:
+  db_share: 1.0
+  statement_timeout: 30s
+  client_timeout: 60s
+
+data_sources:
+  demo:
+    server: postgres:5432
+    database: postgres
+    user: postgres
+    password_env: SEAM_PG_DEMO
+
+indexes:
+  superuser:
+    data_source: demo
+    table: docs_superuser
+    key: doc_id
+    column: embedding
+
+targets:
+  demo_recall:
+    k: 10
+    value: 0.9
+    percentile: 0.90
+    window: 600s
+
+cohorts:
+  superuser:
+    index: superuser
+    target: demo_recall

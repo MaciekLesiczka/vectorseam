@@ -36,6 +36,7 @@ async fn c2_database_down_still_publishes_cached_phase_b_and_exits_zero() {
         vector_hash: 0xaf63_dc4c_8601_ec8c,
         dup_count: 1,
         receive_time_us: 1_783_512_000_000_000,
+        latency_ms: 400.5,
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
@@ -114,6 +115,7 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.transferred, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);
+    assert_eq!(observed.ground_truth_latency_mean_ms, None);
     assert_eq!(observed.per_ef, []);
     assert_eq!(observed.dropped_frame_fraction, 0.0);
 }
@@ -187,6 +189,7 @@ fn c8_phase_b_reproducible_except_computed_at() {
         vector_hash: 0xaf63_dc4c_8601_ec8c,
         dup_count: 1,
         receive_time_us: 1_783_512_000_000_000,
+        latency_ms: 400.5,
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
@@ -326,6 +329,7 @@ fn measured_samples(count: usize) -> Vec<MeasuredSample> {
             record_index: i32::try_from(record_index).unwrap(),
             vector_hash: record_index as u64,
             dup_count: 1,
+            ground_truth_latency_ms: 400.5 + record_index as f64,
             sweeps: [10, 20, 40, 80, 160]
                 .into_iter()
                 .map(|ef| {

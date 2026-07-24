@@ -35,6 +35,8 @@ pub(crate) struct SampleMeasurement {
     pub gt_keys: Vec<i64>,
     /// Exact distances matching `gt_keys`.
     pub gt_distances: Vec<f64>,
+    /// Client-observed ground-truth statement duration.
+    pub ground_truth_latency_ms: f64,
     /// One ANN observation for each configured ef value.
     pub sweeps: Vec<SampleSweepResult>,
 }
@@ -363,6 +365,7 @@ pub(crate) async fn measure_prepared_part<M: SampleMeasurer + Send + ?Sized>(
             vector_hash: sample.vector_hash,
             dup_count: sample.dup_count,
             receive_time_us: *receive_time_us,
+            latency_ms: measured.ground_truth_latency_ms,
             gt_keys: measured.gt_keys,
             gt_distances: measured.gt_distances,
         });
@@ -435,6 +438,7 @@ mod tests {
             Ok(SampleMeasurement {
                 gt_keys: (1..=i64::from(config.k)).collect(),
                 gt_distances: (0..config.k).map(|value| f64::from(value) / 10.0).collect(),
+                ground_truth_latency_ms: 400.5,
                 sweeps: config
                     .ef_grid
                     .iter()
@@ -511,6 +515,7 @@ mod tests {
         assert_eq!(measured.truth_rows.len(), 1);
         assert_eq!(measured.truth_rows[0].record_index, 3);
         assert_eq!(measured.truth_rows[0].dup_count, 3);
+        assert_eq!(measured.truth_rows[0].latency_ms, 400.5);
         assert_eq!(measured.sweep_rows.len(), 5);
 
         let (truth, sweep) = encode_intermediate_pair(
@@ -523,6 +528,7 @@ mod tests {
         assert_eq!(decoded.samples.len(), 1);
         assert_eq!(decoded.samples[0].record_index, 3);
         assert_eq!(decoded.samples[0].dup_count, 3);
+        assert_eq!(decoded.samples[0].ground_truth_latency_ms, 400.5);
         assert_eq!(decoded.samples[0].sweeps.len(), 5);
     }
 

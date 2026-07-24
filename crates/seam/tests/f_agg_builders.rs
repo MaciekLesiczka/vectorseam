@@ -24,6 +24,7 @@ fn f_agg_builders_emit_spec_schemas_and_metadata() {
         vector_hash: 0xaf63_dc4c_8601_ec8c,
         dup_count: 1,
         receive_time_us: 1_783_512_000_000_000,
+        latency_ms: 400.5,
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
@@ -83,6 +84,7 @@ fn f_agg_builder_can_create_truth_without_sweep_for_crash_resume() {
         vector_hash: 1,
         dup_count: 1,
         receive_time_us: 1_783_512_000_000_000,
+        latency_ms: 400.5,
         gt_keys: (1..=10).collect(),
         gt_distances: vec![0.0; 10],
     };
@@ -159,6 +161,7 @@ fn f_agg_reader_rejects_measured_count_different_from_truth_rows() {
         vector_hash: 1,
         dup_count: 1,
         receive_time_us: 1_783_512_000_000_000,
+        latency_ms: 400.5,
         gt_keys: (1..=10).collect(),
         gt_distances: vec![0.0; 10],
     };

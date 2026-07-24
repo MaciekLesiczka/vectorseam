@@ -17,6 +17,8 @@ pub(crate) struct PopulationSample {
     pub record_index: i32,
     /// Exact-vector hash and deduplication key.
     pub vector_hash: u64,
+    /// Client-observed ground-truth statement duration.
+    pub ground_truth_latency_ms: f64,
     /// Authoritative sweep measurements.
     pub sweeps: BTreeMap<i32, SweepMeasurement>,
 }
@@ -31,6 +33,7 @@ pub(crate) fn deduplicate_samples<'a>(
             part_ulid: part_ulid.to_owned(),
             record_index: sample.record_index,
             vector_hash: sample.vector_hash,
+            ground_truth_latency_ms: sample.ground_truth_latency_ms,
             sweeps: sample.sweeps.clone(),
         };
         match survivors.get_mut(&sample.vector_hash) {
@@ -54,6 +57,12 @@ pub(crate) fn validate_population(
     ef_grid: &[i32],
 ) -> Result<(), AggregateError> {
     for sample in population {
+        if !sample.ground_truth_latency_ms.is_finite() || sample.ground_truth_latency_ms < 0.0 {
+            return Err(AggregateError::InvalidGroundTruthLatency {
+                part_ulid: sample.part_ulid.clone(),
+                record_index: sample.record_index,
+            });
+        }
         for ef in ef_grid {
             let observation =
                 sample

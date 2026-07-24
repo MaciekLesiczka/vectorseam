@@ -141,6 +141,8 @@ pub struct MeasuredSample {
     pub vector_hash: u64,
     /// Count of equal vectors within this part.
     pub dup_count: i32,
+    /// Client-observed ground-truth statement duration.
+    pub ground_truth_latency_ms: f64,
     /// One observation for every configured ef value.
     pub sweeps: BTreeMap<i32, SweepMeasurement>,
 }
@@ -327,6 +329,9 @@ pub struct RoundOutput {
     pub parts_used: u64,
     /// In-scope intermediate pairs skipped for config mismatch.
     pub incompatible_parts: u64,
+    /// Mean ground-truth statement latency over the deduplicated population.
+    #[serde(default)]
+    pub ground_truth_latency_mean_ms: Option<f64>,
     /// Informational summaries over the full deduplicated population.
     pub per_ef: Vec<PerEfSummary>,
 }

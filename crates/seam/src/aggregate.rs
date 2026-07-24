@@ -70,6 +70,14 @@ pub enum AggregateError {
         /// ef value.
         ef: i32,
     },
+    /// Stored ground-truth latency was non-finite or negative.
+    #[error("part {part_ulid:?} record {record_index} has invalid stored ground-truth latency")]
+    InvalidGroundTruthLatency {
+        /// Part identity.
+        part_ulid: String,
+        /// Record ordinal.
+        record_index: i32,
+    },
     /// Round JSON serialization failed.
     #[error("serialize deterministic round JSON: {0}")]
     Json(#[from] serde_json::Error),
@@ -136,6 +144,13 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
             .map(move |sample| (part.metadata.part_ulid.as_str(), sample))
     }));
     validate_population(&population, &input.config.ef_grid)?;
+    let ground_truth_latency_mean_ms = (!population.is_empty()).then(|| {
+        population
+            .iter()
+            .map(|sample| sample.ground_truth_latency_ms)
+            .sum::<f64>()
+            / population.len() as f64
+    });
     let per_ef = per_ef_summaries(&population, &input.config)?;
 
     let mut train = Vec::new();
@@ -241,6 +256,7 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         coverage,
         parts_used: used.len() as u64,
         incompatible_parts,
+        ground_truth_latency_mean_ms,
         per_ef,
     })
 }
@@ -330,9 +346,9 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
         ));
     }
     split_threshold(config.train_fraction)?;
-    if config.min_samples < 100 {
+    if config.min_samples < 10 {
         return Err(AggregateError::InvalidConfig(
-            "min_samples must be >= 100".to_owned(),
+            "min_samples must be >= 10".to_owned(),
         ));
     }
     Ok(())

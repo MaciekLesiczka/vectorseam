@@ -15,4 +15,5 @@ build/
 /python/ann-recall-latency/data/
 /python/ann-recall-latency/results/*.parquet
 /python/ann-recall-latency/results/sweep_*.json
+/demo/data/
 .DS_Store

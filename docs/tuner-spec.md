@@ -349,7 +349,7 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
 
 #### Minimum sample count
 
-- **Decision**: config `min_samples` (default 1000, validated ≥ 100),
+- **Decision**: config `min_samples` (default 1000, validated ≥ 10),
   compared against the round's deduplicated population size
   (`samples.unique`). Below it the round
   publishes `status: "insufficient_samples"` with `recommended_ef: null`,
@@ -581,7 +581,7 @@ optional advice.
   increasing, `min(grid) ≥ k` for every configured target (pgvector caps
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
-- `0 < train_fraction < 1`, `min_samples ≥ 100`, `0 < db_share ≤ 1`,
+- `0 < train_fraction < 1`, `min_samples ≥ 10`, `0 < db_share ≤ 1`,
   `statement_timeout > 0`, `client_timeout > 0`; additionally,
   `round(train_fraction * 10000)` must be in `1..=9999`
 - `table`, `column`, `key` are valid PostgreSQL quoted/delimited identifiers:

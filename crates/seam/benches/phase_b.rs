@@ -37,6 +37,7 @@ fn aggregation_input() -> AggregationInput {
                 .expect("benchmark record index must fit in i32"),
             vector_hash: record_index as u64,
             dup_count: 1,
+            ground_truth_latency_ms: 400.5,
             sweeps: EF_GRID
                 .into_iter()
                 .map(|ef| {

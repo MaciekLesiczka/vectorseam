@@ -107,6 +107,7 @@ pub struct TruthRow {
     pub vector_hash: u64,
     pub dup_count: i32,
     pub receive_time_us: i64,
+    pub latency_ms: f64,
     pub gt_keys: Vec<i64>,
     pub gt_distances: Vec<f64>,
 }
@@ -166,6 +167,7 @@ pub fn write_b12_cross_part_fixture(root: &Path) -> Result<B12Fixture> {
         vector_hash,
         dup_count,
         receive_time_us: 1_783_512_000_000_000 + i64::from(record_index),
+        latency_ms: 400.5 + f64::from(record_index),
         gt_keys: (1..=10).collect(),
         gt_distances: (0..10).map(|value| f64::from(value) / 100.0).collect(),
     };
@@ -269,6 +271,7 @@ pub fn truth_schema() -> SchemaRef {
         Field::new("vector_hash", DataType::UInt64, false),
         Field::new("dup_count", DataType::Int32, false),
         Field::new("receive_time_us", DataType::Int64, false),
+        Field::new("latency_ms", DataType::Float64, false),
         Field::new(
             "gt_keys",
             DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
@@ -325,6 +328,9 @@ fn truth_batch(rows: &[TruthRow]) -> Result<RecordBatch> {
         )),
         Arc::new(Int64Array::from_iter_values(
             rows.iter().map(|row| row.receive_time_us),
+        )),
+        Arc::new(Float64Array::from_iter_values(
+            rows.iter().map(|row| row.latency_ms),
         )),
         Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(
             rows.iter()

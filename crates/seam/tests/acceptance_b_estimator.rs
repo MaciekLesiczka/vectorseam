@@ -86,11 +86,21 @@ fn b7_min_samples_999_refuses_and_1000_emits() {
     assert_eq!(below.confidence, None);
     assert_eq!(below.samples.unique, 999);
     assert!(below.samples.available >= below.samples.unique);
+    assert_eq!(below.ground_truth_latency_mean_ms, Some(899.5));
     assert_eq!(below.per_ef.len(), 5);
 
     let at_threshold = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
     assert_eq!(at_threshold.samples.unique, 1_000);
     assert!(at_threshold.recommended_ef.is_some());
+}
+
+#[test]
+fn b7_min_samples_configuration_floor_is_10() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+
+    let error = aggregate(&populated_input(10, 9, 0.9, &recalls)).unwrap_err();
+    assert!(error.to_string().contains("min_samples must be >= 10"));
+    assert!(aggregate(&populated_input(10, 10, 0.9, &recalls)).is_ok());
 }
 
 #[test]
@@ -263,6 +273,7 @@ fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
     };
     let both = aggregate(&both_input).unwrap();
     assert_eq!(both.samples.unique, 1);
+    assert_eq!(both.ground_truth_latency_mean_ms, Some(403.5));
     assert!(both.per_ef.iter().all(|summary| summary.mean_recall == 1.0));
 
     let mut resumed_input = both_input.clone();
@@ -277,6 +288,7 @@ fn b4_b12_aggregate_survivor_movement_preserves_split_membership() {
     moved_input.intermediates = vec![second];
     let moved = aggregate(&moved_input).unwrap();
     assert_eq!(moved.samples.unique, 1);
+    assert_eq!(moved.ground_truth_latency_mean_ms, Some(400.5));
     assert!(
         moved
             .per_ef
@@ -327,6 +339,7 @@ fn populated_input(
             record_index: i32::try_from(record_index).unwrap(),
             vector_hash: record_index as u64,
             dup_count: 1,
+            ground_truth_latency_ms: 400.5 + record_index as f64,
             sweeps: recalls
                 .iter()
                 .map(|(ef, recall)| {

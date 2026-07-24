@@ -385,8 +385,8 @@ fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError
             "calibration.train_fraction rounds to an empty train/holdout split",
         ));
     }
-    if config.min_samples < 100 {
-        return Err(invalid("calibration.min_samples must be >= 100"));
+    if config.min_samples < 10 {
+        return Err(invalid("calibration.min_samples must be >= 10"));
     }
     Ok(())
 }
@@ -656,6 +656,16 @@ cohorts:
         );
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("empty train/holdout split"));
+    }
+
+    #[test]
+    fn accepts_min_samples_10_and_rejects_9() {
+        let ten = VALID_CONFIG.replace("storage:", "  min_samples: 10\nstorage:");
+        assert!(Config::from_yaml_str(&ten).is_ok());
+
+        let nine = VALID_CONFIG.replace("storage:", "  min_samples: 9\nstorage:");
+        let error = Config::from_yaml_str(&nine).unwrap_err().to_string();
+        assert!(error.contains("min_samples must be >= 10"));
     }
 
     #[test]

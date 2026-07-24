@@ -86,6 +86,7 @@ pub(crate) struct TruthMeasurement {
     pub(crate) vector_hash: u64,
     pub(crate) dup_count: i32,
     pub(crate) receive_time_us: i64,
+    pub(crate) latency_ms: f64,
     pub(crate) gt_keys: Vec<i64>,
     pub(crate) gt_distances: Vec<f64>,
 }
@@ -160,6 +161,7 @@ fn truth_schema() -> SchemaRef {
         Field::new("vector_hash", DataType::UInt64, false),
         Field::new("dup_count", DataType::Int32, false),
         Field::new("receive_time_us", DataType::Int64, false),
+        Field::new("latency_ms", DataType::Float64, false),
         Field::new(
             "gt_keys",
             DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
@@ -276,12 +278,14 @@ fn read_truth_rows(bytes: Bytes) -> Result<BTreeMap<i32, MeasuredSample>, Interm
         let record_indexes = int32_column(&batch, 0, "truth")?;
         let vector_hashes = uint64_column(&batch, 1, "truth")?;
         let dup_counts = int32_column(&batch, 2, "truth")?;
+        let latencies = float64_column(&batch, 4, "truth")?;
         for row in 0..batch.num_rows() {
             let record_index = record_indexes.value(row);
             let sample = MeasuredSample {
                 record_index,
                 vector_hash: vector_hashes.value(row),
                 dup_count: dup_counts.value(row),
+                ground_truth_latency_ms: latencies.value(row),
                 sweeps: BTreeMap::new(),
             };
             if samples.insert(record_index, sample).is_some() {
@@ -376,6 +380,9 @@ fn truth_record_batch(rows: &[TruthMeasurement]) -> Result<RecordBatch, Intermed
         )),
         Arc::new(Int64Array::from_iter_values(
             rows.iter().map(|row| row.receive_time_us),
+        )),
+        Arc::new(Float64Array::from_iter_values(
+            rows.iter().map(|row| row.latency_ms),
         )),
         Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(
             rows.iter()

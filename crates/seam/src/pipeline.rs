@@ -1671,6 +1671,7 @@ mod tests {
         SampleMeasurement {
             gt_keys: keys.clone(),
             gt_distances: (0..config.k).map(|value| f64::from(value) / 10.0).collect(),
+            ground_truth_latency_ms: 400.5,
             sweeps: config
                 .ef_grid
                 .iter()
