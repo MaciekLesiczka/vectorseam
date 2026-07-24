@@ -93,3 +93,31 @@ services:
       postgres:
         condition: service_healthy
     stop_grace_period: 15s
+
+  dashboard:
+    image: vectorseam-dashboard:local
+    pull_policy: never
+    init: true
+    user: "${DEMO_UID:-1000}:${DEMO_GID:-1000}"
+    environment:
+      VECTORSEAM_DASHBOARD_STORE: /data/store
+      VECTORSEAM_DASHBOARD_PORT: "8080"
+      # Only the superuser cohort has live calibrations in this demo. The
+      # component's live path is all-or-nothing per load, so listing cohorts
+      # without data would drop the whole view to sample data — keep it to the
+      # one that publishes.
+      VECTORSEAM_DASHBOARD_COHORTS: superuser
+    ports:
+      - "8080:8080"
+    volumes:
+      - ${DEMO_STORE:-./data/store}:/data/store:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=5).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    stop_grace_period: 5s

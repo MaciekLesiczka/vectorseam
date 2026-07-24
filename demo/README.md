@@ -1,12 +1,19 @@
 # VectorSeam M1 demo
 
 This demo runs one SuperUser cohort end to end. PostgreSQL, the collector, the
-API, and the tuner run in Docker Compose; the query driver runs on the host:
+API, the tuner, and the dashboard run in Docker Compose; the query driver runs
+on the host:
 
 ```
-live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json
+live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json -> dashboard
                        \-> pgvector
 ```
+
+Once the stack is up, the dashboard is served at http://localhost:8080. It
+reads the tuner's calibration output live (the `superuser` cohort) and renders
+recommended `ef_search`, holdout confidence, the recall/latency tradeoff, and
+round history. See [../dashboard/README.md](../dashboard/README.md) for the
+component and its configuration.
 
 ## Prerequisites
 

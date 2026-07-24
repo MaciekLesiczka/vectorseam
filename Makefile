@@ -77,6 +77,8 @@ demo-images:
 		--tag vectorseam-demo-rust:local .
 	docker build --file demo/api/Dockerfile \
 		--tag vectorseam-demo-api:local .
+	docker build --file dashboard/Dockerfile \
+		--tag vectorseam-dashboard:local .
 
 demo: demo-dirs demo-images
 	$(DEMO_DOCKER_COMPOSE) up $(DEMO_UP_FLAGS)
