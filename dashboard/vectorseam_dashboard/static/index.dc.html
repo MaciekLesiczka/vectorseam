@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:oklch(0.163 0.012 258);}
+  body{-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;}
+  a{color:oklch(0.83 0.11 195);text-decoration:none;}
+  a:hover{color:oklch(0.9 0.09 195);}
+  ::selection{background:oklch(0.83 0.11 195 / 0.25);}
+  @keyframes vsPulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
+  @keyframes vsShimmer{0%{background-position:-380px 0;}100%{background-position:380px 0;}}
+  @keyframes vsFade{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:none;}}
+</style>
+</helmet>
+<div style="min-height:100vh;background:radial-gradient(1200px 620px at 78% -8%, oklch(0.22 0.028 250 / 0.55), transparent 60%), oklch(0.163 0.012 258);color:oklch(0.72 0.012 258);font-family:'IBM Plex Sans',system-ui,sans-serif;padding:30px 30px 64px;">
+<div style="max-width:1220px;margin:0 auto;display:flex;flex-direction:column;gap:30px;">
+
+  <header style="display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:14px;">
+      <div style="width:34px;height:34px;border-radius:9px;background:oklch(0.83 0.11 195);display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px -8px oklch(0.83 0.11 195 / 0.8);">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="oklch(0.17 0.02 258)" strokeWidth="2.2" strokeLinecap="round"><path d="M3 8 H21 M3 16 H21"></path><circle cx="9" cy="8" r="0.1"></circle></svg>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:2px;">
+        <div style="font-weight:600;font-size:17px;color:oklch(0.97 0.004 258);letter-spacing:-0.01em;">VectorSeam</div>
+        <div style="font-size:12.5px;color:oklch(0.6 0.014 258);letter-spacing:0.02em;">Calibration monitor</div>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;gap:18px;">
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:999px;background:oklch(0.21 0.013 258);border:1px solid oklch(0.29 0.014 258);">
+        <span style="width:7px;height:7px;border-radius:50%;background:oklch(0.8 0.14 158);animation:vsPulse 2.4s ease-in-out infinite;"></span>
+        <span style="font-size:12.5px;font-weight:500;color:oklch(0.82 0.01 258);">{{ sourceLabel }}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
+        <div style="font-size:10.5px;letter-spacing:0.08em;color:oklch(0.55 0.014 258);text-transform:uppercase;">As of</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.86 0.01 258);">{{ asOfText }}</div>
+      </div>
+    </div>
+  </header>
+
+  <sc-if value="{{ error }}" hint-placeholder-val="">
+    <div style="padding:24px;border-radius:14px;background:oklch(0.22 0.03 26 / 0.4);border:1px solid oklch(0.5 0.1 26);color:oklch(0.85 0.06 26);font-family:'IBM Plex Mono',monospace;font-size:13px;">Failed to load calibration data: {{ error }}</div>
+  </sc-if>
+
+  <sc-if value="{{ loading }}" hint-placeholder-val="{{ true }}">
+    <div style="display:flex;flex-direction:column;gap:18px;">
+      <div style="height:150px;border-radius:16px;background:linear-gradient(90deg, oklch(0.2 0.012 258) 25%, oklch(0.24 0.014 258) 37%, oklch(0.2 0.012 258) 63%);background-size:760px 100%;animation:vsShimmer 1.5s linear infinite;"></div>
+      <div style="height:320px;border-radius:16px;background:linear-gradient(90deg, oklch(0.2 0.012 258) 25%, oklch(0.24 0.014 258) 37%, oklch(0.2 0.012 258) 63%);background-size:760px 100%;animation:vsShimmer 1.5s linear infinite;"></div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ ready }}" hint-placeholder-val="">
+  <div style="display:flex;flex-direction:column;gap:30px;animation:vsFade 0.4s ease both;">
+
+    <section style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
+        <h2 style="margin:0;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:oklch(0.6 0.014 258);">Cohorts · {{ cohortCountText }}</h2>
+        <span style="font-size:12px;color:oklch(0.5 0.014 258);">recommended ef · confidence · status</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;">
+        <sc-for list="{{ cards }}" as="c" hint-placeholder-count="3">
+          <div style="{{ c.cardStyle }}" onClick="{{ c.onSelect }}">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+              <div style="display:flex;flex-direction:column;gap:3px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:14.5px;font-weight:500;color:oklch(0.96 0.004 258);">{{ c.name }}</span>
+                <span style="font-size:11.5px;color:oklch(0.56 0.014 258);">index · {{ c.index }}</span>
+              </div>
+              <span style="{{ c.badgeStyle }}">{{ c.statusLabel }}</span>
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:12px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:47px;line-height:0.9;font-weight:600;color:{{ c.efColor }};">{{ c.efText }}</span>
+              <span style="font-size:12px;color:oklch(0.6 0.014 258);padding-bottom:6px;">recommended<br>ef_search</span>
+            </div>
+            <sc-if value="{{ c.carried }}" hint-placeholder-val="">
+              <span style="font-size:11.5px;color:oklch(0.84 0.13 82);margin-top:-6px;">↺ {{ c.carriedNote }}</span>
+            </sc-if>
+            <div style="display:flex;flex-direction:column;gap:7px;">
+              <div style="display:flex;align-items:baseline;justify-content:space-between;">
+                <span style="font-size:12px;color:oklch(0.62 0.014 258);">holdout confidence</span>
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;color:oklch(0.9 0.008 258);">{{ c.confPct }}</span>
+              </div>
+              <div style="height:6px;border-radius:999px;background:oklch(0.28 0.013 258);overflow:hidden;">
+                <div style="height:100%;border-radius:999px;width:{{ c.confBarW }}%;background:{{ c.color }};"></div>
+              </div>
+            </div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:oklch(0.58 0.014 258);">{{ c.targetText }}</div>
+            <div style="height:1px;background:oklch(0.27 0.013 258);"></div>
+            <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:14px;">
+              <div style="display:flex;gap:20px;">
+                <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;color:oklch(0.52 0.014 258);">exact scan</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.85 0.01 258);">{{ c.gtText }}</span></div>
+                <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;color:oklch(0.52 0.014 258);">unique</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.85 0.01 258);">{{ c.uniqueText }}</span></div>
+              </div>
+              <svg viewBox="0 0 120 34" width="112" style="overflow:visible;">
+                <path d="{{ c.sparkPath }}" fill="none" stroke="{{ c.color }}" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" opacity="0.85"></path>
+                <sc-if value="{{ c.sparkDot }}" hint-placeholder-val="">
+                  <circle cx="{{ c.sparkDot.cx }}" cy="{{ c.sparkDot.cy }}" r="2.4" fill="{{ c.color }}"></circle>
+                </sc-if>
+              </svg>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+        <h2 style="margin:0;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:oklch(0.6 0.014 258);">Metrics over time</h2>
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:4px;">
+            <sc-for list="{{ legend }}" as="l" hint-placeholder-count="3">
+              <div style="{{ l.style }}" onClick="{{ l.onSelect }}"><span style="width:9px;height:9px;border-radius:50%;background:{{ l.color }};"></span>{{ l.name }}</div>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:3px;padding:3px;border-radius:9px;background:oklch(0.21 0.013 258);border:1px solid oklch(0.29 0.014 258);">
+            <sc-for list="{{ rangeOptions }}" as="o" hint-placeholder-count="3">
+              <button style="border:none;cursor:pointer;padding:5px 11px;border-radius:6px;font:500 12px 'IBM Plex Mono',monospace;background:{{ o.bg }};color:{{ o.fg }};" onClick="{{ o.onClick }}">{{ o.label }}</button>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;">
+
+        <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Recommended ef_search</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">grid steps</span></div>
+          <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
+            <sc-for list="{{ efChart.hLines }}" as="h" hint-placeholder-count="5">
+              <line x1="{{ efChart.PX0 }}" x2="{{ efChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="oklch(0.27 0.013 258)" strokeWidth="1"></line>
+              <text x="38" y="{{ h.y }}" textAnchor="end" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.52 0.014 258)">{{ h.label }}</text>
+            </sc-for>
+            <sc-for list="{{ efChart.xTicks }}" as="t" hint-placeholder-count="6">
+              <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
+            </sc-for>
+            <sc-if value="{{ efChart.hasHover }}" hint-placeholder-val="">
+              <line x1="{{ efChart.hoverX }}" x2="{{ efChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+            </sc-if>
+            <sc-for list="{{ efChart.series }}" as="s" hint-placeholder-count="3">
+              <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
+              <sc-for list="{{ s.points }}" as="p" hint-placeholder-count="6"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ s.color }}"></circle></sc-for>
+              <sc-for list="{{ s.carried }}" as="cp" hint-placeholder-count="0"><circle cx="{{ cp.cx }}" cy="{{ cp.cy }}" r="3" fill="oklch(0.163 0.012 258)" stroke="{{ s.color }}" strokeWidth="1.4" strokeDasharray="2 2"></circle></sc-for>
+              <sc-if value="{{ s.hoverDot }}" hint-placeholder-val=""><circle cx="{{ s.hoverDot.cx }}" cy="{{ s.hoverDot.cy }}" r="4" fill="{{ s.color }}" stroke="oklch(0.163 0.012 258)" strokeWidth="1.5"></circle></sc-if>
+            </sc-for>
+          </svg>
+          <sc-if value="{{ efChart.hasHover }}" hint-placeholder-val="">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-top:2px;border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:oklch(0.86 0.01 258);">{{ efChart.hoverTime }}</span>
+              <sc-for list="{{ efChart.readoutRows }}" as="rr" hint-placeholder-count="3">
+                <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:oklch(0.66 0.012 258);"><span style="width:8px;height:8px;border-radius:50%;background:{{ rr.color }};"></span>{{ rr.name }}<span style="font-family:'IBM Plex Mono',monospace;color:oklch(0.9 0.008 258);">{{ rr.text }}</span></span>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ efChart.noHover }}" hint-placeholder-val="{{ true }}">
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried recommendation (round was insufficient). Hover to read per-cohort values.</div>
+          </sc-if>
+        </div>
+
+        <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Holdout confidence</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">0.40 – 1.00</span></div>
+          <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
+            <sc-for list="{{ confChart.hLines }}" as="h" hint-placeholder-count="4">
+              <line x1="{{ confChart.PX0 }}" x2="{{ confChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="{{ h.stroke }}" strokeWidth="1" strokeDasharray="{{ h.dash }}"></line>
+              <text x="38" y="{{ h.y }}" textAnchor="end" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="{{ h.labelFill }}">{{ h.label }}</text>
+            </sc-for>
+            <sc-for list="{{ confChart.xTicks }}" as="t" hint-placeholder-count="6">
+              <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
+            </sc-for>
+            <sc-if value="{{ confChart.hasHover }}" hint-placeholder-val="">
+              <line x1="{{ confChart.hoverX }}" x2="{{ confChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+            </sc-if>
+            <sc-for list="{{ confChart.series }}" as="s" hint-placeholder-count="3">
+              <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
+              <sc-for list="{{ s.points }}" as="p" hint-placeholder-count="6"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ s.color }}"></circle></sc-for>
+              <sc-if value="{{ s.hoverDot }}" hint-placeholder-val=""><circle cx="{{ s.hoverDot.cx }}" cy="{{ s.hoverDot.cy }}" r="4" fill="{{ s.color }}" stroke="oklch(0.163 0.012 258)" strokeWidth="1.5"></circle></sc-if>
+            </sc-for>
+          </svg>
+          <sc-if value="{{ confChart.hasHover }}" hint-placeholder-val="">
+            <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:oklch(0.86 0.01 258);">{{ confChart.hoverTime }}</span>
+              <sc-for list="{{ confChart.readoutRows }}" as="rr" hint-placeholder-count="3">
+                <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:oklch(0.66 0.012 258);"><span style="width:8px;height:8px;border-radius:50%;background:{{ rr.color }};"></span>{{ rr.name }}<span style="font-family:'IBM Plex Mono',monospace;color:oklch(0.9 0.008 258);">{{ rr.text }}</span></span>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ confChart.noHover }}" hint-placeholder-val="{{ true }}">
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the 0.90 reference. Gaps mark rounds without a published recommendation.</div>
+          </sc-if>
+        </div>
+
+      </div>
+    </section>
+
+    <section style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <h2 style="margin:0;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:oklch(0.6 0.014 258);">Cohort detail</h2>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:oklch(0.86 0.01 258);padding:4px 10px;border-radius:7px;background:oklch(0.24 0.014 258);border:1px solid oklch(0.31 0.014 258);">{{ selectedName }}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;align-items:start;">
+
+        <sc-if value="{{ showTradeoff }}" hint-placeholder-val="{{ true }}">
+          <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
+            <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;">
+              <span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Recall vs latency by ef</span>
+              <span style="font-size:11.5px;color:oklch(0.55 0.014 258);">latest round</span>
+            </div>
+            <div style="display:flex;gap:16px;">
+              <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.color }};"></span>quantile recall</span>
+              <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.latColor }};"></span>p50 latency</span>
+            </div>
+            <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;">
+              <sc-for list="{{ tradeoff.leftTicks }}" as="h" hint-placeholder-count="4">
+                <line x1="{{ tradeoff.PX0 }}" x2="{{ tradeoff.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="oklch(0.26 0.013 258)" strokeWidth="1"></line>
+                <text x="38" y="{{ h.y }}" textAnchor="end" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="{{ tradeoff.color }}">{{ h.label }}</text>
+              </sc-for>
+              <sc-for list="{{ tradeoff.rightTicks }}" as="h" hint-placeholder-count="3">
+                <text x="750" y="{{ h.y }}" textAnchor="start" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="{{ tradeoff.latColor }}">{{ h.label }}</text>
+              </sc-for>
+              <sc-for list="{{ tradeoff.xTicks }}" as="t" hint-placeholder-count="10">
+                <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
+              </sc-for>
+              <line x1="{{ tradeoff.PX0 }}" x2="{{ tradeoff.PX1 }}" y1="{{ tradeoff.targetY }}" y2="{{ tradeoff.targetY }}" stroke="oklch(0.8 0.14 158)" strokeWidth="1.2" strokeDasharray="5 4"></line>
+              <text x="{{ tradeoff.PX1 }}" y="{{ tradeoff.targetY }}" dx="-4" dy="-5" textAnchor="end" fontFamily="IBM Plex Mono, monospace" fontSize="10" fill="oklch(0.8 0.14 158)">target 0.90</text>
+              <sc-if value="{{ tradeoff.recX }}" hint-placeholder-val="">
+                <line x1="{{ tradeoff.recX }}" x2="{{ tradeoff.recX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+                <text x="{{ tradeoff.recX }}" y="26" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.9 0.008 258)">ef {{ tradeoff.recEf }}</text>
+              </sc-if>
+              <path d="{{ tradeoff.latPath }}" fill="none" stroke="{{ tradeoff.latColor }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
+              <sc-for list="{{ tradeoff.latPts }}" as="p" hint-placeholder-count="10"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ tradeoff.latColor }}"></circle></sc-for>
+              <path d="{{ tradeoff.recallPath }}" fill="none" stroke="{{ tradeoff.color }}" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round"></path>
+              <sc-for list="{{ tradeoff.recallPts }}" as="p" hint-placeholder-count="10"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.4" fill="{{ tradeoff.color }}"></circle></sc-for>
+            </svg>
+          </div>
+        </sc-if>
+
+        <div style="padding:8px 8px 12px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;padding:14px 16px 12px;">
+            <span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Round history</span>
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:oklch(0.55 0.014 258);">{{ historyCountText }}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;">
+            <sc-for list="{{ history }}" as="r" hint-placeholder-count="6">
+              <div style="border-top:1px solid oklch(0.25 0.013 258);">
+                <div style="{{ r.rowStyle }}" onClick="{{ r.onToggle }}">
+                  <span style="color:oklch(0.55 0.014 258);font-size:12px;width:12px;">{{ r.chevron }}</span>
+                  <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:oklch(0.86 0.01 258);min-width:70px;">{{ r.timeText }}</span>
+                  <span style="{{ r.badgeStyle }}">{{ r.statusLabel }}</span>
+                  <span style="flex:1;"></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:56px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.95 0.006 258);">{{ r.efText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">EF</span></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:52px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.85 0.01 258);">{{ r.confText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">CONF</span></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:60px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.85 0.01 258);">{{ r.uniqueText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">UNIQUE</span></span>
+                </div>
+                <sc-if value="{{ r.expanded }}" hint-placeholder-val="">
+                  <div style="padding:6px 18px 20px 40px;display:flex;flex-direction:column;gap:16px;animation:vsFade 0.25s ease both;">
+                    <sc-if value="{{ r.error }}" hint-placeholder-val="">
+                      <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:oklch(0.82 0.09 62);background:oklch(0.24 0.03 62 / 0.35);border:1px solid oklch(0.4 0.06 62);border-radius:8px;padding:9px 12px;">{{ r.error }}</div>
+                    </sc-if>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 24px;">
+                      <sc-for list="{{ r.metrics }}" as="m" hint-placeholder-count="12">
+                        <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;border-bottom:1px dotted oklch(0.28 0.013 258);padding-bottom:5px;">
+                          <span style="font-size:12px;color:oklch(0.58 0.014 258);">{{ m.label }}</span>
+                          <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:oklch(0.9 0.008 258);text-align:right;">{{ m.value }}</span>
+                        </div>
+                      </sc-for>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:3px;">
+                      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:4px 10px;font:600 10px 'IBM Plex Sans',sans-serif;letter-spacing:0.07em;text-transform:uppercase;color:oklch(0.52 0.014 258);">
+                        <span>ef</span><span>quantile</span><span>mean</span><span>p50 ms</span>
+                      </div>
+                      <sc-for list="{{ r.perEf }}" as="p" hint-placeholder-count="10">
+                        <div style="{{ p.rowStyle }}"><span>{{ p.ef }}</span><span>{{ p.q }}</span><span>{{ p.mean }}</span><span>{{ p.lat }}</span></div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </div>
+  </sc-if>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showTradeoffCurve&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;visibleRounds&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:24,&quot;min&quot;:6,&quot;max&quot;:28,&quot;step&quot;:1,&quot;unit&quot;:&quot; rounds&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;historyLimit&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:12,&quot;min&quot;:4,&quot;max&quot;:28,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;History&quot;},&quot;expandFirstRound&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;History&quot;}}">
+class Component extends DCLogic {
+  EF = [10, 20, 40, 60, 80, 100, 150, 200, 300, 400];
+  COLORS = { 'superuser': 'oklch(0.83 0.11 195)', 'products/search': 'oklch(0.76 0.13 292)', 'support/tickets': 'oklch(0.84 0.12 74)' };
+  PALETTE = ['oklch(0.83 0.11 195)', 'oklch(0.76 0.13 292)', 'oklch(0.84 0.12 74)', 'oklch(0.80 0.13 150)', 'oklch(0.74 0.15 18)'];
+  CW = 760; CH = 290; PX0 = 46; PX1 = 742; PY0 = 14; PY1 = 260;
+  state = { loading: true, error: null, source: null, cohorts: [], store: {}, selectedCohort: null, expanded: {}, hoverIndex: null, chartRange: 24 };
+
+  componentDidMount() {
+    this.loadData().then(({ source, cohorts, store }) => {
+      const sel = cohorts[0];
+      const expanded = {};
+      if (this.props.expandFirstRound !== false && sel) {
+        const rr = store[sel].rounds;
+        expanded[rr[rr.length - 1].computed_at] = true;
+      }
+      const range = Math.max(6, Math.min(28, this.props.visibleRounds || 24));
+      this.setState({ loading: false, source, cohorts, store, selectedCohort: sel, expanded, chartRange: range });
+    }).catch((err) => this.setState({ loading: false, error: String((err && err.message) || err) }));
+  }
+
+  async loadData() {
+    const cfg = (typeof window !== 'undefined') ? window.VECTORSEAM_CONFIG : null;
+    if (cfg && cfg.baseUrl && Array.isArray(cfg.cohorts) && cfg.cohorts.length) {
+      try {
+        const store = {};
+        for (const name of cfg.cohorts) {
+          const base = cfg.baseUrl.replace(/\/$/, '') + '/calibrations/' + name;
+          const latest = await (await fetch(base + '/latest.json', { cache: 'no-store' })).json();
+          let rounds = [latest];
+          try {
+            const res = await fetch(base + '/rounds.json', { cache: 'no-store' });
+            if (res.ok) rounds = await res.json();
+          } catch (e) { /* history manifest optional */ }
+          rounds = rounds.slice().sort((a, b) => (a.computed_at < b.computed_at ? -1 : 1));
+          store[name] = { rounds, latest: rounds[rounds.length - 1] };
+        }
+        return { source: 'live', cohorts: cfg.cohorts.slice(), store };
+      } catch (e) { /* fall back to bundled sample data */ }
+    }
+    const mod = await import('./sample-data.js');
+    return { source: 'sample', cohorts: mod.SAMPLE_COHORTS.slice(), store: mod.SAMPLE_STORE };
+  }
+
+  colorFor(name, i) { return this.COLORS[name] || this.PALETTE[i % this.PALETTE.length]; }
+  r(x) { return Math.round(x * 100) / 100; }
+  xAt(i, n) { return this.PX0 + (n <= 1 ? 0 : (i / (n - 1))) * (this.PX1 - this.PX0); }
+  efY(ef) { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.PY1 - t * (this.PY1 - this.PY0); }
+  confY(v) { const vv = Math.max(0.4, Math.min(1, v)); return this.PY1 - ((vv - 0.4) / 0.6) * (this.PY1 - this.PY0); }
+  pad2(x) { return String(x).padStart(2, '0'); }
+  hm(s) { const d = new Date(s); return this.pad2(d.getUTCHours()) + ':' + this.pad2(d.getUTCMinutes()); }
+  hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
+  rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
+  statusMeta(s) {
+    if (s === 'ok') return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
+    if (s === 'target_unmet') return { label: 'TARGET UNMET', color: 'oklch(0.84 0.13 82)' };
+    return { label: 'INSUFFICIENT', color: 'oklch(0.72 0.16 26)' };
+  }
+  vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
+
+  buildTimeChart(metric, cohorts, store, colors, n, hoverIndex) {
+    const first = store[cohorts[0]].rounds;
+    const nn = Math.min(n, first.length);
+    const series = cohorts.map((name) => {
+      const color = colors[name];
+      const rounds = this.vis(store[name].rounds, nn);
+      const pts = []; const segs = []; const carried = []; let cur = []; let hoverDot = null;
+      rounds.forEach((rd, i) => {
+        const x = this.xAt(i, nn);
+        let y = null, val = null;
+        if (metric === 'ef') { if (rd.status === 'ok' && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
+        else { if (rd.status === 'ok' && rd.confidence != null) { val = rd.confidence; y = this.confY(val); } }
+        if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
+        else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
+      });
+      if (cur.length) segs.push(cur);
+      const path = segs.map((sg) => sg.map((p, j) => (j ? 'L' : 'M') + this.r(p[0]) + ' ' + this.r(p[1])).join(' ')).join(' ');
+      return { name, color, path, points: pts, carried, hoverDot };
+    });
+    const hLines = [];
+    if (metric === 'ef') {
+      this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
+    } else {
+      [1, 0.9, 0.7, 0.5].forEach((v) => { const ref = v === 0.9; hLines.push({ y: this.r(this.confY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
+    }
+    const xTicks = []; const count = Math.min(6, nn);
+    for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(first[first.length - nn + i].computed_at) }); }
+    let hasHover = false, hoverX = 0, hoverTime = '', readoutRows = [];
+    if (hoverIndex != null && hoverIndex < nn) {
+      hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(first[first.length - nn + hoverIndex].computed_at);
+      readoutRows = cohorts.map((name) => {
+        const rd = this.vis(store[name].rounds, nn)[hoverIndex]; let text = '—';
+        if (metric === 'ef') text = (rd.status === 'ok' && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + ' · carried') : 'insufficient');
+        else text = (rd.status === 'ok' && rd.confidence != null) ? (Math.round(rd.confidence * 100) + '%') : '—';
+        return { name, color: colors[name], text };
+      });
+    }
+    return { series, hLines, xTicks, hasHover, noHover: !hasHover, hoverX, hoverTime, readoutRows, PX0: this.PX0, PX1: this.PX1 };
+  }
+
+  buildTradeoff(name, store, color) {
+    const round = store[name].latest; const per = round.per_ef; const n = per.length;
+    const maxLat = Math.max.apply(null, per.map((p) => p.latency_p50_ms));
+    const niceMax = Math.max(10, Math.ceil(maxLat / 10) * 10);
+    const xO = (gi) => this.r(this.PX0 + (gi / (n - 1)) * (this.PX1 - this.PX0));
+    const rY = (v) => this.r(this.confY(v));
+    const lY = (l) => this.r(this.PY1 - (l / niceMax) * (this.PY1 - this.PY0));
+    const recallPts = per.map((p, gi) => ({ cx: xO(gi), cy: rY(p.quantile_recall) }));
+    const latPts = per.map((p, gi) => ({ cx: xO(gi), cy: lY(p.latency_p50_ms) }));
+    const recallPath = recallPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
+    const latPath = latPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
+    const recEf = round.recommended_ef != null ? round.recommended_ef : (round.effective ? round.effective.recommended_ef : null);
+    const recGi = recEf != null ? this.EF.indexOf(recEf) : -1;
+    return {
+      round, recallPath, latPath, recallPts, latPts,
+      targetY: rY(0.9), recEf, recX: recGi >= 0 ? xO(recGi) : null,
+      xTicks: per.map((p, gi) => ({ x: xO(gi), label: String(p.ef) })),
+      leftTicks: [0.4, 0.6, 0.8, 1.0].map((v) => ({ y: rY(v), label: v.toFixed(1) })),
+      rightTicks: [0, niceMax / 2, niceMax].map((v) => ({ y: lY(v), label: String(Math.round(v)) })),
+      color, latColor: 'oklch(0.82 0.1 62)', PX0: this.PX0, PX1: this.PX1,
+    };
+  }
+
+  buildSpark(name, store, n) {
+    const rounds = this.vis(store[name].rounds, n); const W = 120, H = 34, p = 3;
+    const xs = (i) => this.r(p + (rounds.length <= 1 ? 0 : (i / (rounds.length - 1))) * (W - 2 * p));
+    const ey = (ef) => { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.r(H - p - t * (H - 2 * p)); };
+    const pts = [];
+    rounds.forEach((rd, i) => { const ef = rd.recommended_ef != null ? rd.recommended_ef : (rd.effective ? rd.effective.recommended_ef : null); if (ef != null) pts.push([xs(i), ey(ef)]); });
+    return { path: pts.map((p2, j) => (j ? 'L' : 'M') + p2[0] + ' ' + p2[1]).join(' '), dot: pts.length ? { cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] } : null };
+  }
+
+  renderVals() {
+    const s = this.state;
+    if (s.loading) return { loading: true, ready: false, error: null };
+    if (s.error) return { loading: false, ready: false, error: s.error };
+    const cohorts = s.cohorts; const store = s.store;
+    const colors = {}; cohorts.forEach((nm, i) => { colors[nm] = this.colorFor(nm, i); });
+    const total = store[cohorts[0]].rounds.length;
+    const refNow = store[cohorts[0]].latest.computed_at;
+    const n = Math.max(6, Math.min(total, s.chartRange || 24));
+
+    const cards = cohorts.map((name) => {
+      const latest = store[name].latest; const meta = this.statusMeta(latest.status); const color = colors[name];
+      const selected = name === s.selectedCohort;
+      const carried = latest.status !== 'ok' && latest.effective != null;
+      const confVal = latest.confidence != null ? latest.confidence : (latest.effective ? latest.effective.confidence : null);
+      const spark = this.buildSpark(name, store, n);
+      return {
+        name, index: latest.index, statusLabel: meta.label, color, efColor: color, selected,
+        onSelect: () => this.setState({ selectedCohort: name }),
+        cardStyle: 'display:flex;flex-direction:column;gap:15px;padding:22px 24px;border-radius:16px;cursor:pointer;background:oklch(0.212 0.013 258);transition:border-color .15s, box-shadow .15s;border:1px solid ' + (selected ? color : 'oklch(0.29 0.014 258)') + ';box-shadow:' + (selected ? '0 0 0 1px ' + color + ', 0 14px 34px -22px ' + color : '0 8px 24px -20px rgba(0,0,0,0.6)') + ';',
+        badgeStyle: "font:600 10.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.09em;padding:5px 9px;border-radius:999px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 16%, transparent);border:1px solid color-mix(in oklab, ' + meta.color + ' 34%, transparent);',
+        efText: latest.recommended_ef != null ? String(latest.recommended_ef) : (latest.effective ? String(latest.effective.recommended_ef) : '—'),
+        carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round)) : '',
+        confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
+        confBarW: confVal != null ? Math.round(confVal * 100) : 0,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · k=' + latest.target.k,
+        gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
+        uniqueText: latest.samples.unique.toLocaleString(),
+        sparkPath: spark.path, sparkDot: spark.dot,
+      };
+    });
+
+    const legend = cohorts.map((name) => {
+      const sel = name === s.selectedCohort;
+      return { name, color: colors[name], onSelect: () => this.setState({ selectedCohort: name }),
+        style: "display:flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;cursor:pointer;font:500 12.5px/1 'IBM Plex Sans',sans-serif;color:" + (sel ? 'oklch(0.96 0.004 258)' : 'oklch(0.68 0.012 258)') + ';background:' + (sel ? 'oklch(0.26 0.014 258)' : 'transparent') + ';border:1px solid ' + (sel ? 'oklch(0.34 0.014 258)' : 'transparent') + ';' };
+    });
+
+    const rangeOptions = [{ v: 12, label: '12' }, { v: 24, label: '24' }, { v: total, label: 'All' }].map((o) => {
+      const active = n === Math.min(total, o.v);
+      return { label: o.label, onClick: () => this.setState({ chartRange: o.v }),
+        bg: active ? 'oklch(0.83 0.11 195 / 0.18)' : 'transparent',
+        fg: active ? 'oklch(0.9 0.09 195)' : 'oklch(0.62 0.012 258)' };
+    });
+
+    const efChart = this.buildTimeChart('ef', cohorts, store, colors, n, s.hoverIndex);
+    const confChart = this.buildTimeChart('conf', cohorts, store, colors, n, s.hoverIndex);
+    const onHoverMove = (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const vx = (e.clientX - rect.left) / rect.width * this.CW;
+      let i = Math.round((vx - this.PX0) / (this.PX1 - this.PX0) * (n - 1));
+      i = Math.max(0, Math.min(n - 1, i));
+      if (i !== this.state.hoverIndex) this.setState({ hoverIndex: i });
+    };
+    const onHoverLeave = () => { if (this.state.hoverIndex != null) this.setState({ hoverIndex: null }); };
+
+    const showTradeoff = this.props.showTradeoffCurve !== false;
+    const tradeoff = showTradeoff ? this.buildTradeoff(s.selectedCohort, store, colors[s.selectedCohort]) : null;
+
+    const hlimit = Math.max(4, Math.min(total, this.props.historyLimit || 12));
+    const selColor = colors[s.selectedCohort];
+    const history = store[s.selectedCohort].rounds.slice().reverse().slice(0, hlimit).map((rd) => {
+      const meta = this.statusMeta(rd.status); const id = rd.computed_at; const expanded = !!s.expanded[id];
+      const recEf = rd.recommended_ef != null ? rd.recommended_ef : (rd.effective ? rd.effective.recommended_ef : null);
+      const w = rd.window; const c = rd.coverage; const sm = rd.samples;
+      const metrics = [
+        { label: 'Window', value: this.hm(w.start) + ' → ' + this.hm(w.end) + ' · ' + Math.round(w.duration_seconds / 60) + 'm' },
+        { label: 'Unique samples', value: sm.unique.toLocaleString() },
+        { label: 'Measured', value: sm.measured.toLocaleString() },
+        { label: 'Failed', value: sm.failed.toLocaleString() },
+        { label: 'Train / holdout', value: sm.train.toLocaleString() + ' / ' + sm.test.toLocaleString() },
+        { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + Math.round(c.empty_window_fraction * 100) + '% empty' },
+        { label: 'Dropped frames', value: (rd.dropped_frame_fraction * 100).toFixed(2) + '%' },
+        { label: 'Parts used', value: rd.parts_used + ' · ' + rd.incompatible_parts + ' incompat.' },
+        { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
+        { label: 'Train recall @ ef', value: rd.train_quantile_recall != null ? rd.train_quantile_recall.toFixed(3) : '—' },
+        { label: 'Holdout recall @ ef', value: rd.test_quantile_recall != null ? rd.test_quantile_recall.toFixed(3) : '—' },
+        { label: 'Transferred', value: rd.transferred == null ? '—' : (rd.transferred ? 'yes' : 'no') },
+      ];
+      const perEf = rd.per_ef.map((p) => ({
+        ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),
+        rowStyle: "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:6px 10px;border-radius:7px;font:500 12.5px/1.2 'IBM Plex Mono',monospace;" + (p.ef === recEf ? 'background:color-mix(in oklab, ' + selColor + ' 16%, transparent);color:oklch(0.96 0.004 258);' : 'color:oklch(0.7 0.012 258);'),
+      }));
+      return {
+        id, expanded, onToggle: () => this.setState((st) => ({ expanded: Object.assign({}, st.expanded, { [id]: !st.expanded[id] }) })),
+        timeText: this.hms(id), statusLabel: meta.label,
+        badgeStyle: "font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.08em;padding:4px 8px;border-radius:6px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 15%, transparent);',
+        efText: recEf != null ? String(recEf) : '—',
+        confText: rd.confidence != null ? Math.round(rd.confidence * 100) + '%' : '—',
+        uniqueText: sm.unique.toLocaleString(), chevron: expanded ? '▾' : '▸',
+        rowStyle: 'display:flex;align-items:center;gap:14px;padding:14px 16px;cursor:pointer;',
+        metrics, perEf, error: rd.error,
+      };
+    });
+
+    return {
+      loading: false, ready: true, error: null,
+      sourceLabel: s.source === 'live' ? 'Live' : 'Sample data', sourceLive: s.source === 'live',
+      asOfText: this.hms(refNow) + ' UTC · ' + new Date(refNow).toISOString().slice(0, 10),
+      cohortCountText: cohorts.length + (cohorts.length === 1 ? ' cohort' : ' cohorts'),
+      cards, legend, rangeOptions, efChart, confChart, onHoverMove, onHoverLeave,
+      showTradeoff, tradeoff, selectedName: s.selectedCohort, history,
+      historyCountText: history.length + ' of ' + total + ' rounds',
+    };
+  }
+}
+</script>
+</body>
+</html>
