@@ -38,7 +38,7 @@
     </div>
     <div style="display:flex;align-items:center;gap:18px;">
       <div style="display:flex;align-items:center;gap:8px;padding:7px 13px;border-radius:999px;background:oklch(0.21 0.013 258);border:1px solid oklch(0.29 0.014 258);">
-        <span style="width:7px;height:7px;border-radius:50%;background:oklch(0.8 0.14 158);animation:vsPulse 2.4s ease-in-out infinite;"></span>
+        <span style="{{ sourceDotStyle }}"></span>
         <span style="font-size:12.5px;font-weight:500;color:oklch(0.82 0.01 258);">{{ sourceLabel }}</span>
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;">
@@ -98,7 +98,7 @@
             <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:14px;">
               <div style="display:flex;gap:20px;">
                 <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;color:oklch(0.52 0.014 258);">exact scan</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.85 0.01 258);">{{ c.gtText }}</span></div>
-                <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;color:oklch(0.52 0.014 258);">unique</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.85 0.01 258);">{{ c.uniqueText }}</span></div>
+                <div style="display:flex;flex-direction:column;gap:2px;"><span style="font-size:10.5px;letter-spacing:0.05em;text-transform:uppercase;color:oklch(0.52 0.014 258);">unique samples</span><span style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:oklch(0.85 0.01 258);">{{ c.uniqueText }}</span></div>
               </div>
               <svg viewBox="0 0 120 34" width="112" style="overflow:visible;">
                 <path d="{{ c.sparkPath }}" fill="none" stroke="{{ c.color }}" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" opacity="0.85"></path>
@@ -141,12 +141,12 @@
               <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
             </sc-for>
             <sc-if value="{{ efChart.hasHover }}" hint-placeholder-val="">
-              <line x1="{{ efChart.hoverX }}" x2="{{ efChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+              <line x1="{{ efChart.hoverX }}" x2="{{ efChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.7 0.02 258)" strokeWidth="1.2"></line>
             </sc-if>
             <sc-for list="{{ efChart.series }}" as="s" hint-placeholder-count="3">
               <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
               <sc-for list="{{ s.points }}" as="p" hint-placeholder-count="6"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ s.color }}"></circle></sc-for>
-              <sc-for list="{{ s.carried }}" as="cp" hint-placeholder-count="0"><circle cx="{{ cp.cx }}" cy="{{ cp.cy }}" r="3" fill="oklch(0.163 0.012 258)" stroke="{{ s.color }}" strokeWidth="1.4" strokeDasharray="2 2"></circle></sc-for>
+              <sc-for list="{{ s.carried }}" as="cp" hint-placeholder-count="0"><circle cx="{{ cp.cx }}" cy="{{ cp.cy }}" r="3" fill="oklch(0.163 0.012 258)" stroke="{{ s.color }}" strokeWidth="1.4" stroke-dasharray="2 2"></circle></sc-for>
               <sc-if value="{{ s.hoverDot }}" hint-placeholder-val=""><circle cx="{{ s.hoverDot.cx }}" cy="{{ s.hoverDot.cy }}" r="4" fill="{{ s.color }}" stroke="oklch(0.163 0.012 258)" strokeWidth="1.5"></circle></sc-if>
             </sc-for>
           </svg>
@@ -164,17 +164,17 @@
         </div>
 
         <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Holdout confidence</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">0.40 – 1.00</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Holdout confidence</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">0.00 – 1.00</span></div>
           <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
-            <sc-for list="{{ confChart.hLines }}" as="h" hint-placeholder-count="4">
-              <line x1="{{ confChart.PX0 }}" x2="{{ confChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="{{ h.stroke }}" strokeWidth="1" strokeDasharray="{{ h.dash }}"></line>
+            <sc-for list="{{ confChart.hLines }}" as="h" hint-placeholder-count="6">
+              <line x1="{{ confChart.PX0 }}" x2="{{ confChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="{{ h.stroke }}" strokeWidth="1" stroke-dasharray="{{ h.dash }}"></line>
               <text x="38" y="{{ h.y }}" textAnchor="end" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="{{ h.labelFill }}">{{ h.label }}</text>
             </sc-for>
             <sc-for list="{{ confChart.xTicks }}" as="t" hint-placeholder-count="6">
               <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
             </sc-for>
             <sc-if value="{{ confChart.hasHover }}" hint-placeholder-val="">
-              <line x1="{{ confChart.hoverX }}" x2="{{ confChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+              <line x1="{{ confChart.hoverX }}" x2="{{ confChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.7 0.02 258)" strokeWidth="1.2"></line>
             </sc-if>
             <sc-for list="{{ confChart.series }}" as="s" hint-placeholder-count="3">
               <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
@@ -215,7 +215,7 @@
               <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.color }};"></span>quantile recall</span>
               <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.latColor }};"></span>p50 latency</span>
             </div>
-            <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;">
+            <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onTradeoffMove }}" onMouseLeave="{{ onTradeoffLeave }}">
               <sc-for list="{{ tradeoff.leftTicks }}" as="h" hint-placeholder-count="4">
                 <line x1="{{ tradeoff.PX0 }}" x2="{{ tradeoff.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="oklch(0.26 0.013 258)" strokeWidth="1"></line>
                 <text x="38" y="{{ h.y }}" textAnchor="end" dominantBaseline="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="{{ tradeoff.color }}">{{ h.label }}</text>
@@ -226,17 +226,33 @@
               <sc-for list="{{ tradeoff.xTicks }}" as="t" hint-placeholder-count="10">
                 <text x="{{ t.x }}" y="282" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10" fill="oklch(0.52 0.014 258)">{{ t.label }}</text>
               </sc-for>
-              <line x1="{{ tradeoff.PX0 }}" x2="{{ tradeoff.PX1 }}" y1="{{ tradeoff.targetY }}" y2="{{ tradeoff.targetY }}" stroke="oklch(0.8 0.14 158)" strokeWidth="1.2" strokeDasharray="5 4"></line>
-              <text x="{{ tradeoff.PX1 }}" y="{{ tradeoff.targetY }}" dx="-4" dy="-5" textAnchor="end" fontFamily="IBM Plex Mono, monospace" fontSize="10" fill="oklch(0.8 0.14 158)">target 0.90</text>
+              <line x1="{{ tradeoff.PX0 }}" x2="{{ tradeoff.PX1 }}" y1="{{ tradeoff.targetY }}" y2="{{ tradeoff.targetY }}" stroke="oklch(0.8 0.14 158)" strokeWidth="1.2" stroke-dasharray="5 4"></line>
+              <text x="{{ tradeoff.PX0 }}" y="{{ tradeoff.targetY }}" dx="4" dy="-5" textAnchor="start" fontFamily="IBM Plex Mono, monospace" fontSize="10" fill="oklch(0.8 0.14 158)">target 0.90</text>
               <sc-if value="{{ tradeoff.recX }}" hint-placeholder-val="">
-                <line x1="{{ tradeoff.recX }}" x2="{{ tradeoff.recX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" strokeDasharray="3 3"></line>
+                <line x1="{{ tradeoff.recX }}" x2="{{ tradeoff.recX }}" y1="14" y2="260" stroke="oklch(0.6 0.02 258)" strokeWidth="1" stroke-dasharray="3 3"></line>
                 <text x="{{ tradeoff.recX }}" y="26" textAnchor="middle" fontFamily="IBM Plex Mono, monospace" fontSize="10.5" fill="oklch(0.9 0.008 258)">ef {{ tradeoff.recEf }}</text>
+              </sc-if>
+              <sc-if value="{{ tradeoff.hasHover }}" hint-placeholder-val="">
+                <line x1="{{ tradeoff.hoverX }}" x2="{{ tradeoff.hoverX }}" y1="14" y2="260" stroke="oklch(0.7 0.02 258)" strokeWidth="1.2"></line>
               </sc-if>
               <path d="{{ tradeoff.latPath }}" fill="none" stroke="{{ tradeoff.latColor }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
               <sc-for list="{{ tradeoff.latPts }}" as="p" hint-placeholder-count="10"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ tradeoff.latColor }}"></circle></sc-for>
               <path d="{{ tradeoff.recallPath }}" fill="none" stroke="{{ tradeoff.color }}" strokeWidth="2.2" strokeLinejoin="round" strokeLinecap="round"></path>
               <sc-for list="{{ tradeoff.recallPts }}" as="p" hint-placeholder-count="10"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.4" fill="{{ tradeoff.color }}"></circle></sc-for>
+              <sc-if value="{{ tradeoff.recallDot }}" hint-placeholder-val=""><circle cx="{{ tradeoff.recallDot.cx }}" cy="{{ tradeoff.recallDot.cy }}" r="4" fill="{{ tradeoff.color }}" stroke="oklch(0.163 0.012 258)" strokeWidth="1.5"></circle></sc-if>
+              <sc-if value="{{ tradeoff.latDot }}" hint-placeholder-val=""><circle cx="{{ tradeoff.latDot.cx }}" cy="{{ tradeoff.latDot.cy }}" r="4" fill="{{ tradeoff.latColor }}" stroke="oklch(0.163 0.012 258)" strokeWidth="1.5"></circle></sc-if>
             </svg>
+            <sc-if value="{{ tradeoff.hasHover }}" hint-placeholder-val="">
+              <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">
+                <span style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:oklch(0.86 0.01 258);">{{ tradeoff.hoverEf }}</span>
+                <sc-for list="{{ tradeoff.readoutRows }}" as="rr" hint-placeholder-count="3">
+                  <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:oklch(0.66 0.012 258);"><span style="width:8px;height:8px;border-radius:50%;background:{{ rr.color }};"></span>{{ rr.name }}<span style="font-family:'IBM Plex Mono',monospace;color:oklch(0.9 0.008 258);">{{ rr.text }}</span></span>
+                </sc-for>
+              </div>
+            </sc-if>
+            <sc-if value="{{ tradeoff.noHover }}" hint-placeholder-val="{{ true }}">
+              <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the calibrated ef. Hover to read recall and latency at each grid step.</div>
+            </sc-if>
           </div>
         </sc-if>
 
@@ -294,13 +310,18 @@
 </div>
 </div>
 </x-dc>
-<script type="text/x-dc" data-dc-script data-props="{&quot;showTradeoffCurve&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;visibleRounds&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:24,&quot;min&quot;:6,&quot;max&quot;:28,&quot;step&quot;:1,&quot;unit&quot;:&quot; rounds&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;historyLimit&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:12,&quot;min&quot;:4,&quot;max&quot;:28,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;History&quot;},&quot;expandFirstRound&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;History&quot;}}">
+<script type="text/x-dc" data-dc-script data-props="{&quot;showTradeoffCurve&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;visibleRounds&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:24,&quot;min&quot;:6,&quot;max&quot;:28,&quot;step&quot;:1,&quot;unit&quot;:&quot; rounds&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;expandFirstRound&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;History&quot;}}">
 class Component extends DCLogic {
   EF = [10, 20, 40, 60, 80, 100, 150, 200, 300, 400];
   COLORS = { 'superuser': 'oklch(0.83 0.11 195)', 'products/search': 'oklch(0.76 0.13 292)', 'support/tickets': 'oklch(0.84 0.12 74)' };
   PALETTE = ['oklch(0.83 0.11 195)', 'oklch(0.76 0.13 292)', 'oklch(0.84 0.12 74)', 'oklch(0.80 0.13 150)', 'oklch(0.74 0.15 18)'];
   CW = 760; CH = 290; PX0 = 46; PX1 = 742; PY0 = 14; PY1 = 260;
-  state = { loading: true, error: null, source: null, cohorts: [], store: {}, selectedCohort: null, expanded: {}, hoverIndex: null, chartRange: 24 };
+  state = { loading: true, error: null, source: null, cohorts: [], store: {}, selectedCohort: null, expanded: {}, hoverIndex: null, tradeoffHover: null, chartRange: 24 };
+
+  // Live view re-polls the calibration store on this interval so the dashboard
+  // tracks the tuner without a manual reload; the connection pill reflects
+  // freshness between polls (Live / Stale / Offline).
+  REFRESH_MS = 30000;
 
   componentDidMount() {
     this.loadData().then(({ source, cohorts, store }) => {
@@ -311,26 +332,54 @@ class Component extends DCLogic {
         expanded[rr[rr.length - 1].computed_at] = true;
       }
       const range = Math.max(6, Math.min(28, this.props.visibleRounds || 24));
-      this.setState({ loading: false, source, cohorts, store, selectedCohort: sel, expanded, chartRange: range });
+      this.setState({ loading: false, source, cohorts, store, selectedCohort: sel, expanded, chartRange: range, lastFetchOk: source === 'live' ? true : null });
+      if (source === 'live') {
+        this._poll = setInterval(() => this.refreshLive(), this.REFRESH_MS);
+      }
     }).catch((err) => this.setState({ loading: false, error: String((err && err.message) || err) }));
+  }
+
+  componentWillUnmount() {
+    if (this._poll) { clearInterval(this._poll); this._poll = null; }
+  }
+
+  // Re-fetches the live store. On success, swaps in fresh data and marks the
+  // connection healthy; on failure, keeps the last good data on screen and
+  // flips the pill to Offline. Never falls back to sample data mid-session —
+  // a transient blip should not silently replace real data with fixtures.
+  async refreshLive() {
+    const cfg = (typeof window !== 'undefined') ? window.VECTORSEAM_CONFIG : null;
+    if (!cfg || !cfg.cohorts) return;
+    try {
+      const store = await this.fetchLiveStore(cfg);
+      this.setState({ store, lastFetchOk: true });
+    } catch (e) {
+      this.setState({ lastFetchOk: false });
+    }
+  }
+
+  async fetchLiveStore(cfg) {
+    const base0 = (cfg.baseUrl || '').replace(/\/$/, '');
+    const store = {};
+    for (const name of cfg.cohorts) {
+      const base = base0 + '/calibrations/' + name;
+      const latest = await (await fetch(base + '/latest.json', { cache: 'no-store' })).json();
+      let rounds = [latest];
+      try {
+        const res = await fetch(base + '/rounds.json', { cache: 'no-store' });
+        if (res.ok) rounds = await res.json();
+      } catch (e) { /* history manifest optional */ }
+      rounds = rounds.slice().sort((a, b) => (a.computed_at < b.computed_at ? -1 : 1));
+      store[name] = { rounds, latest: rounds[rounds.length - 1] };
+    }
+    return store;
   }
 
   async loadData() {
     const cfg = (typeof window !== 'undefined') ? window.VECTORSEAM_CONFIG : null;
     if (cfg && cfg.baseUrl && Array.isArray(cfg.cohorts) && cfg.cohorts.length) {
       try {
-        const store = {};
-        for (const name of cfg.cohorts) {
-          const base = cfg.baseUrl.replace(/\/$/, '') + '/calibrations/' + name;
-          const latest = await (await fetch(base + '/latest.json', { cache: 'no-store' })).json();
-          let rounds = [latest];
-          try {
-            const res = await fetch(base + '/rounds.json', { cache: 'no-store' });
-            if (res.ok) rounds = await res.json();
-          } catch (e) { /* history manifest optional */ }
-          rounds = rounds.slice().sort((a, b) => (a.computed_at < b.computed_at ? -1 : 1));
-          store[name] = { rounds, latest: rounds[rounds.length - 1] };
-        }
+        const store = await this.fetchLiveStore(cfg);
         return { source: 'live', cohorts: cfg.cohorts.slice(), store };
       } catch (e) { /* fall back to bundled sample data */ }
     }
@@ -343,14 +392,26 @@ class Component extends DCLogic {
   xAt(i, n) { return this.PX0 + (n <= 1 ? 0 : (i / (n - 1))) * (this.PX1 - this.PX0); }
   efY(ef) { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.PY1 - t * (this.PY1 - this.PY0); }
   confY(v) { const vv = Math.max(0.4, Math.min(1, v)); return this.PY1 - ((vv - 0.4) / 0.6) * (this.PY1 - this.PY0); }
+  // Holdout confidence spans the full [0, 1] — it routinely sits well below 0.40
+  // (e.g. sparse rounds), so the confidence chart cannot share confY's [0.4, 1]
+  // recall axis, which would flatten every low value onto the floor.
+  confChartY(v) { const vv = Math.max(0, Math.min(1, v)); return this.PY1 - vv * (this.PY1 - this.PY0); }
   pad2(x) { return String(x).padStart(2, '0'); }
   hm(s) { const d = new Date(s); return this.pad2(d.getUTCHours()) + ':' + this.pad2(d.getUTCMinutes()); }
   hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
   rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
-  statusMeta(s) {
-    if (s === 'ok') return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
+  statusMeta(rd) {
+    const s = rd.status;
+    if (s === 'ok') {
+      // A recommendation that cleared on the train split but did not confirm on
+      // the holdout split (transferred === false) is not trustworthy yet — the
+      // same ef gave a different recall out of sample, so more samples are
+      // needed. Surface it as a caution state, not OK.
+      if (rd.transferred === false) return { label: 'NOT TRANSFERRED', color: 'oklch(0.84 0.13 82)' };
+      return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
+    }
     if (s === 'target_unmet') return { label: 'TARGET UNMET', color: 'oklch(0.84 0.13 82)' };
-    return { label: 'INSUFFICIENT', color: 'oklch(0.72 0.16 26)' };
+    return { label: 'INSUFFICIENT SAMPLES', color: 'oklch(0.72 0.16 26)' };
   }
   vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
 
@@ -365,7 +426,7 @@ class Component extends DCLogic {
         const x = this.xAt(i, nn);
         let y = null, val = null;
         if (metric === 'ef') { if (rd.status === 'ok' && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
-        else { if (rd.status === 'ok' && rd.confidence != null) { val = rd.confidence; y = this.confY(val); } }
+        else { if (rd.status === 'ok' && rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
         if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
         else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
       });
@@ -377,7 +438,7 @@ class Component extends DCLogic {
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
-      [1, 0.9, 0.7, 0.5].forEach((v) => { const ref = v === 0.9; hLines.push({ y: this.r(this.confY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
+      [1, 0.9, 0.75, 0.5, 0.25, 0].forEach((v) => { const ref = v === 0.9; hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
     }
     const xTicks = []; const count = Math.min(6, nn);
     for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(first[first.length - nn + i].computed_at) }); }
@@ -394,7 +455,7 @@ class Component extends DCLogic {
     return { series, hLines, xTicks, hasHover, noHover: !hasHover, hoverX, hoverTime, readoutRows, PX0: this.PX0, PX1: this.PX1 };
   }
 
-  buildTradeoff(name, store, color) {
+  buildTradeoff(name, store, color, hoverGi) {
     const round = store[name].latest; const per = round.per_ef; const n = per.length;
     const maxLat = Math.max.apply(null, per.map((p) => p.latency_p50_ms));
     const niceMax = Math.max(10, Math.ceil(maxLat / 10) * 10);
@@ -407,13 +468,29 @@ class Component extends DCLogic {
     const latPath = latPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const recEf = round.recommended_ef != null ? round.recommended_ef : (round.effective ? round.effective.recommended_ef : null);
     const recGi = recEf != null ? this.EF.indexOf(recEf) : -1;
+    const latColor = 'oklch(0.82 0.1 62)';
+    // Hover snaps to the nearest grid position; a solid vertical guide (vs the
+    // dashed calibrated-ef line) plus a readout of that ef's exact values.
+    let hasHover = false, hoverX = 0, hoverEf = '', readoutRows = [], recallDot = null, latDot = null;
+    if (hoverGi != null && hoverGi >= 0 && hoverGi < n) {
+      const p = per[hoverGi];
+      hasHover = true; hoverX = xO(hoverGi); hoverEf = 'ef ' + p.ef;
+      recallDot = { cx: xO(hoverGi), cy: rY(p.quantile_recall) };
+      latDot = { cx: xO(hoverGi), cy: lY(p.latency_p50_ms) };
+      readoutRows = [
+        { color, name: 'quantile recall', text: p.quantile_recall.toFixed(3) },
+        { color, name: 'mean recall', text: p.mean_recall.toFixed(3) },
+        { color: latColor, name: 'p50 latency', text: p.latency_p50_ms.toFixed(1) + ' ms' },
+      ];
+    }
     return {
       round, recallPath, latPath, recallPts, latPts,
       targetY: rY(0.9), recEf, recX: recGi >= 0 ? xO(recGi) : null,
       xTicks: per.map((p, gi) => ({ x: xO(gi), label: String(p.ef) })),
       leftTicks: [0.4, 0.6, 0.8, 1.0].map((v) => ({ y: rY(v), label: v.toFixed(1) })),
       rightTicks: [0, niceMax / 2, niceMax].map((v) => ({ y: lY(v), label: String(Math.round(v)) })),
-      color, latColor: 'oklch(0.82 0.1 62)', PX0: this.PX0, PX1: this.PX1,
+      color, latColor, PX0: this.PX0, PX1: this.PX1,
+      hasHover, noHover: !hasHover, hoverX, hoverEf, readoutRows, recallDot, latDot, gridN: n,
     };
   }
 
@@ -437,7 +514,7 @@ class Component extends DCLogic {
     const n = Math.max(6, Math.min(total, s.chartRange || 24));
 
     const cards = cohorts.map((name) => {
-      const latest = store[name].latest; const meta = this.statusMeta(latest.status); const color = colors[name];
+      const latest = store[name].latest; const meta = this.statusMeta(latest); const color = colors[name];
       const selected = name === s.selectedCohort;
       const carried = latest.status !== 'ok' && latest.effective != null;
       const confVal = latest.confidence != null ? latest.confidence : (latest.effective ? latest.effective.confidence : null);
@@ -483,12 +560,23 @@ class Component extends DCLogic {
     const onHoverLeave = () => { if (this.state.hoverIndex != null) this.setState({ hoverIndex: null }); };
 
     const showTradeoff = this.props.showTradeoffCurve !== false;
-    const tradeoff = showTradeoff ? this.buildTradeoff(s.selectedCohort, store, colors[s.selectedCohort]) : null;
+    const tradeoffGridN = showTradeoff ? store[s.selectedCohort].latest.per_ef.length : 0;
+    const onTradeoffMove = (e) => {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const vx = (e.clientX - rect.left) / rect.width * this.CW;
+      let gi = Math.round((vx - this.PX0) / (this.PX1 - this.PX0) * (tradeoffGridN - 1));
+      gi = Math.max(0, Math.min(tradeoffGridN - 1, gi));
+      if (gi !== this.state.tradeoffHover) this.setState({ tradeoffHover: gi });
+    };
+    const onTradeoffLeave = () => { if (this.state.tradeoffHover != null) this.setState({ tradeoffHover: null }); };
+    const tradeoff = showTradeoff ? this.buildTradeoff(s.selectedCohort, store, colors[s.selectedCohort], s.tradeoffHover) : null;
 
-    const hlimit = Math.max(4, Math.min(total, this.props.historyLimit || 12));
+    // Round history follows the same 12 / 24 / All range selector as the
+    // charts (n), so switching to All lists every round rather than a fixed 12.
+    const hlimit = n;
     const selColor = colors[s.selectedCohort];
     const history = store[s.selectedCohort].rounds.slice().reverse().slice(0, hlimit).map((rd) => {
-      const meta = this.statusMeta(rd.status); const id = rd.computed_at; const expanded = !!s.expanded[id];
+      const meta = this.statusMeta(rd); const id = rd.computed_at; const expanded = !!s.expanded[id];
       const recEf = rd.recommended_ef != null ? rd.recommended_ef : (rd.effective ? rd.effective.recommended_ef : null);
       const w = rd.window; const c = rd.coverage; const sm = rd.samples;
       const metrics = [
@@ -521,15 +609,39 @@ class Component extends DCLogic {
       };
     });
 
+    const conn = this.connectionMeta(s, refNow);
+
     return {
       loading: false, ready: true, error: null,
-      sourceLabel: s.source === 'live' ? 'Live' : 'Sample data', sourceLive: s.source === 'live',
+      sourceLabel: conn.label, sourceLive: s.source === 'live',
+      sourceDotStyle: 'width:7px;height:7px;border-radius:50%;background:' + conn.dotColor + ';' + (conn.pulse ? 'animation:vsPulse 2.4s ease-in-out infinite;' : ''),
       asOfText: this.hms(refNow) + ' UTC · ' + new Date(refNow).toISOString().slice(0, 10),
       cohortCountText: cohorts.length + (cohorts.length === 1 ? ' cohort' : ' cohorts'),
       cards, legend, rangeOptions, efChart, confChart, onHoverMove, onHoverLeave,
-      showTradeoff, tradeoff, selectedName: s.selectedCohort, history,
+      showTradeoff, tradeoff, onTradeoffMove, onTradeoffLeave,
+      selectedName: s.selectedCohort, history,
       historyCountText: history.length + ' of ' + total + ' rounds',
     };
+  }
+
+  // The connection pill. For sample data it is a static "Sample data". For live
+  // data it reflects whether the last poll succeeded (Offline on failure) and,
+  // when it did, whether the newest round is recent enough that the tuner still
+  // looks alive (Live) or has gone quiet (Stale). STALE_AFTER_MS is generous —
+  // the demo tuner runs on a 1-minute interval over 10-minute windows.
+  connectionMeta(s, refNow) {
+    if (s.source !== 'live') {
+      return { label: 'Sample data', dotColor: 'oklch(0.84 0.12 74)', pulse: false };
+    }
+    if (s.lastFetchOk === false) {
+      return { label: 'Offline', dotColor: 'oklch(0.72 0.16 26)', pulse: false };
+    }
+    const STALE_AFTER_MS = 5 * 60 * 1000;
+    const ageMs = Date.now() - new Date(refNow).getTime();
+    if (isFinite(ageMs) && ageMs > STALE_AFTER_MS) {
+      return { label: 'Stale', dotColor: 'oklch(0.84 0.13 82)', pulse: false };
+    }
+    return { label: 'Live', dotColor: 'oklch(0.8 0.14 158)', pulse: true };
   }
 }
 </script>

@@ -78,10 +78,3 @@ Note: the component's live path is all-or-nothing per page load — if any liste
 cohort has no published `latest.json`, the whole view drops to sample data. List
 only cohorts that are actually publishing.
 
-## Updating the design
-
-The UI files under `static/` (`index.dc.html`, `support.js`, `sample-data.js`)
-are exported verbatim from the Claude Design project "VectorSeam calibration
-dashboard". To refresh the design, re-export those files; do not hand-edit them.
-`config.js` and `server.py` are the local integration layer and are ours to
-change.
