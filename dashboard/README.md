@@ -5,10 +5,6 @@ It renders, per cohort, the recommended `ef_search`, holdout confidence,
 recall-vs-latency tradeoff, metrics-over-time charts, and an expandable
 round-by-round history.
 
-The UI is a [Claude Design](https://claude.ai/design) component
-(`static/index.dc.html` + its `static/support.js` runtime), used verbatim. A
-small dependency-free Python server (`vectorseam_dashboard/server.py`) serves
-it and adapts the tuner's on-disk layout to what the component fetches.
 
 ## What it reads
 
@@ -29,13 +25,6 @@ If no cohorts are configured — or the live store is unreachable — the compon
 falls back to bundled realistic sample data (`static/sample-data.js`), so the
 page always renders.
 
-## Offline by design
-
-The Claude Design runtime normally loads React, ReactDOM, and Babel from
-unpkg.com. Those exact upstream builds are vendored under `static/vendor/`
-(their SHA-384 matches the runtime's pinned SRI), and `static/config.js` points
-the runtime at them via its `window.__resources` override. Nothing is fetched
-from a third-party CDN at runtime — the dashboard works air-gapped.
 
 ## Run it
 
@@ -57,9 +46,6 @@ docker run --rm -p 8080:8080 \
   -v /path/to/store:/data/store:ro \
   vectorseam-dashboard:local
 ```
-
-The M1 demo runs it as the `dashboard` service in `demo/docker-compose.yml`,
-mounting the shared store read-only and exposing it on `http://localhost:8080`.
 
 ## Configuration
 
