@@ -12,8 +12,9 @@
   config, aligned round end, and caller-supplied `computed_at`. It performs no
   IO, async work, or clock reads.
 - The estimator implements stored-recall handling, type-7 quantiles, exact
-  FNV-1a split membership, smallest-clearing ef selection, insufficient and
-  target-unmet outputs, regularized-beta confidence, rolling membership,
+  FNV-1a split membership, confidence-gated smallest-clearing ef selection,
+  independent holdout approval, insufficient and target-unmet outputs,
+  regularized-beta confidence, rolling membership,
   listing and cross-part deduplication, drop/coverage counters, compatibility
   filtering, per-ef summaries, and deterministic round JSON.
 - A typed Phase A table-smaller-than-k abort takes precedence over cached
@@ -26,7 +27,7 @@
   B9, B12, C3, and C6 also pass; their remaining Phase A/statement assertions
   stay explicit and ignored for Stage 3.
 - The four required property tests pass: recommendation monotonicity under
-  value relaxation, split stability, quantile bounds, and confidence
+  assurance-threshold relaxation, split stability, quantile bounds, and confidence
   monotonicity in successes for fixed holdout size.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets
   --all-features -- -D warnings`, formatting, and workspace documentation all

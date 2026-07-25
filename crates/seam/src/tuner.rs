@@ -666,6 +666,7 @@ mod tests {
             k,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.9,
             window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
         }
     }

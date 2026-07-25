@@ -38,7 +38,7 @@ effective-recommendation extension.
   ordered round records, including current-versus-carried effective
   recommendation selection and its exact config fingerprint.
 - `crates/seam/src/model.rs` — owns the pure previous-round input contract and
-  additive effective-recommendation JSON schema.
+  round-format-v2 confidence/effective recommendation schema.
 - `crates/seam/src/intermediate.rs` — validates the frozen parquet schemas and
   pair metadata, cross-checks `measured_count`, encodes zstd pairs, and joins
   authoritative stored sweep observations without reimplementing recall.
@@ -140,9 +140,10 @@ deserialized prior round into the pure estimator. Not-found bootstrap is
 silent; malformed, unreadable-body, and pre-extension content warn and
 degrade to no carry; every other GET failure aborts publication, preserving
 the stored chain for retry.
-`ok` and `target_unmet` always publish their current recommendation with the
-current round end as `source_round`; insufficient rounds alone may carry,
-and only after exact cohort/index/grid/k/value/percentile matching. E1–E5
+Holdout-approved `ok` and protective `target_unmet` rounds publish their
+current recommendation with the current round end as `source_round`;
+holdout-rejected `ok` and insufficient rounds may carry, and only after exact
+cohort/index/grid/k/value/percentile/confidence matching. E1–E5
 cover durable history/latest output, idempotent republication, newest
 target-unmet precedence, restart behavior, every required fingerprint field,
 bootstrap logging, corruption, legacy JSON, and injected transient GET

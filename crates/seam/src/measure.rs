@@ -543,6 +543,7 @@ mod tests {
             k: 10,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.95,
             window_duration_seconds: u64::from(WINDOW_SECONDS),
             storage_window_seconds: WINDOW_SECONDS,
             ef_grid: vec![10, 20, 40, 80, 160],

@@ -30,10 +30,14 @@ static COMPARISON: OnceLock<Result<AnchorComparison, String>> = OnceLock::new();
 #[derive(Debug, Deserialize)]
 struct AnchorOutput {
     value: f64,
+    target_confidence: f64,
+    confidence: f64,
     query_order: Vec<i64>,
     recall_rows: Vec<AnchorRecallRow>,
     per_ef: Vec<AnchorPerEf>,
     recommended_ef: i32,
+    train_confidence: f64,
+    test_compliance: f64,
     test_quantile_recall: f64,
     transferred: bool,
 }
@@ -59,6 +63,9 @@ struct AnchorComparison {
     train_quantile_absolute_differences: Vec<f64>,
     tuner_recommended_ef: i32,
     anchor_recommended_ef: i32,
+    train_confidence_absolute_difference: f64,
+    test_compliance_absolute_difference: f64,
+    confidence_absolute_difference: f64,
     test_quantile_absolute_difference: f64,
     tuner_transferred: bool,
     anchor_transferred: bool,
@@ -118,6 +125,9 @@ fn a4_anchor_recommended_ef_identical() {
 #[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
 fn a5_anchor_holdout_quantile_and_transfer_match() {
     let comparison = required_comparison();
+    assert!(comparison.train_confidence_absolute_difference <= 1e-6);
+    assert!(comparison.test_compliance_absolute_difference <= 1e-6);
+    assert!(comparison.confidence_absolute_difference <= 1e-6);
     assert!(
         comparison.test_quantile_absolute_difference <= 0.01,
         "observed holdout quantile difference {}",
@@ -140,6 +150,7 @@ fn required_comparison() -> &'static AnchorComparison {
 fn build_comparison() -> Result<AnchorComparison> {
     let anchor = read_anchor_comparison::<AnchorOutput>()?;
     ensure!(anchor.value == 0.8);
+    ensure!(anchor.target_confidence == 0.9);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -256,6 +267,21 @@ fn build_comparison() -> Result<AnchorComparison> {
             .recommended_ef
             .context("A-suite output was unexpectedly insufficient")?,
         anchor_recommended_ef: anchor.recommended_ef,
+        train_confidence_absolute_difference: (output
+            .train_confidence
+            .context("A-suite output omitted train confidence")?
+            - anchor.train_confidence)
+            .abs(),
+        test_compliance_absolute_difference: (output
+            .test_compliance
+            .context("A-suite output omitted test compliance")?
+            - anchor.test_compliance)
+            .abs(),
+        confidence_absolute_difference: (output
+            .confidence
+            .context("A-suite output omitted holdout confidence")?
+            - anchor.confidence)
+            .abs(),
         test_quantile_absolute_difference: (output
             .test_quantile_recall
             .context("A-suite output omitted the holdout quantile")?
@@ -311,6 +337,7 @@ fn anchor_config() -> Config {
                 k: 10,
                 value: 0.8,
                 percentile: 0.90,
+                confidence: 0.90,
                 window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
             },
         )]),

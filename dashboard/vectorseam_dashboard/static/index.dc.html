@@ -65,7 +65,7 @@
     <section style="display:flex;flex-direction:column;gap:14px;">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
         <h2 style="margin:0;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:oklch(0.6 0.014 258);">Cohorts · {{ cohortCountText }}</h2>
-        <span style="font-size:12px;color:oklch(0.5 0.014 258);">recommended ef · confidence · status</span>
+        <span style="font-size:12px;color:oklch(0.5 0.014 258);">effective ef · confidence · status</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;">
         <sc-for list="{{ cards }}" as="c" hint-placeholder-count="3">
@@ -79,7 +79,7 @@
             </div>
             <div style="display:flex;align-items:flex-end;gap:12px;">
               <span style="font-family:'IBM Plex Mono',monospace;font-size:47px;line-height:0.9;font-weight:600;color:{{ c.efColor }};">{{ c.efText }}</span>
-              <span style="font-size:12px;color:oklch(0.6 0.014 258);padding-bottom:6px;">recommended<br>ef_search</span>
+              <span style="font-size:12px;color:oklch(0.6 0.014 258);padding-bottom:6px;">effective<br>ef_search</span>
             </div>
             <sc-if value="{{ c.carried }}" hint-placeholder-val="">
               <span style="font-size:11.5px;color:oklch(0.84 0.13 82);margin-top:-6px;">↺ {{ c.carriedNote }}</span>
@@ -131,7 +131,7 @@
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;">
 
         <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Recommended ef_search</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">grid steps</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Effective ef_search</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">grid steps</span></div>
           <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
             <sc-for list="{{ efChart.hLines }}" as="h" hint-placeholder-count="5">
               <line x1="{{ efChart.PX0 }}" x2="{{ efChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="oklch(0.27 0.013 258)" strokeWidth="1"></line>
@@ -159,7 +159,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ efChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried recommendation (round was insufficient). Hover to read per-cohort values.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried or protective recommendation. Hover to read per-cohort values.</div>
           </sc-if>
         </div>
 
@@ -191,7 +191,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ confChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the 0.90 reference. Gaps mark rounds without a published recommendation.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the configured assurance target. Gaps mark rounds without a measured candidate.</div>
           </sc-if>
         </div>
 
@@ -403,11 +403,9 @@ class Component extends DCLogic {
   statusMeta(rd) {
     const s = rd.status;
     if (s === 'ok') {
-      // A recommendation that cleared on the train split but did not confirm on
-      // the holdout split (transferred === false) is not trustworthy yet — the
-      // same ef gave a different recall out of sample, so more samples are
-      // needed. Surface it as a caution state, not OK.
-      if (rd.transferred === false) return { label: 'NOT TRANSFERRED', color: 'oklch(0.84 0.13 82)' };
+      // The train-selected candidate becomes effective only after its holdout
+      // confidence clears the configured assurance target.
+      if (rd.transferred === false) return { label: 'NOT APPROVED', color: 'oklch(0.84 0.13 82)' };
       return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
     }
     if (s === 'target_unmet') return { label: 'TARGET UNMET', color: 'oklch(0.84 0.13 82)' };
@@ -425,8 +423,8 @@ class Component extends DCLogic {
       rounds.forEach((rd, i) => {
         const x = this.xAt(i, nn);
         let y = null, val = null;
-        if (metric === 'ef') { if (rd.status === 'ok' && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
-        else { if (rd.status === 'ok' && rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
+        if (metric === 'ef') { if (rd.status === 'ok' && rd.transferred !== false && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
+        else { if (rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
         if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
         else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
       });
@@ -438,7 +436,11 @@ class Component extends DCLogic {
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
-      [1, 0.9, 0.75, 0.5, 0.25, 0].forEach((v) => { const ref = v === 0.9; hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
+      const refs = cohorts.map((name) => store[name].latest.target.confidence ?? 0.95);
+      const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
+        .filter((v, i, values) => values.findIndex((x) => Math.abs(x - v) < 1e-9) === i)
+        .sort((a, b) => b - a);
+      ticks.forEach((v) => { const ref = refs.some((x) => Math.abs(x - v) < 1e-9); hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
     }
     const xTicks = []; const count = Math.min(6, nn);
     for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(first[first.length - nn + i].computed_at) }); }
@@ -447,8 +449,8 @@ class Component extends DCLogic {
       hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(first[first.length - nn + hoverIndex].computed_at);
       readoutRows = cohorts.map((name) => {
         const rd = this.vis(store[name].rounds, nn)[hoverIndex]; let text = '—';
-        if (metric === 'ef') text = (rd.status === 'ok' && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + ' · carried') : 'insufficient');
-        else text = (rd.status === 'ok' && rd.confidence != null) ? (Math.round(rd.confidence * 100) + '%') : '—';
+        if (metric === 'ef') text = (rd.status === 'ok' && rd.transferred !== false && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : ' · protective')) : 'not approved');
+        else text = rd.confidence != null ? (Math.round(rd.confidence * 100) + '%') : '—';
         return { name, color: colors[name], text };
       });
     }
@@ -466,7 +468,7 @@ class Component extends DCLogic {
     const latPts = per.map((p, gi) => ({ cx: xO(gi), cy: lY(p.latency_p50_ms) }));
     const recallPath = recallPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const latPath = latPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
-    const recEf = round.recommended_ef != null ? round.recommended_ef : (round.effective ? round.effective.recommended_ef : null);
+    const recEf = round.effective ? round.effective.recommended_ef : null;
     const recGi = recEf != null ? this.EF.indexOf(recEf) : -1;
     const latColor = 'oklch(0.82 0.1 62)';
     // Hover snaps to the nearest grid position; a solid vertical guide (vs the
@@ -499,7 +501,7 @@ class Component extends DCLogic {
     const xs = (i) => this.r(p + (rounds.length <= 1 ? 0 : (i / (rounds.length - 1))) * (W - 2 * p));
     const ey = (ef) => { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.r(H - p - t * (H - 2 * p)); };
     const pts = [];
-    rounds.forEach((rd, i) => { const ef = rd.recommended_ef != null ? rd.recommended_ef : (rd.effective ? rd.effective.recommended_ef : null); if (ef != null) pts.push([xs(i), ey(ef)]); });
+    rounds.forEach((rd, i) => { const ef = rd.effective ? rd.effective.recommended_ef : null; if (ef != null) pts.push([xs(i), ey(ef)]); });
     return { path: pts.map((p2, j) => (j ? 'L' : 'M') + p2[0] + ' ' + p2[1]).join(' '), dot: pts.length ? { cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] } : null };
   }
 
@@ -516,7 +518,7 @@ class Component extends DCLogic {
     const cards = cohorts.map((name) => {
       const latest = store[name].latest; const meta = this.statusMeta(latest); const color = colors[name];
       const selected = name === s.selectedCohort;
-      const carried = latest.status !== 'ok' && latest.effective != null;
+      const carried = !!(latest.effective && latest.effective.carried);
       const confVal = latest.confidence != null ? latest.confidence : (latest.effective ? latest.effective.confidence : null);
       const spark = this.buildSpark(name, store, n);
       return {
@@ -524,11 +526,11 @@ class Component extends DCLogic {
         onSelect: () => this.setState({ selectedCohort: name }),
         cardStyle: 'display:flex;flex-direction:column;gap:15px;padding:22px 24px;border-radius:16px;cursor:pointer;background:oklch(0.212 0.013 258);transition:border-color .15s, box-shadow .15s;border:1px solid ' + (selected ? color : 'oklch(0.29 0.014 258)') + ';box-shadow:' + (selected ? '0 0 0 1px ' + color + ', 0 14px 34px -22px ' + color : '0 8px 24px -20px rgba(0,0,0,0.6)') + ';',
         badgeStyle: "font:600 10.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.09em;padding:5px 9px;border-radius:999px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 16%, transparent);border:1px solid color-mix(in oklab, ' + meta.color + ' 34%, transparent);',
-        efText: latest.recommended_ef != null ? String(latest.recommended_ef) : (latest.effective ? String(latest.effective.recommended_ef) : '—'),
+        efText: latest.effective ? String(latest.effective.recommended_ef) : '—',
         carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round)) : '',
         confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
         confBarW: confVal != null ? Math.round(confVal * 100) : 0,
-        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · k=' + latest.target.k,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round((latest.target.confidence ?? 0.95) * 100) + ' · k=' + latest.target.k,
         gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
         uniqueText: latest.samples.unique.toLocaleString(),
         sparkPath: spark.path, sparkDot: spark.dot,
@@ -577,10 +579,12 @@ class Component extends DCLogic {
     const selColor = colors[s.selectedCohort];
     const history = store[s.selectedCohort].rounds.slice().reverse().slice(0, hlimit).map((rd) => {
       const meta = this.statusMeta(rd); const id = rd.computed_at; const expanded = !!s.expanded[id];
-      const recEf = rd.recommended_ef != null ? rd.recommended_ef : (rd.effective ? rd.effective.recommended_ef : null);
+      const recEf = rd.effective ? rd.effective.recommended_ef : null;
       const w = rd.window; const c = rd.coverage; const sm = rd.samples;
       const metrics = [
         { label: 'Window', value: this.hm(w.start) + ' → ' + this.hm(w.end) + ' · ' + Math.round(w.duration_seconds / 60) + 'm' },
+        { label: 'Round candidate ef', value: rd.recommended_ef != null ? String(rd.recommended_ef) : '—' },
+        { label: 'Effective ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
@@ -589,9 +593,13 @@ class Component extends DCLogic {
         { label: 'Dropped frames', value: (rd.dropped_frame_fraction * 100).toFixed(2) + '%' },
         { label: 'Parts used', value: rd.parts_used + ' · ' + rd.incompatible_parts + ' incompat.' },
         { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
+        { label: 'Assurance target', value: Math.round((rd.target.confidence ?? 0.95) * 100) + '%' },
+        { label: 'Train confidence @ ef', value: rd.train_confidence != null ? (rd.train_confidence * 100).toFixed(1) + '%' : '—' },
         { label: 'Train recall @ ef', value: rd.train_quantile_recall != null ? rd.train_quantile_recall.toFixed(3) : '—' },
+        { label: 'Holdout compliance', value: rd.test_compliance != null ? (rd.test_compliance * 100).toFixed(1) + '%' : '—' },
+        { label: 'Holdout confidence', value: rd.confidence != null ? (rd.confidence * 100).toFixed(1) + '%' : '—' },
         { label: 'Holdout recall @ ef', value: rd.test_quantile_recall != null ? rd.test_quantile_recall.toFixed(3) : '—' },
-        { label: 'Transferred', value: rd.transferred == null ? '—' : (rd.transferred ? 'yes' : 'no') },
+        { label: 'Holdout approved', value: rd.transferred == null ? '—' : (rd.transferred ? 'yes' : 'no') },
       ];
       const perEf = rd.per_ef.map((p) => ({
         ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),

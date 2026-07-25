@@ -112,6 +112,7 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.coverage.empty_window_fraction, 1.0);
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
+    assert_eq!(observed.test_compliance, None);
     assert_eq!(observed.transferred, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);
@@ -279,6 +280,7 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
             k: 10,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.75,
             window_duration_seconds: 600,
             storage_window_seconds: 600,
             ef_grid: vec![10, 20, 40, 80, 160],

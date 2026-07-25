@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import pathlib
 import sys
 from typing import Any, Callable
@@ -22,6 +23,7 @@ _DATASET = "seam_fixture"
 _K = 10
 _EF_GRID = [10, 20, 40, 80, 160]
 _PERCENTILE = 0.90
+_CONFIDENCE = 0.90
 _VALUE = 0.8
 _TRAIN_FRACTION = 0.7
 _SPLIT_SEED = 7
@@ -102,6 +104,70 @@ def _run_calibration_with_hash_split(
     return calibration[0]
 
 
+def _compliance_confidence(n: int, m: int) -> float:
+    """Returns the integer-shape Beta survival probability without SciPy."""
+    log_terms = []
+    for successes in range(m + 1):
+        log_terms.append(
+            math.lgamma(n + 2)
+            - math.lgamma(successes + 1)
+            - math.lgamma(n + 2 - successes)
+            + successes * math.log(_PERCENTILE)
+            + (n + 1 - successes) * math.log1p(-_PERCENTILE)
+        )
+    maximum = max(log_terms)
+    return math.exp(maximum) * sum(
+        math.exp(term - maximum) for term in log_terms
+    )
+
+
+def _product_calibration(
+    analyze: Any,
+    rows: list[dict[str, Any]],
+    train_ids: set[int],
+    test_ids: set[int],
+) -> dict[str, Any]:
+    """Runs VectorSeam's confidence-gated selection on anchor recall rows."""
+
+    def recalls_for(ef_search: int, query_ids: set[int]) -> list[float]:
+        return [
+            float(row["recall"])
+            for row in rows
+            if int(row["ef"]) == ef_search
+            and int(row["query_id"]) in query_ids
+        ]
+
+    train_confidences = {}
+    for ef_search in _EF_GRID:
+        recalls = recalls_for(ef_search, train_ids)
+        successes = sum(recall >= _VALUE for recall in recalls)
+        train_confidences[ef_search] = _compliance_confidence(
+            len(recalls), successes
+        )
+    clearing = [
+        ef_search
+        for ef_search, confidence in train_confidences.items()
+        if confidence >= _CONFIDENCE
+    ]
+    selected_ef = min(clearing) if clearing else max(_EF_GRID)
+    test_recalls = recalls_for(selected_ef, test_ids)
+    test_successes = sum(recall >= _VALUE for recall in test_recalls)
+    confidence = _compliance_confidence(len(test_recalls), test_successes)
+    return {
+        "recommended_ef": selected_ef,
+        "train_confidence": train_confidences[selected_ef],
+        "train_quantile_recall": analyze._p10_for_subset(
+            rows, _DATASET, selected_ef, train_ids
+        ),
+        "test_compliance": test_successes / len(test_recalls),
+        "confidence": confidence,
+        "test_quantile_recall": analyze._p10_for_subset(
+            rows, _DATASET, selected_ef, test_ids
+        ),
+        "transferred": confidence >= _CONFIDENCE,
+    }
+
+
 def run_anchor(
     fixture_root: pathlib.Path,
     output_path: pathlib.Path,
@@ -151,9 +217,10 @@ def run_anchor(
     vector_hashes = _vector_hashes(query_embeddings)
     train_ids, test_ids = _split_query_ids(query_ids, vector_hashes)
     summary_rows = analyze._summary_rows(rows)
-    calibration = _run_calibration_with_hash_split(
+    blog_calibration = _run_calibration_with_hash_split(
         analyze, rows, train_ids, test_ids
     )
+    calibration = _product_calibration(analyze, rows, train_ids, test_ids)
     per_ef = []
     for summary in summary_rows:
         ef_search = int(summary["ef"])
@@ -172,6 +239,7 @@ def run_anchor(
         "k": _K,
         "ef_grid": _EF_GRID,
         "percentile": _PERCENTILE,
+        "target_confidence": _CONFIDENCE,
         "value": _VALUE,
         "train_fraction": _TRAIN_FRACTION,
         "split_seed": _SPLIT_SEED,
@@ -181,10 +249,14 @@ def run_anchor(
         "test_query_ids": sorted(test_ids),
         "recall_rows": rows,
         "per_ef": per_ef,
-        "recommended_ef": int(calibration["selected_ef"]),
-        "train_quantile_recall": float(calibration["train_p10"]),
-        "test_quantile_recall": float(calibration["test_p10"]),
-        "transferred": bool(calibration["test_clears_0.9"]),
+        "recommended_ef": int(calibration["recommended_ef"]),
+        "train_confidence": float(calibration["train_confidence"]),
+        "train_quantile_recall": float(calibration["train_quantile_recall"]),
+        "test_compliance": float(calibration["test_compliance"]),
+        "confidence": float(calibration["confidence"]),
+        "test_quantile_recall": float(calibration["test_quantile_recall"]),
+        "transferred": bool(calibration["transferred"]),
+        "blog_recommended_ef": int(blog_calibration["selected_ef"]),
     }
     common.write_json(output_path, comparison)
 

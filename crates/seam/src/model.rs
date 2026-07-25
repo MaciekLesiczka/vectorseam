@@ -28,6 +28,8 @@ pub struct AggregationConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    pub confidence: f64,
     /// Rolling target duration in seconds.
     pub window_duration_seconds: u64,
     /// Collector storage-window duration in seconds.
@@ -61,6 +63,7 @@ impl AggregationConfig {
             k: target.k,
             value: target.value,
             percentile: target.percentile,
+            confidence: target.confidence,
             window_duration_seconds: target.window.as_secs(),
             storage_window_seconds: config.storage.window_seconds,
             ef_grid: config.calibration.ef_search.clone(),
@@ -201,7 +204,7 @@ impl PhaseAAbort {
 pub enum RoundStatus {
     /// The smallest clearing ef was selected.
     Ok,
-    /// No ef cleared, so the maximum grid value was selected.
+    /// The maximum ef did not clear, so it remains the protective selection.
     TargetUnmet,
     /// Selection was refused due to population/split size or a Phase A abort.
     InsufficientSamples,
@@ -218,6 +221,9 @@ pub struct RoundTarget {
     pub value: f64,
     /// Required compliant fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    #[serde(default)]
+    pub confidence: f64,
 }
 
 /// Published rolling-window description.
@@ -310,13 +316,19 @@ pub struct RoundOutput {
     pub recommended_ef: Option<i32>,
     /// Holdout posterior confidence, absent when insufficient.
     pub confidence: Option<f64>,
-    /// Whether holdout quantile transferred, absent when insufficient.
+    /// Training posterior confidence at the selected ef.
+    #[serde(default)]
+    pub train_confidence: Option<f64>,
+    /// Fraction of holdout samples meeting the recall target.
+    #[serde(default)]
+    pub test_compliance: Option<f64>,
+    /// Whether holdout confidence cleared the target assurance, absent when insufficient.
     pub transferred: Option<bool>,
     /// Train compliance quantile at the selected ef.
     pub train_quantile_recall: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
-    /// Last known good recommendation a consumer should apply now.
+    /// Approved or protective recommendation a consumer should apply now.
     #[serde(default)]
     pub effective: Option<EffectiveRecommendation>,
     /// Sample counters.

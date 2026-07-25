@@ -93,9 +93,9 @@ Each round, per configured cohort, has two phases:
 published state, no database):
 
 4. Read all in-scope, metadata-compatible intermediates, split samples into
-   train/holdout, compute per-ef compliance quantiles, select the recommended
-   ef, compute transfer and confidence, derive the `effective` recommendation
-   from the previous `latest.json` (§2.2), and publish the round result
+   train/holdout, compute per-ef train compliance confidence, select the
+   smallest assured ef, validate it once on holdout, derive the `effective`
+   recommendation from the previous `latest.json` (§2.2), and publish the round result
    JSON: `calibrations/<cohort>/round-<ts>.json` plus an overwrite of
    `calibrations/<cohort>/latest.json`.
 
@@ -313,9 +313,11 @@ budget without producing rows.
 
 #### Compliance quantile (percentile calculation)
 
-A target `{k, value, percentile, window}` means: at least `percentile` of
-queries must have `recall@k ≥ value` over the window. The tested statistic is
-the lower `q = 1 − percentile` quantile of the per-query recall values
+A target `{k, value, percentile, confidence, window}` means: at least
+`percentile` of queries must have `recall@k ≥ value` over the window, and the
+tuner must have at least `confidence` posterior probability that this is true.
+The reported compliance quantile is the lower `q = 1 − percentile` quantile
+of the per-query recall values
 (e.g. `percentile: 0.95` → the p05 of recall must be ≥ `value`; the blog's
 "p10 ≥ 0.9" is `percentile: 0.90`).
 
@@ -324,28 +326,36 @@ the lower `q = 1 − percentile` quantile of the per-query recall values
   `Q = x[⌊h⌋] + (h−⌊h⌋)·(x[⌊h⌋+1] − x[⌊h⌋])` (for integer `h`, `Q = x[h]`).
   Defined for all `n ≥ 1`. Rationale: byte-compatible with `np.percentile`
   as used by the trusted anchor (`analyze.py`).
-- The population for selection is the **train split**; the holdout is used
-  only for transfer/confidence. Per-ef summaries in the output use the full
-  population (informational).
+- Train and holdout quantiles remain diagnostic outputs. Selection uses the
+  train compliance confidence below; per-ef summaries use the full population
+  and are informational.
 
 #### ef selection rule
 
-Over the configured grid in ascending order:
+For each configured ef, let `n_train` be the train size and `m_ef` the number
+of train samples with `recall@k ≥ value`. Compute:
 
 ```
-clearing = { ef | train_quantile(ef) ≥ value }
-selected = min(clearing)            → status "ok"
-selected = max(grid) if clearing=∅  → status "target_unmet"
+train_confidence(ef) = P(θ ≥ percentile)
+                       where θ ~ Beta(m_ef + 1, n_train − m_ef + 1)
+selected = max(grid) if train_confidence(max(grid)) < confidence
+                                    → status "target_unmet"
+clearing = { ef | train_confidence(ef) ≥ confidence }
+selected = min(clearing)             → status "ok"
 ```
 
 - "Smallest clearing ef" is unique because the grid is strictly increasing;
-  no tie-break is needed.
-- **Decision — no ef meets the target**: emit `max(grid)` flagged
-  `target_unmet`, with transfer and confidence still computed at that ef
-  (confidence will be low). Rationale: fail-visible beats fail-silent — the
+  no tie-break is needed. `train_confidence` in the round output is the value
+  for the selected ef. This makes uncertainty part of selection: sparse
+  populations start at a conservative high ef, then can move downward as
+  lower candidates accumulate enough evidence.
+- **Decision — highest ef misses the target with sufficient evidence**: emit
+  `max(grid)` flagged `target_unmet`, with transfer and confidence still
+  computed at that ef. This status is reserved for a sufficiently large
+  realized split where the highest configured ef fails to clear the
+  confidence-gated recall SLA. Rationale: fail-visible beats fail-silent — the
   max grid value is the most protective actionable setting, and the demo
-  dashboard needs an output every round. The tuner never refuses to publish
-  a round record.
+  dashboard needs an output every round.
 
 #### Minimum sample count
 
@@ -353,22 +363,27 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
   compared against the round's deduplicated population size
   (`samples.unique`). Below it the round
   publishes `status: "insufficient_samples"` with `recommended_ef: null`,
-  `confidence: null`, `transferred: null`, `train_quantile_recall: null`,
-  `test_quantile_recall: null`, and full sample/coverage metadata. The
+  `train_confidence: null`, `confidence: null`, `test_compliance: null`,
+  `transferred: null`, `train_quantile_recall: null`,
+  `test_quantile_recall: null`, and full
+  sample/coverage metadata. The
   full-population `per_ef` summaries are still computed when the population is
   non-empty; for an empty population `per_ef` is `[]`. No degraded-confidence
-  emission. Rationale: an ef recommendation from a tail quantile with too few
-  tail points is noise; publishing an explicit refusal keeps the "app stays at
-  its conservative default until the tuner speaks" demo narrative honest.
+  emission. Rationale: a compliance estimate with too little evidence is
+  noise; publishing an explicit refusal keeps the "app stays at its
+  conservative default until the tuner speaks" demo narrative honest.
   Demo configs simply lower the threshold. The refusal is scoped to *this
   round's* fields: a previously calibrated ef is still served through the
   `effective` block (see "Effective recommendation" below), so the
   conservative default applies only until the tuner first speaks, not again
   on every transient gap.
 - The same `insufficient_samples` output is published if the realized train or
-  holdout split is empty. This is checked after splitting even when
-  `samples.unique >= min_samples`, because type-7 quantiles are undefined for
-  empty input. Configuration also rejects a `train_fraction` whose rounded
+  holdout split is empty, or if either split is too small to reach the target
+  assurance even under the best possible result (every sample compliant).
+  The ceiling for a split of size `n` is `1 − percentile^(n+1)`. This is
+  checked after splitting even when `samples.unique >= min_samples`; for
+  `percentile: 0.90` and `confidence: 0.90`, each split needs at least 21
+  samples. Configuration also rejects a `train_fraction` whose rounded
   10,000-bucket threshold is 0 or 10,000, preventing a guaranteed-empty side.
 
 #### Rolling window semantics
@@ -397,13 +412,15 @@ selected = max(grid) if clearing=∅  → status "target_unmet"
 
 #### Transferability and confidence
 
-Transfer follows the blog: the ef selected on the train split must hold on
-the holdout. The round reports `test_quantile_recall` (compliance quantile of
-holdout recalls at the selected ef) and `transferred = test_quantile_recall ≥
-value`.
+The train-selected ef is evaluated exactly once on the untouched holdout. The
+round reports `test_compliance` (the fraction of holdout recalls at the
+selected ef that are at least `value`), `test_quantile_recall` (a diagnostic
+compliance quantile), and `confidence` from the same posterior formula used
+for training. `transferred = confidence ≥ target.confidence`; the point
+quantile alone does not approve a recommendation.
 
-- **Decision — confidence is one closed-form number**: with `n` holdout
-  samples of which `m` have `recall ≥ value` at the selected ef,
+- **Decision — confidence is one closed-form number per evaluated ef**: with
+  `n` samples of which `m` have `recall ≥ value` at an ef,
 
   ```
   confidence = P(θ ≥ percentile),  θ ~ Beta(m + 1, n − m + 1)
@@ -412,14 +429,17 @@ value`.
 
   where `I` is the regularized incomplete beta function (Bayesian posterior
   of the compliance fraction under a uniform prior). Range (0, 1);
-  `confidence ≈ 0.5` means the holdout sits exactly on the target; it rises
-  toward 1 as holdout evidence accumulates — exactly the demo's
-  "confidence goes up over time" curve. Rationale: deterministic (no
-  bootstrap RNG in the spec), computed on the holdout only so the selection
-  bias the blog warns about is excluded, and directly interpretable as
+  `confidence ≈ 0.5` means the holdout sits near the target. It rises toward
+  1 when evidence consistently above the target accumulates, and may fall
+  when new evidence weakens compliance. Rationale: deterministic (no
+  bootstrap RNG in the spec), and directly interpretable as
   "probability that at least `percentile` of unseen queries meet the
-  target". It expresses transferability only — dropped-frame and
-  missing-window fractions are reported separately and never folded in.
+  target". The formula is computed for every ef on training data to select a
+  candidate, then independently for only that candidate on the holdout. The
+  holdout is never searched for a better ef, preserving its role as an
+  unbiased approval check. Confidence expresses compliance evidence only —
+  dropped-frame and missing-window fractions are reported separately and
+  never folded in.
 
 #### Effective recommendation (last known good)
 
@@ -428,16 +448,18 @@ value`.
 separate `effective` block — the ef a consumer should apply right now —
 published in every round record (schema in §2.4):
 
-- **Decision — carry the last known good recommendation.** A round whose
-  `recommended_ef` is non-null (`ok` or `target_unmet`) sets `effective`
-  from itself (`carried: false`). An `insufficient_samples` round copies the
-  previous round's `effective` unchanged (`carried: true`). Rationale: an
+- **Decision — publish only an approved recommendation.** An `ok` candidate
+  sets `effective` from itself (`carried: false`) only when `transferred` is
+  true. A holdout-rejected `ok` candidate and an `insufficient_samples` round
+  copy the previous round's `effective` unchanged (`carried: true`), or leave
+  it null during bootstrap. Rationale: an
   application that has been applying a calibrated ef must not be knocked
   back to its conservative default by one sampling blip or table incident —
   and the fix cannot live in clients, because a freshly started client whose
   first poll lands on an insufficient round has nothing to remember.
-  `target_unmet` deliberately overrides an older `ok`: max(grid) is the
-  newest honest signal and the most protective actionable setting.
+  `target_unmet` deliberately overrides an older `ok` even when holdout
+  assurance is low: max(grid) is the newest honest signal and the most
+  protective actionable setting.
 - **The carry source is storage, never memory.** Before publishing, the
   round GETs the cohort's current `latest.json` (one GET per cohort per
   round) and takes its `effective` block as the carry source, so the chain
@@ -453,7 +475,7 @@ published in every round record (schema in §2.4):
   to prevent — while aborting preserves the stored chain for the next tick.
 - **Config-fingerprint invalidation.** The carry source is used only when
   the previous round record's `cohort`, `index`, `ef_grid`, and `target`
-  fields (`k`, `value`, `percentile`) all equal the current configuration;
+  fields (`k`, `value`, `percentile`, `confidence`) all equal the current configuration;
   otherwise `effective` resets to `null`. Same philosophy as §2.4
   intermediate compatibility: never serve a recommendation calibrated for a
   different target or index. Carrying preserves this check inductively —
@@ -526,6 +548,7 @@ targets:
     k: 20
     value: 0.9
     percentile: 0.95
+    confidence: 0.95             # optional; default 0.95
     window: 24h
 
 cohorts:
@@ -573,8 +596,9 @@ optional advice.
 - every data source has a unique `(server, database)` pair; duplicate pairs
   are rejected even when their users or `password_env` values differ
 - `storage.window_seconds` is a positive multiple of 60; `0 < percentile <
-  1`, `0 < value ≤ 1`, `k ≥ 1`; every target `window` is at least one storage
-  window and an exact multiple of `storage.window_seconds`
+  1`, `0 < confidence < 1`, `0 < value ≤ 1`, `k ≥ 1`; every target `window`
+  is at least one storage window and an exact multiple of
+  `storage.window_seconds`
 - ef grid present and non-empty (**required, no default** — a default grid
   would fail the `min(grid) ≥ k` rule below for larger `k`, and a surprise
   interplay between two defaults is worse than one explicit field), strictly
@@ -657,23 +681,26 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
 
 ```jsonc
 {
-  "format_version": 1,
+  "format_version": 2,
   "cohort": "prod/reddit/tldr",
   "computed_at": "2026-07-15T12:00:41Z",
   "window": { "start": "2026-07-14T12:00:00Z", "end": "2026-07-15T12:00:00Z",
               "duration_seconds": 86400 },
   "target": { "name": "queries_search_recall",
-              "k": 20, "value": 0.9, "percentile": 0.95 },
+              "k": 20, "value": 0.9, "percentile": 0.95,
+              "confidence": 0.95 },
   "index": "reddit",
   "ef_grid": [20, 40, 60, 80, 100, 150, 200, 300, 400],
   "status": "ok",                    // "ok" | "target_unmet" | "insufficient_samples"
   "error": null,                     // non-null Phase A abort forces insufficient_samples
   "recommended_ef": 200,             // null when insufficient_samples
   "confidence": 0.971,               // null when insufficient_samples
-  "transferred": true,               // test quantile >= value; null when insufficient_samples
+  "train_confidence": 0.976,         // selected ef on train; null when insufficient_samples
+  "test_compliance": 0.963,          // fraction meeting value; null when insufficient_samples
+  "transferred": true,               // holdout confidence >= target.confidence; null when insufficient
   "train_quantile_recall": 0.90,     // null when insufficient_samples
   "test_quantile_recall": 0.90,      // null when insufficient_samples
-  "effective": {                     // last known good — what a client applies now (§2.2);
+  "effective": {                     // approved or protective ef a client applies now (§2.2);
                                      // null only before any round has ever recommended
     "recommended_ef": 200,           // never null inside a non-null block
     "confidence": 0.971,             // confidence as of source_round
@@ -712,11 +739,12 @@ they are reported alongside it so the consumer can judge both independently.
 When the in-scope headers have `sum(received_frame_count) = 0`, including an
 empty round, `dropped_frame_fraction` is defined as `0.0`; absence is reported
 separately by coverage rather than represented as a drop.
-`effective` is an additive extension: `format_version` stays 1, and a round
-record without the field (written before it existed) is read as
-`effective: null` when used as a carry source (§2.2). Because every round
-record embeds the `effective` block, the immutable `round-<ts>.json` history
-also records what was in effect at each point in time.
+Round `format_version: 2` introduces confidence-gated ef selection,
+`target.confidence`, `train_confidence`, and confidence-based holdout approval.
+Version-1 round records remain readable, but are never used as an `effective`
+carry source because their recommendation had different semantics. Because
+every current round embeds the `effective` block, immutable `round-<ts>.json`
+history records what was in effect at each point in time.
 
 ### 2.5 Measure phase details
 
@@ -759,11 +787,14 @@ long-lived, and no reconnect is attempted mid-round.
    smallest `(part_ulid, record_index)` (§2.2); the survivors are the
    population (`samples.unique`).
 4. Split per §2.2; if Phase A supplied a table-smaller-than-k abort,
-   `unique < min_samples`, or either realized split is empty, publish
+   `unique < min_samples`, either realized split is empty, or either split's
+   all-success confidence ceiling is below the assurance target, publish
    `insufficient_samples` per §2.2 and stop selection. The Phase A abort's
    error string is copied to the round. Full-population `per_ef` summaries are
    still included for a non-empty cached population.
-5. Select ef per §2.2; compute holdout quantile, `transferred`, confidence.
+5. Compute confidence for every ef on train and select per §2.2; compute the
+   selected candidate's holdout compliance, quantile, confidence, and
+   `transferred` approval.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
 7. GET the cohort's current `latest.json` and derive this round's
@@ -775,9 +806,10 @@ long-lived, and no reconnect is attempted mid-round.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
-idempotent by design. This includes `effective`: a recommending round
-re-derives the block from itself, and an insufficient round re-carries the
-same block it already published, so republication never changes or loses it.
+idempotent by design. This includes `effective`: an approved or protective
+round re-derives the block from itself, while a holdout-rejected or
+insufficient round re-carries the same block it already published, so
+republication never changes or loses it.
 
 ## 3. Non-functional requirements
 
@@ -967,10 +999,10 @@ only — no database.
 ### A. Anchor reproduction (the correctness anchor)
 
 Same live pgvector instance and index, same k = 10, same grid
-`[10, 20, 40, 80, 160]`, `percentile: 0.90`, `value: 0.8`, and identical
-train/holdout membership (both sides computed by the §2.2 hash split — the
-anchor harness reuses the published pipeline's recall/percentile/selection
-code with that split; numpy RNG shuffles are not part of the contract):
+`[10, 20, 40, 80, 160]`, `percentile: 0.90`, `value: 0.8`,
+`confidence: 0.90`, and identical train/holdout membership. Both sides use the
+§2.2 hash split; the Python harness independently computes both the blog's
+point quantiles and VectorSeam's confidence-gated selection.
 
 - **A1** For ≥ 99% of (query, ef) pairs, tuner `recall` equals the anchor's
   recall exactly; disagreements are only where ground truth differs (torch
@@ -978,10 +1010,11 @@ code with that split; numpy RNG shuffles are not part of the contract):
 - **A2** Per-ef full-population mean recall: |tuner − anchor| ≤ 0.005.
 - **A3** Per-ef train compliance quantile (`percentile: 0.90`,
   `value: 0.8`): |tuner − anchor `np.percentile(_, 10)`| ≤ 0.01.
-- **A4** `recommended_ef` identical to the anchor's
-  "min ef with train p10 ≥ 0.8", and equal to `80`.
-- **A5** `test_quantile_recall`: |tuner − anchor| ≤ 0.01, and `transferred`
-  identical.
+- **A4** `recommended_ef` identical to the anchor's smallest ef whose train
+  confidence clears 0.90, and equal to `80` for the fixture.
+- **A5** `train_confidence`, `test_compliance`, and holdout `confidence` agree
+  with the independent anchor within 1e-6; `test_quantile_recall` differs by
+  at most 0.01; `transferred` is identical.
 
 ### B. Estimator semantics (one per §2.2 decision; F-agg unless stated)
 
@@ -999,15 +1032,21 @@ code with that split; numpy RNG shuffles are not part of the contract):
   train fraction within 0.7 ± 0.03 for n = 10⁴ distinct vectors; membership
   unchanged after simulated resume and after the surviving occurrence moves
   to a different part (same vector → same split).
-- **B5 selection**: train quantiles `{10:0.62, 20:0.85, 40:0.91, 80:0.93,
-  160:0.95}`, value 0.9 → `recommended_ef = 40`, `status = "ok"`.
-- **B6 target unmet**: value 0.99 with B5's quantiles → `recommended_ef =
-  160`, `status = "target_unmet"`, confidence and `test_quantile_recall`
-  still present.
+- **B5 selection**: train confidences `{10:0.62, 20:0.85, 40:0.91,
+  80:0.93, 160:0.95}`, assurance 0.9 → `recommended_ef = 40`,
+  `status = "ok"`. A separate fixture has ef 20's point quantile exactly at
+  the recall target but insufficient confidence, so ef 40 is selected. If
+  that candidate fails holdout assurance, the previous approved effective ef
+  is carried rather than replaced. A sparse fixture selects ef 40; a denser
+  fixture with stronger evidence at ef 20 selects ef 20.
+- **B6 target unmet**: value 0.99 across B5's recall population → `recommended_ef =
+  160`, `status = "target_unmet"`, confidence, `test_compliance`, and
+  `test_quantile_recall` still present.
 - **B7 min samples**: `min_samples = 1000`; a unique population of 999 →
   `status = "insufficient_samples"`, `recommended_ef = null`,
-  `confidence = null`, sample counts still reported; a unique population of
-  1000 → a recommendation is emitted.
+  `train_confidence = null`, `confidence = null`, `test_compliance = null`,
+  sample counts still reported;
+  a unique population of 1000 → a recommendation is emitted.
 - **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
   round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
   starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded;
@@ -1020,7 +1059,8 @@ code with that split; numpy RNG shuffles are not part of the contract):
 - **B10 confidence**: n = 100, m = 100, `percentile: 0.95` →
   `confidence = 1 − 0.95¹⁰¹ ≈ 0.99438` within 1e-5; m = 0 → confidence
   < 1e-6; confidence values agree with `scipy.stats.beta.sf(percentile,
-  m+1, n−m+1)` within 1e-6 on a grid of (n, m).
+  m+1, n−m+1)` within 1e-6 on a grid of (n, m); completed round output reports
+  `test_compliance = m/n`.
 - **B11 drop fraction**: part headers (received = 100, records = 80) and
   (received = 50, records = 50) → `dropped_frame_fraction = 2/15 ± 1e-12`.
 - **B12 deduplication**: a part containing the same vector at record
@@ -1110,7 +1150,7 @@ mock-measured local store)
 - **E4 fingerprint reset**: an `ok` round published under `k = 10`, then the
   target changes to `k = 20` and the next round is `insufficient_samples` →
   `effective` is `null`, never a recommendation calibrated for a different
-  target; an `ef_grid` change behaves identically.
+  target; `ef_grid` or target-confidence changes behave identically.
 - **E5 bootstrap and malformed carry source**: with no `latest.json`, an
   insufficient first round publishes `effective: null` and logs no carry
   warning; with a corrupt `latest.json`, or one lacking the `effective`

@@ -99,6 +99,8 @@ pub struct TargetConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    pub confidence: f64,
     /// Rolling calibration-window duration.
     pub window: Duration,
 }
@@ -240,6 +242,8 @@ struct RawTargetConfig {
     k: u32,
     value: f64,
     percentile: f64,
+    #[serde(default = "default_confidence")]
+    confidence: f64,
     #[serde(deserialize_with = "deserialize_duration")]
     window: Duration,
 }
@@ -332,6 +336,7 @@ impl Config {
                         k: target.k,
                         value: target.value,
                         percentile: target.percentile,
+                        confidence: target.confidence,
                         window: target.window,
                     },
                 )
@@ -524,6 +529,11 @@ fn validate_targets(
                 "target {name:?} percentile must be in (0, 1)"
             )));
         }
+        if !(target.confidence > 0.0 && target.confidence < 1.0) {
+            return Err(invalid(format!(
+                "target {name:?} confidence must be in (0, 1)"
+            )));
+        }
         if target.window.as_secs() < u64::from(storage_window_seconds) {
             return Err(invalid(format!(
                 "target {name:?} window must be at least storage.window_seconds"
@@ -577,6 +587,10 @@ fn default_split_seed() -> u64 {
 
 fn default_min_samples() -> usize {
     1000
+}
+
+fn default_confidence() -> f64 {
+    0.95
 }
 
 fn default_window_seconds() -> u32 {
@@ -639,6 +653,7 @@ cohorts:
         assert_eq!(config.calibration.train_fraction, 0.7);
         assert_eq!(config.calibration.split_seed, 7);
         assert_eq!(config.calibration.min_samples, 1000);
+        assert_eq!(config.targets["recall"].confidence, 0.95);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
         assert_eq!(config.budget.client_timeout, Duration::from_secs(10));
         assert_eq!(config.indexes["fixture"].data_source, "primary");
@@ -666,6 +681,18 @@ cohorts:
         let nine = VALID_CONFIG.replace("storage:", "  min_samples: 9\nstorage:");
         let error = Config::from_yaml_str(&nine).unwrap_err().to_string();
         assert!(error.contains("min_samples must be >= 10"));
+    }
+
+    #[test]
+    fn rejects_confidence_outside_open_unit_interval() {
+        for confidence in ["0", "1", "nan"] {
+            let yaml = VALID_CONFIG.replace(
+                "    percentile: 0.95",
+                &format!("    percentile: 0.95\n    confidence: {confidence}"),
+            );
+            let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+            assert!(error.contains("confidence must be in (0, 1)"));
+        }
     }
 
     #[test]

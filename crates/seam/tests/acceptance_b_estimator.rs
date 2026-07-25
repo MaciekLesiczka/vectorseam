@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use seam::aggregate::aggregate;
 use seam::intermediate::read_intermediate_pair;
 use seam::math::{
-    fnv1a64, is_train_member, quantile_type7, recall_at_k, select_ef, transfer_confidence,
+    compliance_confidence, fnv1a64, is_train_member, quantile_type7, recall_at_k, select_ef,
 };
 use seam::model::{
     AggregationConfig, AggregationInput, IntermediateMetadata, IntermediatePart, ListedPart,
@@ -55,25 +55,153 @@ fn b4_fnv1a_reference_split_fraction_and_membership_stability() {
 
 #[test]
 fn b5_selects_smallest_clearing_ef_40() {
-    let train_quantiles =
-        BTreeMap::from([(10, 0.62), (20, 0.85), (40, 0.91), (80, 0.93), (160, 0.95)]);
+    let confidences = BTreeMap::from([(10, 0.62), (20, 0.85), (40, 0.91), (80, 0.93), (160, 0.95)]);
 
-    let observed = select_ef(&train_quantiles, 0.9).unwrap();
+    let observed = select_ef(&confidences, 0.9).unwrap();
 
     assert_eq!(observed.recommended_ef, 40);
     assert_eq!(observed.status, RoundStatus::Ok);
 }
 
 #[test]
+fn b6_target_unmet_is_decided_by_the_highest_ef() {
+    let non_monotone_confidences = BTreeMap::from([(20, 0.95), (40, 0.85)]);
+
+    let observed = select_ef(&non_monotone_confidences, 0.9).unwrap();
+
+    assert_eq!(observed.recommended_ef, 40);
+    assert_eq!(observed.status, RoundStatus::TargetUnmet);
+}
+
+#[test]
+fn b5_more_evidence_can_reduce_the_selected_ef() {
+    let sparse = BTreeMap::from([
+        (20, compliance_confidence(30, 29, 0.9).unwrap()),
+        (40, compliance_confidence(30, 30, 0.9).unwrap()),
+    ]);
+    let dense = BTreeMap::from([
+        (20, compliance_confidence(100, 95, 0.9).unwrap()),
+        (40, compliance_confidence(100, 100, 0.9).unwrap()),
+    ]);
+
+    assert_eq!(select_ef(&sparse, 0.9).unwrap().recommended_ef, 40);
+    assert_eq!(select_ef(&dense, 0.9).unwrap().recommended_ef, 20);
+}
+
+#[test]
+fn b5_rejects_invalid_direct_aggregation_confidence() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+    let mut input = populated_input(100, 100, 0.9, &recalls);
+    input.config.confidence = f64::NAN;
+
+    let error = aggregate(&input).unwrap_err().to_string();
+
+    assert!(error.contains("confidence must be in (0, 1)"));
+}
+
+#[test]
+fn b5_selection_requires_train_confidence_not_only_a_clearing_quantile() {
+    let recalls = BTreeMap::from([(10, 0.8), (20, 0.9), (40, 1.0), (80, 1.0), (160, 1.0)]);
+    let mut input = populated_input(100, 100, 0.9, &recalls);
+    input.config.percentile = 0.9;
+    input.config.confidence = 0.9;
+
+    let mut failures = 0;
+    for sample in &mut input.intermediates[0].samples {
+        if failures < 6
+            && is_train_member(
+                sample.vector_hash,
+                input.config.split_seed,
+                input.config.train_fraction,
+            )
+            .unwrap()
+        {
+            sample.sweeps.get_mut(&20).unwrap().recall = 0.8;
+            failures += 1;
+        }
+    }
+    assert_eq!(failures, 6);
+    let ef_20_train_recalls = input.intermediates[0]
+        .samples
+        .iter()
+        .filter(|sample| {
+            is_train_member(
+                sample.vector_hash,
+                input.config.split_seed,
+                input.config.train_fraction,
+            )
+            .unwrap()
+        })
+        .map(|sample| sample.sweeps[&20].recall)
+        .collect::<Vec<_>>();
+    assert_eq!(quantile_type7(&ef_20_train_recalls, 0.1).unwrap(), 0.9);
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.status, RoundStatus::Ok);
+    assert_eq!(observed.recommended_ef, Some(40));
+    assert!(observed.train_confidence.unwrap() >= input.config.confidence);
+}
+
+#[test]
+fn b5_holdout_rejection_carries_the_last_approved_recommendation() {
+    let conservative_recalls =
+        BTreeMap::from([(10, 0.8), (20, 0.8), (40, 0.8), (80, 1.0), (160, 1.0)]);
+    let previous = aggregate(&populated_input(1_000, 1_000, 0.9, &conservative_recalls)).unwrap();
+    assert_eq!(previous.effective.as_ref().unwrap().recommended_ef, 80);
+
+    let optimistic_recalls =
+        BTreeMap::from([(10, 0.8), (20, 1.0), (40, 1.0), (80, 1.0), (160, 1.0)]);
+    let mut input = populated_input(1_000, 1_000, 0.9, &optimistic_recalls);
+    for sample in &mut input.intermediates[0].samples {
+        if !is_train_member(
+            sample.vector_hash,
+            input.config.split_seed,
+            input.config.train_fraction,
+        )
+        .unwrap()
+        {
+            sample.sweeps.get_mut(&20).unwrap().recall = 0.8;
+        }
+    }
+    input.previous_round = Some(previous);
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.status, RoundStatus::Ok);
+    assert_eq!(observed.recommended_ef, Some(20));
+    assert_eq!(observed.transferred, Some(false));
+    assert!(observed.confidence.unwrap() < input.config.confidence);
+    let effective = observed.effective.unwrap();
+    assert_eq!(effective.recommended_ef, 80);
+    assert!(effective.carried);
+}
+
+#[test]
+fn b5_round_format_v1_is_not_a_carry_source() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+    let mut previous = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
+    previous.format_version = 1;
+    let mut input = populated_input(10, 1_000, 0.9, &recalls);
+    input.previous_round = Some(previous);
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.status, RoundStatus::InsufficientSamples);
+    assert_eq!(observed.effective, None);
+}
+
+#[test]
 fn b6_target_unmet_uses_max_ef_and_keeps_transfer_fields() {
     let recalls = BTreeMap::from([(10, 0.62), (20, 0.85), (40, 0.91), (80, 0.93), (160, 0.95)]);
-    let input = populated_input(100, 100, 0.99, &recalls);
+    let input = populated_input(1_000, 100, 0.99, &recalls);
 
     let observed = aggregate(&input).unwrap();
 
     assert_eq!(observed.recommended_ef, Some(160));
     assert_eq!(observed.status, RoundStatus::TargetUnmet);
     assert!(observed.confidence.is_some());
+    assert_eq!(observed.test_compliance, Some(0.0));
     assert!(observed.test_quantile_recall.is_some());
 }
 
@@ -84,14 +212,20 @@ fn b7_min_samples_999_refuses_and_1000_emits() {
     assert_eq!(below.status, RoundStatus::InsufficientSamples);
     assert_eq!(below.recommended_ef, None);
     assert_eq!(below.confidence, None);
+    assert_eq!(below.train_confidence, None);
+    assert_eq!(below.test_compliance, None);
     assert_eq!(below.samples.unique, 999);
     assert!(below.samples.available >= below.samples.unique);
     assert_eq!(below.ground_truth_latency_mean_ms, Some(899.5));
     assert_eq!(below.per_ef.len(), 5);
 
     let at_threshold = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
+    assert_eq!(at_threshold.format_version, 2);
+    assert_eq!(at_threshold.target.confidence, 0.9);
     assert_eq!(at_threshold.samples.unique, 1_000);
     assert!(at_threshold.recommended_ef.is_some());
+    assert!(at_threshold.train_confidence.is_some());
+    assert_eq!(at_threshold.test_compliance, Some(1.0));
 }
 
 #[test]
@@ -118,6 +252,23 @@ fn b7_realized_empty_split_is_insufficient_even_at_min_samples() {
     assert_eq!(observed.samples.train, 0);
     assert_eq!(observed.status, RoundStatus::InsufficientSamples);
     assert_eq!(observed.recommended_ef, None);
+    assert_eq!(observed.transferred, None);
+}
+
+#[test]
+fn b7_unattainable_assurance_is_insufficient_not_target_unmet() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+    let mut input = populated_input(14, 10, 0.9, &recalls);
+    input.config.percentile = 0.9;
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.samples.unique, 14);
+    assert_eq!(observed.status, RoundStatus::InsufficientSamples);
+    assert_eq!(observed.recommended_ef, None);
+    assert_eq!(observed.train_confidence, None);
+    assert_eq!(observed.test_compliance, None);
+    assert_eq!(observed.confidence, None);
     assert_eq!(observed.transferred, None);
 }
 
@@ -189,8 +340,8 @@ fn b9_no_double_count_across_overlapping_rounds_in_phase_b() {
 
 #[test]
 fn b10_confidence_matches_closed_form_and_scipy_grid() {
-    let all_success = transfer_confidence(100, 100, 0.95).unwrap();
-    let all_failure = transfer_confidence(100, 0, 0.95).unwrap();
+    let all_success = compliance_confidence(100, 100, 0.95).unwrap();
+    let all_failure = compliance_confidence(100, 0, 0.95).unwrap();
     let expected_all_success = 1.0 - 0.95_f64.powi(101);
     assert!((all_success - expected_all_success).abs() <= 1e-5);
     assert!(all_failure < 1e-6);
@@ -206,9 +357,35 @@ fn b10_confidence_matches_closed_form_and_scipy_grid() {
         ((100, 95), 0.3930017634073816),
     ];
     for ((n, m), scipy) in scipy_grid {
-        let tuner = transfer_confidence(n, m, 0.95).unwrap();
+        let tuner = compliance_confidence(n, m, 0.95).unwrap();
         assert!((tuner - scipy).abs() <= 1e-6, "n={n}, m={m}");
     }
+}
+
+#[test]
+fn b10_round_exposes_test_compliance_fraction() {
+    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
+    let mut input = populated_input(200, 100, 0.9, &recalls);
+    let holdout = input.intermediates[0]
+        .samples
+        .iter_mut()
+        .filter(|sample| !is_train_member(sample.vector_hash, 7, 0.7).unwrap())
+        .collect::<Vec<_>>();
+    let holdout_count = holdout.len();
+    for sample in holdout.into_iter().take(3) {
+        for sweep in sample.sweeps.values_mut() {
+            sweep.recall = 0.8;
+        }
+    }
+
+    let observed = aggregate(&input).unwrap();
+    let expected = (holdout_count - 3) as f64 / holdout_count as f64;
+
+    assert_eq!(observed.test_compliance, Some(expected));
+    assert_eq!(
+        serde_json::to_value(observed).unwrap()["test_compliance"],
+        expected
+    );
 }
 
 #[test]
@@ -319,6 +496,7 @@ fn aggregation_config(min_samples: usize, value: f64) -> AggregationConfig {
         k: 10,
         value,
         percentile: 0.95,
+        confidence: 0.9,
         window_duration_seconds: 600,
         storage_window_seconds: 600,
         ef_grid: EF_GRID.to_vec(),

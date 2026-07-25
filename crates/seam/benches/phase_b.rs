@@ -81,6 +81,7 @@ fn aggregation_input() -> AggregationInput {
             k: metadata.k,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.95,
             window_duration_seconds: u64::from(WINDOW_SECONDS),
             storage_window_seconds: WINDOW_SECONDS,
             ef_grid: metadata.ef_grid.clone(),

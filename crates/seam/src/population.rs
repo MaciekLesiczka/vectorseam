@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::aggregate::AggregateError;
-use crate::math::{quantile_type7, select_ef, transfer_confidence};
+use crate::math::{compliance_confidence, quantile_type7, select_ef};
 use crate::model::{
     AggregationConfig, MeasuredSample, PerEfSummary, RoundStatus, SweepMeasurement,
 };
@@ -126,7 +126,9 @@ pub(crate) fn per_ef_summaries(
 pub(crate) struct CompletedSelection {
     pub(crate) recommended_ef: i32,
     pub(crate) status: RoundStatus,
+    pub(crate) train_confidence: f64,
     pub(crate) confidence: f64,
+    pub(crate) test_compliance: f64,
     pub(crate) transferred: bool,
     pub(crate) train_quantile: f64,
     pub(crate) test_quantile: f64,
@@ -149,7 +151,21 @@ pub(crate) fn select_and_validate(
             Ok((*ef, quantile_type7(&recalls, q)?))
         })
         .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
-    let selected = select_ef(&train_quantiles, config.value)?;
+    let train_confidences = config
+        .ef_grid
+        .iter()
+        .map(|ef| {
+            let successes = train
+                .iter()
+                .filter(|sample| sample.sweeps[ef].recall >= config.value)
+                .count();
+            Ok((
+                *ef,
+                compliance_confidence(train.len(), successes, config.percentile)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
+    let selected = select_ef(&train_confidences, config.confidence)?;
     let test_recalls = test
         .iter()
         .map(|sample| sample.sweeps[&selected.recommended_ef].recall)
@@ -159,11 +175,14 @@ pub(crate) fn select_and_validate(
         .iter()
         .filter(|recall| **recall >= config.value)
         .count();
+    let confidence = compliance_confidence(test.len(), successes, config.percentile)?;
     Ok(CompletedSelection {
         recommended_ef: selected.recommended_ef,
         status: selected.status,
-        confidence: transfer_confidence(test.len(), successes, config.percentile)?,
-        transferred: test_quantile >= config.value,
+        train_confidence: train_confidences[&selected.recommended_ef],
+        confidence,
+        test_compliance: successes as f64 / test.len() as f64,
+        transferred: confidence >= config.confidence,
         train_quantile: train_quantiles[&selected.recommended_ef],
         test_quantile,
     })

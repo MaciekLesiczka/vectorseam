@@ -113,17 +113,23 @@ Round JSON first appears with honest `insufficient_samples` counts. Once at
 least 10 unique samples are in closed windows, the expected final artifact is:
 
 ```sh
-jq '{status, recommended_ef, confidence, effective, samples, ground_truth_latency_mean_ms}' \
+jq '{status, recommended_ef, train_confidence, test_compliance, confidence, transferred, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json
 ```
 
-It should report `status: "ok"`, settle near `recommended_ef: 60`, and expose
-the same value as `effective.recommended_ef` with `carried: false` (one
-adjacent grid step is tolerated in early rounds). `recommended_ef` describes
-only the current round. If a later transient failure produces
-`insufficient_samples`, it becomes null while `effective` retains the last
-reliable recommendation with `carried: true`. M1 displays that value but does
-not apply it; recommendation consumption remains milestone 2.
+Rounds remain `insufficient_samples` until both realized splits could attain
+the configured assurance even with all successes. The first eligible
+recommendation may be conservative and high; as evidence accumulates, the
+tuner should step downward and settle near
+`recommended_ef: 60`: it selects the smallest ef whose training confidence
+clears the configured 90% assurance target. The untouched holdout must clear
+the same target before an `ok` candidate replaces `effective`. A rejected
+candidate or a later `insufficient_samples` round retains the last approved
+`effective` recommendation with `carried: true`; `target_unmet` deliberately
+publishes the maximum ef as the protective effective setting. One adjacent
+grid step is tolerated while the rolling population changes. M1 displays the
+effective value but does not apply it; recommendation consumption remains
+milestone 2.
 
 Typical timings at 5 qps are up to two minutes for the first `.vseam`, three
 to four minutes for the first Parquet pair, and six to ten minutes for the
@@ -134,7 +140,7 @@ closed-window alignment.
 For a continuously refreshed view, use:
 
 ```sh
-watch -n 5 "jq '{status, recommended_ef, confidence, effective, samples, ground_truth_latency_mean_ms}' \
+watch -n 5 "jq '{status, recommended_ef, train_confidence, test_compliance, confidence, transferred, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json"
 ```
 

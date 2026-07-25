@@ -10,8 +10,9 @@ no Kubernetes, no HuggingFace sourcing.
 A single documented sequence of commands that produces
 `demo/data/store/calibrations/superuser/latest.json` with `status: "ok"` and a
 `recommended_ef` consistent with the published benchmark for the SuperUser
-corpus (p10 ≥ 0.9 → expected 60, ±1 grid step tolerated). On that successful
-round, `effective.recommended_ef` matches `recommended_ef` and
+corpus (p10 ≥ 0.9 → expected 60, ±1 grid step tolerated), selected with at
+least 90% train assurance and independently approved on holdout. On that
+successful round, `effective.recommended_ef` matches `recommended_ef` and
 `effective.carried` is false.
 
 ## Repository layout
@@ -189,6 +190,7 @@ targets:
     k: 10
     value: 0.9
     percentile: 0.90             # blog's p10 >= 0.9
+    confidence: 0.90             # posterior assurance required on train and holdout
     window: 600s                 # 10 storage windows; must be exact multiple of window_seconds
 
 cohorts:
@@ -222,14 +224,17 @@ Each artifact proves one arrow. Run in order:
 3. `calibrations/superuser/round-*.json` appears with
    `status: "insufficient_samples"` and honest sample counts → Phase B works.
    Before the first recommendation, `effective` is null.
-4. Once `samples.unique ≥ 10` sits in closed windows: `status: "ok"`,
-   `latest.json` updated, and `effective` matches the current recommendation
-   with `carried: false` → full loop works.
+4. Rounds remain `insufficient_samples` until both realized splits are large
+   enough to attain 0.90 assurance even with all successes. Then `status:
+   "ok"` appears once an ef's `train_confidence` clears 0.90; the holdout
+   `confidence` must independently clear 0.90 before it replaces `effective`.
+   `target_unmet` is reserved for enough evidence showing that even maximum ef
+   does not clear the recall SLA.
 5. Final assertion: `recommended_ef` ≈ the benchmark's pick for the same
    corpus and target (60 for full 300k SuperUser), with the same value under
-   `effective.recommended_ef`. Stable-after-a-few-rounds is the pass
-   criterion; flipping between adjacent grid steps in early rounds is
-   expected at this sample size, not a failure.
+   `effective.recommended_ef`. The expected story is conservative high ef
+   first, then lower ef as evidence grows. Flipping between adjacent grid
+   steps in early rounds is expected at this sample size, not a failure.
 
 Expected wall clock at 5 qps, sample-everything, db_share 1.0, sub-second
 scans: first `.vseam` ≤ 2 min, first parquet pair ≤ 3–4 min, first `ok` round
@@ -260,7 +265,7 @@ invisible for up to ~2 min by design).
 ## Out of scope for M1
 
 - Dashboard of any kind (`watch -n 5 "jq '{status, recommended_ef,
-  confidence, effective, samples}'
+  train_confidence, confidence, effective, samples}'
   demo/data/store/calibrations/superuser/latest.json"` is the M1 dashboard).
 - API consuming `latest.json` / applying recommendations.
 - Adaptive sampling.

@@ -1159,9 +1159,27 @@ mod tests {
             .await;
             assert!(matches!(first, CohortRoundOutcome::Published(_)));
         }
+        let (_, latest_path) =
+            round_paths(COHORT, WINDOW_START + u64::from(WINDOW_SECONDS)).unwrap();
+        let mut previous_json: serde_json::Value =
+            serde_json::from_slice(&get_bytes(store.as_ref(), &latest_path).await.unwrap())
+                .unwrap();
+        previous_json
+            .as_object_mut()
+            .unwrap()
+            .remove("test_compliance");
+        store
+            .put(
+                &latest_path,
+                PutPayload::from(serde_json::to_vec(&previous_json).unwrap()),
+            )
+            .await
+            .unwrap();
 
         // `run_cohort_round` has no retained state; only the shared object
-        // store crosses this fresh invocation boundary.
+        // store crosses this fresh invocation boundary. The stored round also
+        // predates test-compliance publication, exercising additive schema
+        // compatibility.
         let mut fresh_measurer = CountingMeasurer { calls: 0 };
         let restarted = run_at(
             Arc::clone(&store),
@@ -1206,6 +1224,10 @@ mod tests {
             },
             AggregationConfig {
                 percentile: 0.9,
+                ..aggregation_config(10)
+            },
+            AggregationConfig {
+                confidence: 0.8,
                 ..aggregation_config(10)
             },
         ] {
@@ -1653,6 +1675,7 @@ mod tests {
             k,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.75,
             window_duration_seconds: u64::from(WINDOW_SECONDS),
             storage_window_seconds: WINDOW_SECONDS,
             ef_grid: if k == 10 {

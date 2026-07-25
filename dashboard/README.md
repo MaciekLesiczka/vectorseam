@@ -1,9 +1,11 @@
 # VectorSeam calibration dashboard
 
 A self-contained web dashboard for the VectorSeam tuner's calibration output.
-It renders, per cohort, the recommended `ef_search`, holdout confidence,
-recall-vs-latency tradeoff, metrics-over-time charts, and an expandable
-round-by-round history.
+It renders, per cohort, the train-selected and currently effective
+`ef_search`, training and holdout confidence, recall-vs-latency tradeoff,
+metrics-over-time charts, and an expandable round-by-round history. A hollow
+ef marker means the current candidate was not approved and the prior setting
+is still effective, or that the maximum ef is acting as a protective fallback.
 
 
 ## What it reads
@@ -63,4 +65,3 @@ All via environment variables:
 Note: the component's live path is all-or-nothing per page load — if any listed
 cohort has no published `latest.json`, the whole view drops to sample data. List
 only cohorts that are actually publishing.
-
