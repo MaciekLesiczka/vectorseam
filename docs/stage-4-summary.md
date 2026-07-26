@@ -28,13 +28,13 @@
 - `serde-saphyr` is pinned to `0.0.11`, the newest release verified to compile
   on Rust 1.85; newer releases use language and library features beyond the
   workspace MSRV.
-- Every round publishes `effective`. Holdout-approved `ok` and protective
-  `target_unmet` results replace prior state; holdout-rejected `ok` and
-  insufficient rounds carry the fingerprint-compatible last known good value
-  from durable `latest.json`.
+- Every round publishes the current `effective` state. Approved candidates
+  replace it, inconclusive candidates carry it, rejected lower challengers are
+  discarded, and rejection of the active ef backs off one grid step.
+  `target_unmet` remains a protective maximum-grid signal.
 - E1–E5 run without PostgreSQL and cover history/latest publication,
   idempotent carry, target-unmet precedence, restart survival, fingerprint
-  invalidation, silent bootstrap, malformed/pre-extension warnings, and
+  invalidation, silent bootstrap, malformed-state warnings, and
   transient carry-source GET failure without publication or chain loss.
 
 ## Red or deferred

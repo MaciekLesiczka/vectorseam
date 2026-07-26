@@ -5,8 +5,11 @@ use std::collections::BTreeMap;
 use crate::aggregate::AggregateError;
 use crate::math::{compliance_confidence, quantile_type7, select_ef};
 use crate::model::{
-    AggregationConfig, MeasuredSample, PerEfSummary, RoundStatus, SweepMeasurement,
+    AggregationConfig, HoldoutStatus, MeasuredSample, PerEfSummary, RoundStatus, SweepMeasurement,
 };
+
+/// Strong rejection means at least 90% posterior probability of non-compliance.
+const HOLDOUT_REJECTION_CONFIDENCE: f64 = 0.10;
 
 /// A window-wide deduplication survivor, exposed for acceptance assertions.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,9 +132,45 @@ pub(crate) struct CompletedSelection {
     pub(crate) train_confidence: f64,
     pub(crate) confidence: f64,
     pub(crate) test_compliance: f64,
-    pub(crate) transferred: bool,
+    pub(crate) holdout_status: HoldoutStatus,
     pub(crate) train_quantile: f64,
     pub(crate) test_quantile: f64,
+}
+
+pub(crate) struct HoldoutEvaluation {
+    pub(crate) confidence: f64,
+    pub(crate) test_compliance: f64,
+    pub(crate) quantile: f64,
+}
+
+pub(crate) fn evaluate_holdout(
+    config: &AggregationConfig,
+    test: &[&PopulationSample],
+    ef: i32,
+) -> Result<HoldoutEvaluation, AggregateError> {
+    let test_recalls = test
+        .iter()
+        .map(|sample| sample.sweeps[&ef].recall)
+        .collect::<Vec<_>>();
+    let successes = test_recalls
+        .iter()
+        .filter(|recall| **recall >= config.value)
+        .count();
+    Ok(HoldoutEvaluation {
+        confidence: compliance_confidence(test.len(), successes, config.percentile)?,
+        test_compliance: successes as f64 / test.len() as f64,
+        quantile: quantile_type7(&test_recalls, 1.0 - config.percentile)?,
+    })
+}
+
+fn holdout_status(confidence: f64, assurance_target: f64) -> HoldoutStatus {
+    if confidence >= assurance_target {
+        HoldoutStatus::Approved
+    } else if confidence <= HOLDOUT_REJECTION_CONFIDENCE {
+        HoldoutStatus::Rejected
+    } else {
+        HoldoutStatus::Inconclusive
+    }
 }
 
 pub(crate) fn select_and_validate(
@@ -166,24 +205,28 @@ pub(crate) fn select_and_validate(
         })
         .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
     let selected = select_ef(&train_confidences, config.confidence)?;
-    let test_recalls = test
-        .iter()
-        .map(|sample| sample.sweeps[&selected.recommended_ef].recall)
-        .collect::<Vec<_>>();
-    let test_quantile = quantile_type7(&test_recalls, q)?;
-    let successes = test_recalls
-        .iter()
-        .filter(|recall| **recall >= config.value)
-        .count();
-    let confidence = compliance_confidence(test.len(), successes, config.percentile)?;
+    let holdout = evaluate_holdout(config, test, selected.recommended_ef)?;
     Ok(CompletedSelection {
         recommended_ef: selected.recommended_ef,
         status: selected.status,
         train_confidence: train_confidences[&selected.recommended_ef],
-        confidence,
-        test_compliance: successes as f64 / test.len() as f64,
-        transferred: confidence >= config.confidence,
+        confidence: holdout.confidence,
+        test_compliance: holdout.test_compliance,
+        holdout_status: holdout_status(holdout.confidence, config.confidence),
         train_quantile: train_quantiles[&selected.recommended_ef],
-        test_quantile,
+        test_quantile: holdout.quantile,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holdout_status_uses_hardcoded_strong_rejection_boundary() {
+        assert_eq!(holdout_status(0.90, 0.90), HoldoutStatus::Approved);
+        assert_eq!(holdout_status(0.89, 0.90), HoldoutStatus::Inconclusive);
+        assert_eq!(holdout_status(0.11, 0.90), HoldoutStatus::Inconclusive);
+        assert_eq!(holdout_status(0.10, 0.90), HoldoutStatus::Rejected);
+    }
 }

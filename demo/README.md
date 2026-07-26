@@ -113,7 +113,7 @@ Round JSON first appears with honest `insufficient_samples` counts. Once at
 least 10 unique samples are in closed windows, the expected final artifact is:
 
 ```sh
-jq '{status, recommended_ef, train_confidence, test_compliance, confidence, transferred, effective, samples, ground_truth_latency_mean_ms}' \
+jq '{status, recommended_ef, train_confidence, test_compliance, confidence, holdout_status, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json
 ```
 
@@ -123,13 +123,13 @@ recommendation may be conservative and high; as evidence accumulates, the
 tuner should step downward and settle near
 `recommended_ef: 60`: it selects the smallest ef whose training confidence
 clears the configured 90% assurance target. The untouched holdout must clear
-the same target before an `ok` candidate replaces `effective`. A rejected
-candidate or a later `insufficient_samples` round retains the last approved
-`effective` recommendation with `carried: true`; `target_unmet` deliberately
-publishes the maximum ef as the protective effective setting. One adjacent
-grid step is tolerated while the rolling population changes. M1 displays the
-effective value but does not apply it; recommendation consumption remains
-milestone 2.
+the same target before a new candidate replaces `effective`. Confidence
+between 10% and the assurance target is `inconclusive` and carries the current
+effective value. Confidence at or below 10% is `rejected`; a rejected lower
+challenger is discarded, while rejection of the active ef moves the effective
+setting one grid step higher. `target_unmet` deliberately publishes the
+maximum ef as the protective effective setting. M1 displays the effective
+value but does not apply it; recommendation consumption remains milestone 2.
 
 Typical timings at 5 qps are up to two minutes for the first `.vseam`, three
 to four minutes for the first Parquet pair, and six to ten minutes for the
@@ -140,7 +140,7 @@ closed-window alignment.
 For a continuously refreshed view, use:
 
 ```sh
-watch -n 5 "jq '{status, recommended_ef, train_confidence, test_compliance, confidence, transferred, effective, samples, ground_truth_latency_mean_ms}' \
+watch -n 5 "jq '{status, recommended_ef, train_confidence, test_compliance, confidence, holdout_status, effective, samples, ground_truth_latency_mean_ms}' \
   demo/data/store/calibrations/superuser/latest.json"
 ```
 

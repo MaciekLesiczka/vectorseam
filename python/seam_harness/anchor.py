@@ -164,7 +164,7 @@ def _product_calibration(
         "test_quantile_recall": analyze._p10_for_subset(
             rows, _DATASET, selected_ef, test_ids
         ),
-        "transferred": confidence >= _CONFIDENCE,
+        "holdout_approved": confidence >= _CONFIDENCE,
     }
 
 
@@ -255,7 +255,7 @@ def run_anchor(
         "test_compliance": float(calibration["test_compliance"]),
         "confidence": float(calibration["confidence"]),
         "test_quantile_recall": float(calibration["test_quantile_recall"]),
-        "transferred": bool(calibration["transferred"]),
+        "holdout_approved": bool(calibration["holdout_approved"]),
         "blog_recommended_ef": int(blog_calibration["selected_ef"]),
     }
     common.write_json(output_path, comparison)

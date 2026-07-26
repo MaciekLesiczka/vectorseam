@@ -364,7 +364,7 @@ selected = min(clearing)             → status "ok"
   (`samples.unique`). Below it the round
   publishes `status: "insufficient_samples"` with `recommended_ef: null`,
   `train_confidence: null`, `confidence: null`, `test_compliance: null`,
-  `transferred: null`, `train_quantile_recall: null`,
+  `holdout_status: null`, `train_quantile_recall: null`,
   `test_quantile_recall: null`, and full
   sample/coverage metadata. The
   full-population `per_ef` summaries are still computed when the population is
@@ -416,8 +416,10 @@ The train-selected ef is evaluated exactly once on the untouched holdout. The
 round reports `test_compliance` (the fraction of holdout recalls at the
 selected ef that are at least `value`), `test_quantile_recall` (a diagnostic
 compliance quantile), and `confidence` from the same posterior formula used
-for training. `transferred = confidence ≥ target.confidence`; the point
-quantile alone does not approve a recommendation.
+for training. `holdout_status` is `approved` when confidence clears
+`target.confidence`, `rejected` when confidence is at or below the hardcoded
+0.10 threshold, and `inconclusive` otherwise. The point quantile alone does
+not approve or reject a recommendation.
 
 - **Decision — confidence is one closed-form number per evaluated ef**: with
   `n` samples of which `m` have `recall ≥ value` at an ef,
@@ -441,25 +443,24 @@ quantile alone does not approve a recommendation.
   dropped-frame and missing-window fractions are reported separately and
   never folded in.
 
-#### Effective recommendation (last known good)
+#### Effective recommendation
 
 `recommended_ef` describes what *this round* computed, and stays honestly
 `null` when the round refuses selection. The client-facing signal is a
 separate `effective` block — the ef a consumer should apply right now —
 published in every round record (schema in §2.4):
 
-- **Decision — publish only an approved recommendation.** An `ok` candidate
-  sets `effective` from itself (`carried: false`) only when `transferred` is
-  true. A holdout-rejected `ok` candidate and an `insufficient_samples` round
-  copy the previous round's `effective` unchanged (`carried: true`), or leave
-  it null during bootstrap. Rationale: an
-  application that has been applying a calibrated ef must not be knocked
-  back to its conservative default by one sampling blip or table incident —
-  and the fix cannot live in clients, because a freshly started client whose
-  first poll lands on an insufficient round has nothing to remember.
-  `target_unmet` deliberately overrides an older `ok` even when holdout
-  assurance is low: max(grid) is the newest honest signal and the most
-  protective actionable setting.
+- **Decision — confidence has a hold band.** An approved `ok` candidate sets
+  `effective` from itself (`basis: "approved"`, `carried: false`). An
+  inconclusive candidate carries the prior effective value. A rejected
+  candidate also carries the prior value when it is a different challenger;
+  when the rejected candidate is the active effective ef, the tuner moves one
+  grid step higher with `basis: "protective"`. During bootstrap, an
+  inconclusive or rejected candidate uses max(grid) protectively. An
+  `insufficient_samples` round carries prior state or leaves it null if no
+  selection has ever run. This avoids turning a narrow failure to re-prove an
+  active setting into oscillation while still reacting to strong evidence of
+  regression. `target_unmet` overrides prior state with max(grid).
 - **The carry source is storage, never memory.** Before publishing, the
   round GETs the cohort's current `latest.json` (one GET per cohort per
   round) and takes its `effective` block as the carry source, so the chain
@@ -643,7 +644,7 @@ Both files carry parquet key-value metadata:
 `index` (config name), `table`, `column`, `key`, `k`, `ef_grid`
 (comma-joined), `failed_count`, `measured_count`, `computed_at_us`.
 Aggregation skips (and reports) files whose `k`, `index`, `table`,
-`column`, `key`, `ef_grid`, or `format_version` don't match the current
+`column`, `key`, or `ef_grid` don't match the current
 config — the measure phase then re-measures those parts. This is how config
 edits across restarts stay safe without runtime reconfiguration.
 The reader rejects a pair when metadata `measured_count` differs from the
@@ -681,7 +682,7 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
 
 ```jsonc
 {
-  "format_version": 2,
+  "format_version": 1,
   "cohort": "prod/reddit/tldr",
   "computed_at": "2026-07-15T12:00:41Z",
   "window": { "start": "2026-07-14T12:00:00Z", "end": "2026-07-15T12:00:00Z",
@@ -697,13 +698,14 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "confidence": 0.971,               // null when insufficient_samples
   "train_confidence": 0.976,         // selected ef on train; null when insufficient_samples
   "test_compliance": 0.963,          // fraction meeting value; null when insufficient_samples
-  "transferred": true,               // holdout confidence >= target.confidence; null when insufficient
+  "holdout_status": "approved",      // "approved" | "inconclusive" | "rejected"; null when insufficient
   "train_quantile_recall": 0.90,     // null when insufficient_samples
   "test_quantile_recall": 0.90,      // null when insufficient_samples
   "effective": {                     // approved or protective ef a client applies now (§2.2);
                                      // null only before any round has ever recommended
     "recommended_ef": 200,           // never null inside a non-null block
     "confidence": 0.971,             // confidence as of source_round
+    "basis": "approved",             // "approved" | "protective" | "target_unmet"
     "source_round": "2026-07-15T12:00:00Z",  // round_end that computed it
     "carried": false                 // true when copied from a previous round
   },
@@ -739,12 +741,9 @@ they are reported alongside it so the consumer can judge both independently.
 When the in-scope headers have `sum(received_frame_count) = 0`, including an
 empty round, `dropped_frame_fraction` is defined as `0.0`; absence is reported
 separately by coverage rather than represented as a drop.
-Round `format_version: 2` introduces confidence-gated ef selection,
-`target.confidence`, `train_confidence`, and confidence-based holdout approval.
-Version-1 round records remain readable, but are never used as an `effective`
-carry source because their recommendation had different semantics. Because
-every current round embeds the `effective` block, immutable `round-<ts>.json`
-history records what was in effect at each point in time.
+`format_version` is fixed at `1`.
+Because every round embeds the `effective` block, immutable
+`round-<ts>.json` history records what was in effect at each point in time.
 
 ### 2.5 Measure phase details
 
@@ -794,7 +793,7 @@ long-lived, and no reconnect is attempted mid-round.
    still included for a non-empty cached population.
 5. Compute confidence for every ef on train and select per §2.2; compute the
    selected candidate's holdout compliance, quantile, confidence, and
-   `transferred` approval.
+   three-way `holdout_status`.
 6. Compute `dropped_frame_fraction` from part headers and the `coverage`
    block from the window/part listing.
 7. GET the cohort's current `latest.json` and derive this round's
@@ -806,10 +805,9 @@ long-lived, and no reconnect is attempted mid-round.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
-idempotent by design. This includes `effective`: an approved or protective
-round re-derives the block from itself, while a holdout-rejected or
-insufficient round re-carries the same block it already published, so
-republication never changes or loses it.
+idempotent by design. This includes `effective`: approved candidates and
+protective transitions are re-derived deterministically, while inconclusive,
+rejected-challenger, and insufficient rounds re-carry the same prior block.
 
 ## 3. Non-functional requirements
 
@@ -1014,7 +1012,7 @@ point quantiles and VectorSeam's confidence-gated selection.
   confidence clears 0.90, and equal to `80` for the fixture.
 - **A5** `train_confidence`, `test_compliance`, and holdout `confidence` agree
   with the independent anchor within 1e-6; `test_quantile_recall` differs by
-  at most 0.01; `transferred` is identical.
+  at most 0.01; holdout approval is identical.
 
 ### B. Estimator semantics (one per §2.2 decision; F-agg unless stated)
 
@@ -1035,10 +1033,11 @@ point quantiles and VectorSeam's confidence-gated selection.
 - **B5 selection**: train confidences `{10:0.62, 20:0.85, 40:0.91,
   80:0.93, 160:0.95}`, assurance 0.9 → `recommended_ef = 40`,
   `status = "ok"`. A separate fixture has ef 20's point quantile exactly at
-  the recall target but insufficient confidence, so ef 40 is selected. If
-  that candidate fails holdout assurance, the previous approved effective ef
-  is carried rather than replaced. A sparse fixture selects ef 40; a denser
-  fixture with stronger evidence at ef 20 selects ef 20.
+  the recall target but insufficient confidence, so ef 40 is selected. A
+  lower rejected challenger carries the prior effective ef. An active ef with
+  confidence between 0.10 and assurance is inconclusive and carried; an
+  active ef at or below 0.10 backs off one grid step. A sparse fixture selects
+  ef 40; a denser fixture with stronger evidence at ef 20 selects ef 20.
 - **B6 target unmet**: value 0.99 across B5's recall population → `recommended_ef =
   160`, `status = "target_unmet"`, confidence, `test_compliance`, and
   `test_quantile_recall` still present.

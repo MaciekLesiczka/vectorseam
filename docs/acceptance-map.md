@@ -17,13 +17,13 @@ recorded in `docs/REVIEW_MAP.md`.
 | A2 | `crates/seam/tests/acceptance_a_anchor.rs::a2_anchor_full_population_mean_recall_within_0_005` (F-pg + trusted anchor) | passing |
 | A3 | `crates/seam/tests/acceptance_a_anchor.rs::a3_anchor_train_p10_within_0_01` (F-pg + trusted anchor) | passing |
 | A4 | `crates/seam/tests/acceptance_a_anchor.rs::a4_anchor_recommended_ef_identical` (F-pg + trusted anchor) | passing — both select the spec literal `80` |
-| A5 | `crates/seam/tests/acceptance_a_anchor.rs::a5_anchor_holdout_quantile_and_transfer_match` (F-pg + trusted anchor) | passing — train/holdout confidence, compliance, quantile, and approval |
+| A5 | `crates/seam/tests/acceptance_a_anchor.rs::a5_anchor_holdout_quantile_and_approval_match` (F-pg + trusted anchor) | passing — train/holdout confidence, compliance, quantile, and approval |
 | B1 | `crates/seam/tests/acceptance_b_estimator.rs::b1_recall_set_intersection_and_short_results` | passing |
 | B2 | `crates/seam/src/database.rs::tests::b2_f_pg_ground_truth_tie_break_prefers_key_7_over_9` (F-pg); `crates/seam/src/database.rs::tests::b2_ground_truth_sql_quotes_identifiers_and_tie_breaks_by_key` | passing |
 | B3 | `crates/seam/tests/acceptance_b_estimator.rs::b3_quantile_type7_linear_and_singleton` | passing |
 | B4 | `crates/seam/tests/acceptance_b_estimator.rs::b4_fnv1a_reference_split_fraction_and_membership_stability`; `crates/seam/tests/acceptance_b_estimator.rs::b4_b12_aggregate_survivor_movement_preserves_split_membership` | passing |
-| B5 | `crates/seam/tests/acceptance_b_estimator.rs::b5_selects_smallest_clearing_ef_40`; `crates/seam/tests/acceptance_b_estimator.rs::b5_more_evidence_can_reduce_the_selected_ef`; `crates/seam/tests/acceptance_b_estimator.rs::b5_rejects_invalid_direct_aggregation_confidence`; `crates/seam/tests/acceptance_b_estimator.rs::b5_selection_requires_train_confidence_not_only_a_clearing_quantile`; `crates/seam/tests/acceptance_b_estimator.rs::b5_holdout_rejection_carries_the_last_approved_recommendation`; `crates/seam/tests/acceptance_b_estimator.rs::b5_round_format_v1_is_not_a_carry_source` | passing |
-| B6 | `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_is_decided_by_the_highest_ef`; `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_uses_max_ef_and_keeps_transfer_fields` | passing |
+| B5 | `crates/seam/tests/acceptance_b_estimator.rs::b5_selects_smallest_clearing_ef_40`; `crates/seam/tests/acceptance_b_estimator.rs::b5_more_evidence_can_reduce_the_selected_ef`; `crates/seam/tests/acceptance_b_estimator.rs::b5_rejects_invalid_direct_aggregation_confidence`; `crates/seam/tests/acceptance_b_estimator.rs::b5_selection_requires_train_confidence_not_only_a_clearing_quantile`; `crates/seam/tests/acceptance_b_estimator.rs::b5_rejected_lower_challenger_carries_the_last_approved_recommendation`; `crates/seam/tests/acceptance_b_estimator.rs::b5_inconclusive_active_candidate_keeps_the_effective_ef`; `crates/seam/tests/acceptance_b_estimator.rs::b5_rejected_active_candidate_backs_off_one_grid_step` | passing |
+| B6 | `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_is_decided_by_the_highest_ef`; `crates/seam/tests/acceptance_b_estimator.rs::b6_target_unmet_uses_max_ef_and_keeps_holdout_fields` | passing |
 | B7 | `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_999_refuses_and_1000_emits`; `crates/seam/tests/acceptance_b_estimator.rs::b7_min_samples_configuration_floor_is_10`; `crates/seam/tests/acceptance_b_estimator.rs::b7_realized_empty_split_is_insufficient_even_at_min_samples`; `crates/seam/tests/acceptance_b_estimator.rs::b7_unattainable_assurance_is_insufficient_not_target_unmet` | passing |
 | B8 | `crates/seam/src/accounting.rs::tests::b8_window_membership_enumerates_exactly_six_slots`; `crates/seam/tests/acceptance_b_estimator.rs::b8_window_membership_six_slots_and_one_sixth_empty` | passing |
 | B9 | `crates/seam/tests/acceptance_b_estimator.rs::b9_no_double_count_across_overlapping_rounds_in_phase_b`; `crates/seam/src/pipeline.rs::tests::b9_second_round_issues_zero_new_database_transactions` | passing |
@@ -45,7 +45,7 @@ recorded in `docs/REVIEW_MAP.md`.
 | E2 | `crates/seam/src/pipeline.rs::tests::e2_newest_target_unmet_signal_wins_and_is_then_carried` | passing |
 | E3 | `crates/seam/src/pipeline.rs::tests::e3_carry_survives_fresh_pipeline_invocation_using_only_storage` | passing |
 | E4 | `crates/seam/src/pipeline.rs::tests::e4_fingerprint_change_resets_effective_for_all_required_fields` | passing |
-| E5 | `crates/seam/src/pipeline.rs::tests::e5_bootstrap_content_and_get_failure_policy_preserves_effective_chain` | passing |
+| E5 | `crates/seam/src/pipeline.rs::tests::e5_bootstrap_corruption_and_get_failure_preserve_effective_chain` | passing |
 
 C7 is deferred from machine gating with the owner's explicit approval, and
 its required manual transaction review was completed and approved on

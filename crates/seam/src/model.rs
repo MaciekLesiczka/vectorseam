@@ -210,6 +210,18 @@ pub enum RoundStatus {
     InsufficientSamples,
 }
 
+/// Holdout evidence for the train-selected candidate.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HoldoutStatus {
+    /// Confidence cleared the configured assurance target.
+    Approved,
+    /// Confidence was neither high enough to approve nor low enough to reject.
+    Inconclusive,
+    /// Confidence was at or below the hardcoded strong-rejection threshold.
+    Rejected,
+}
+
 /// Published target description.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct RoundTarget {
@@ -222,7 +234,6 @@ pub struct RoundTarget {
     /// Required compliant fraction.
     pub percentile: f64,
     /// Required posterior probability that compliance clears `percentile`.
-    #[serde(default)]
     pub confidence: f64,
 }
 
@@ -278,6 +289,18 @@ pub struct PerEfSummary {
     pub latency_p50_ms: f64,
 }
 
+/// Why an effective recommendation was published.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectiveBasis {
+    /// The candidate cleared holdout assurance.
+    Approved,
+    /// The tuner moved to or bootstrapped at a safer grid value.
+    Protective,
+    /// The training split could not clear the target at the maximum grid value.
+    TargetUnmet,
+}
+
 /// Client-facing recommendation to apply until a newer round supersedes it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EffectiveRecommendation {
@@ -285,6 +308,8 @@ pub struct EffectiveRecommendation {
     pub recommended_ef: i32,
     /// Holdout posterior confidence from the source round.
     pub confidence: f64,
+    /// Evidence or safety basis for this recommendation.
+    pub basis: EffectiveBasis,
     /// Round end that computed this recommendation.
     pub source_round: String,
     /// Whether this round carried the recommendation from prior state.
@@ -317,19 +342,16 @@ pub struct RoundOutput {
     /// Holdout posterior confidence, absent when insufficient.
     pub confidence: Option<f64>,
     /// Training posterior confidence at the selected ef.
-    #[serde(default)]
     pub train_confidence: Option<f64>,
     /// Fraction of holdout samples meeting the recall target.
-    #[serde(default)]
     pub test_compliance: Option<f64>,
-    /// Whether holdout confidence cleared the target assurance, absent when insufficient.
-    pub transferred: Option<bool>,
+    /// Holdout evidence state, absent when selection was refused.
+    pub holdout_status: Option<HoldoutStatus>,
     /// Train compliance quantile at the selected ef.
     pub train_quantile_recall: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
     /// Approved or protective recommendation a consumer should apply now.
-    #[serde(default)]
     pub effective: Option<EffectiveRecommendation>,
     /// Sample counters.
     pub samples: SampleCounts,
@@ -342,7 +364,6 @@ pub struct RoundOutput {
     /// In-scope intermediate pairs skipped for config mismatch.
     pub incompatible_parts: u64,
     /// Mean ground-truth statement latency over the deduplicated population.
-    #[serde(default)]
     pub ground_truth_latency_mean_ms: Option<f64>,
     /// Informational summaries over the full deduplicated population.
     pub per_ef: Vec<PerEfSummary>,

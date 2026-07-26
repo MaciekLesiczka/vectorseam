@@ -15,6 +15,7 @@ use seam::config::{
 };
 use seam::intermediate::read_intermediate_pair;
 use seam::math::{is_train_member, quantile_type7};
+use seam::model::HoldoutStatus;
 use seam::tuner::Tuner;
 
 use support::anchor::{fixture_root, read_anchor_comparison};
@@ -39,7 +40,7 @@ struct AnchorOutput {
     train_confidence: f64,
     test_compliance: f64,
     test_quantile_recall: f64,
-    transferred: bool,
+    holdout_approved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,8 +68,8 @@ struct AnchorComparison {
     test_compliance_absolute_difference: f64,
     confidence_absolute_difference: f64,
     test_quantile_absolute_difference: f64,
-    tuner_transferred: bool,
-    anchor_transferred: bool,
+    tuner_holdout_approved: bool,
+    anchor_holdout_approved: bool,
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn a4_anchor_recommended_ef_identical() {
 
 #[test]
 #[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
-fn a5_anchor_holdout_quantile_and_transfer_match() {
+fn a5_anchor_holdout_quantile_and_approval_match() {
     let comparison = required_comparison();
     assert!(comparison.train_confidence_absolute_difference <= 1e-6);
     assert!(comparison.test_compliance_absolute_difference <= 1e-6);
@@ -133,7 +134,10 @@ fn a5_anchor_holdout_quantile_and_transfer_match() {
         "observed holdout quantile difference {}",
         comparison.test_quantile_absolute_difference
     );
-    assert_eq!(comparison.tuner_transferred, comparison.anchor_transferred);
+    assert_eq!(
+        comparison.tuner_holdout_approved,
+        comparison.anchor_holdout_approved
+    );
 }
 
 fn required_comparison() -> &'static AnchorComparison {
@@ -287,10 +291,8 @@ fn build_comparison() -> Result<AnchorComparison> {
             .context("A-suite output omitted the holdout quantile")?
             - anchor.test_quantile_recall)
             .abs(),
-        tuner_transferred: output
-            .transferred
-            .context("A-suite output omitted the transfer decision")?,
-        anchor_transferred: anchor.transferred,
+        tuner_holdout_approved: output.holdout_status == Some(HoldoutStatus::Approved),
+        anchor_holdout_approved: anchor.holdout_approved,
     })
 }
 

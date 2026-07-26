@@ -113,7 +113,7 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
     assert_eq!(observed.test_compliance, None);
-    assert_eq!(observed.transferred, None);
+    assert_eq!(observed.holdout_status, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);
     assert_eq!(observed.ground_truth_latency_mean_ms, None);
@@ -178,7 +178,7 @@ fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
     );
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
-    assert_eq!(observed.transferred, None);
+    assert_eq!(observed.holdout_status, None);
 }
 
 #[test]

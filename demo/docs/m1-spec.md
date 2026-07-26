@@ -223,18 +223,21 @@ Each artifact proves one arrow. Run in order:
    — stop and fix that before anything else.
 3. `calibrations/superuser/round-*.json` appears with
    `status: "insufficient_samples"` and honest sample counts → Phase B works.
-   Before the first recommendation, `effective` is null.
+   Before the first eligible selection, `effective` is null.
 4. Rounds remain `insufficient_samples` until both realized splits are large
    enough to attain 0.90 assurance even with all successes. Then `status:
    "ok"` appears once an ef's `train_confidence` clears 0.90; the holdout
-   `confidence` must independently clear 0.90 before it replaces `effective`.
+   `confidence` must independently clear 0.90 before a candidate replaces
+   `effective`. Confidence from 0.10 to 0.90 is inconclusive and carries the
+   current effective ef. Confidence at or below 0.10 rejects the candidate;
+   rejection of the active ef moves one grid step higher.
    `target_unmet` is reserved for enough evidence showing that even maximum ef
    does not clear the recall SLA.
 5. Final assertion: `recommended_ef` ≈ the benchmark's pick for the same
    corpus and target (60 for full 300k SuperUser), with the same value under
    `effective.recommended_ef`. The expected story is conservative high ef
-   first, then lower ef as evidence grows. Flipping between adjacent grid
-   steps in early rounds is expected at this sample size, not a failure.
+   first, then lower ef as evidence grows. Inconclusive early rounds hold the
+   current effective value rather than flipping it.
 
 Expected wall clock at 5 qps, sample-everything, db_share 1.0, sub-second
 scans: first `.vseam` ≤ 2 min, first parquet pair ≤ 3–4 min, first `ok` round

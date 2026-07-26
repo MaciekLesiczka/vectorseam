@@ -8,8 +8,8 @@ use seam::math::{
     compliance_confidence, fnv1a64, is_train_member, quantile_type7, recall_at_k, select_ef,
 };
 use seam::model::{
-    AggregationConfig, AggregationInput, IntermediateMetadata, IntermediatePart, ListedPart,
-    MeasuredSample, RoundStatus, SweepMeasurement,
+    AggregationConfig, AggregationInput, EffectiveBasis, HoldoutStatus, IntermediateMetadata,
+    IntermediatePart, ListedPart, MeasuredSample, RoundStatus, SweepMeasurement,
 };
 use support::f_agg::{
     DEFAULT_PART_ULID, DEFAULT_WINDOW_SECONDS, DEFAULT_WINDOW_START, write_b12_cross_part_fixture,
@@ -144,7 +144,7 @@ fn b5_selection_requires_train_confidence_not_only_a_clearing_quantile() {
 }
 
 #[test]
-fn b5_holdout_rejection_carries_the_last_approved_recommendation() {
+fn b5_rejected_lower_challenger_carries_the_last_approved_recommendation() {
     let conservative_recalls =
         BTreeMap::from([(10, 0.8), (20, 0.8), (40, 0.8), (80, 1.0), (160, 1.0)]);
     let previous = aggregate(&populated_input(1_000, 1_000, 0.9, &conservative_recalls)).unwrap();
@@ -170,29 +170,97 @@ fn b5_holdout_rejection_carries_the_last_approved_recommendation() {
 
     assert_eq!(observed.status, RoundStatus::Ok);
     assert_eq!(observed.recommended_ef, Some(20));
-    assert_eq!(observed.transferred, Some(false));
+    assert_eq!(observed.holdout_status, Some(HoldoutStatus::Rejected));
     assert!(observed.confidence.unwrap() < input.config.confidence);
     let effective = observed.effective.unwrap();
     assert_eq!(effective.recommended_ef, 80);
+    assert_eq!(effective.basis, EffectiveBasis::Approved);
     assert!(effective.carried);
 }
 
 #[test]
-fn b5_round_format_v1_is_not_a_carry_source() {
-    let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
-    let mut previous = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
-    previous.format_version = 1;
-    let mut input = populated_input(10, 1_000, 0.9, &recalls);
+fn b5_inconclusive_active_candidate_keeps_the_effective_ef() {
+    let recalls = BTreeMap::from([(10, 0.8), (20, 0.8), (40, 1.0), (80, 1.0), (160, 1.0)]);
+    let previous = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
+    assert_eq!(previous.effective.as_ref().unwrap().recommended_ef, 40);
+
+    let mut input = populated_input(1_000, 1_000, 0.9, &recalls);
+    let holdout_count = input.intermediates[0]
+        .samples
+        .iter()
+        .filter(|sample| {
+            !is_train_member(
+                sample.vector_hash,
+                input.config.split_seed,
+                input.config.train_fraction,
+            )
+            .unwrap()
+        })
+        .count();
+    let failures = (holdout_count as f64 * (1.0 - input.config.percentile)).round() as usize;
+    let mut changed = 0;
+    for sample in &mut input.intermediates[0].samples {
+        if changed < failures
+            && !is_train_member(
+                sample.vector_hash,
+                input.config.split_seed,
+                input.config.train_fraction,
+            )
+            .unwrap()
+        {
+            sample.sweeps.get_mut(&40).unwrap().recall = 0.8;
+            changed += 1;
+        }
+    }
+    assert_eq!(changed, failures);
     input.previous_round = Some(previous);
 
     let observed = aggregate(&input).unwrap();
 
-    assert_eq!(observed.status, RoundStatus::InsufficientSamples);
-    assert_eq!(observed.effective, None);
+    assert_eq!(observed.recommended_ef, Some(40));
+    assert_eq!(observed.holdout_status, Some(HoldoutStatus::Inconclusive));
+    assert!(observed.confidence.unwrap() > 0.10);
+    assert!(observed.confidence.unwrap() < input.config.confidence);
+    let effective = observed.effective.unwrap();
+    assert_eq!(effective.recommended_ef, 40);
+    assert_eq!(effective.basis, EffectiveBasis::Approved);
+    assert!(effective.carried);
 }
 
 #[test]
-fn b6_target_unmet_uses_max_ef_and_keeps_transfer_fields() {
+fn b5_rejected_active_candidate_backs_off_one_grid_step() {
+    let recalls = BTreeMap::from([(10, 0.8), (20, 0.8), (40, 1.0), (80, 1.0), (160, 1.0)]);
+    let previous = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
+    assert_eq!(previous.effective.as_ref().unwrap().recommended_ef, 40);
+
+    let mut input = populated_input(1_000, 1_000, 0.9, &recalls);
+    for sample in &mut input.intermediates[0].samples {
+        if !is_train_member(
+            sample.vector_hash,
+            input.config.split_seed,
+            input.config.train_fraction,
+        )
+        .unwrap()
+        {
+            sample.sweeps.get_mut(&40).unwrap().recall = 0.8;
+        }
+    }
+    input.previous_round = Some(previous);
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.recommended_ef, Some(40));
+    assert_eq!(observed.holdout_status, Some(HoldoutStatus::Rejected));
+    assert!(observed.confidence.unwrap() <= 0.10);
+    let effective = observed.effective.unwrap();
+    assert_eq!(effective.recommended_ef, 80);
+    assert_eq!(effective.basis, EffectiveBasis::Protective);
+    assert!(!effective.carried);
+    assert!(effective.confidence >= input.config.confidence);
+}
+
+#[test]
+fn b6_target_unmet_uses_max_ef_and_keeps_holdout_fields() {
     let recalls = BTreeMap::from([(10, 0.62), (20, 0.85), (40, 0.91), (80, 0.93), (160, 0.95)]);
     let input = populated_input(1_000, 100, 0.99, &recalls);
 
@@ -220,7 +288,7 @@ fn b7_min_samples_999_refuses_and_1000_emits() {
     assert_eq!(below.per_ef.len(), 5);
 
     let at_threshold = aggregate(&populated_input(1_000, 1_000, 0.9, &recalls)).unwrap();
-    assert_eq!(at_threshold.format_version, 2);
+    assert_eq!(at_threshold.format_version, 1);
     assert_eq!(at_threshold.target.confidence, 0.9);
     assert_eq!(at_threshold.samples.unique, 1_000);
     assert!(at_threshold.recommended_ef.is_some());
@@ -252,7 +320,7 @@ fn b7_realized_empty_split_is_insufficient_even_at_min_samples() {
     assert_eq!(observed.samples.train, 0);
     assert_eq!(observed.status, RoundStatus::InsufficientSamples);
     assert_eq!(observed.recommended_ef, None);
-    assert_eq!(observed.transferred, None);
+    assert_eq!(observed.holdout_status, None);
 }
 
 #[test]
@@ -269,7 +337,7 @@ fn b7_unattainable_assurance_is_insufficient_not_target_unmet() {
     assert_eq!(observed.train_confidence, None);
     assert_eq!(observed.test_compliance, None);
     assert_eq!(observed.confidence, None);
-    assert_eq!(observed.transferred, None);
+    assert_eq!(observed.holdout_status, None);
 }
 
 #[test]
