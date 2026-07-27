@@ -101,6 +101,24 @@ fn c3_config_fingerprint_k_change_ignores_incompatible_intermediate() {
 }
 
 #[test]
+fn c3_unknown_intermediate_format_version_is_incompatible() {
+    let mut input = aggregation_input(Vec::new());
+    input.intermediates = vec![IntermediatePart {
+        metadata: IntermediateMetadata {
+            format_version: 2,
+            ..metadata(1)
+        },
+        samples: Vec::new(),
+    }];
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.incompatible_parts, 1);
+    assert_eq!(observed.parts_used, 0);
+    assert_eq!(observed.samples.measured, 0);
+}
+
+#[test]
 fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     let mut input = aggregation_input(Vec::new());
     input.listed_parts.clear();
@@ -112,7 +130,8 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.coverage.empty_window_fraction, 1.0);
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
-    assert_eq!(observed.transferred, None);
+    assert_eq!(observed.train_compliance, None);
+    assert_eq!(observed.test_compliance, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);
     assert_eq!(observed.ground_truth_latency_mean_ms, None);
@@ -156,7 +175,7 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
 }
 
 #[test]
-fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
+fn c6_phase_a_abort_forces_insufficient_despite_cached_population() {
     let mut input = aggregation_input(vec![IntermediatePart {
         metadata: metadata(100),
         samples: measured_samples(100),
@@ -177,7 +196,6 @@ fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
     );
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
-    assert_eq!(observed.transferred, None);
 }
 
 #[test]
@@ -279,12 +297,12 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
             k: 10,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.75,
             window_duration_seconds: 600,
             storage_window_seconds: 600,
             ef_grid: vec![10, 20, 40, 80, 160],
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         },
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),

@@ -30,12 +30,16 @@ static COMPARISON: OnceLock<Result<AnchorComparison, String>> = OnceLock::new();
 #[derive(Debug, Deserialize)]
 struct AnchorOutput {
     value: f64,
+    target_confidence: f64,
+    confidence: f64,
     query_order: Vec<i64>,
     recall_rows: Vec<AnchorRecallRow>,
     per_ef: Vec<AnchorPerEf>,
     recommended_ef: i32,
+    train_confidence: f64,
+    test_compliance: f64,
     test_quantile_recall: f64,
-    transferred: bool,
+    holdout_approved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,9 +63,12 @@ struct AnchorComparison {
     train_quantile_absolute_differences: Vec<f64>,
     tuner_recommended_ef: i32,
     anchor_recommended_ef: i32,
+    train_confidence_absolute_difference: f64,
+    test_compliance_absolute_difference: f64,
+    confidence_absolute_difference: f64,
     test_quantile_absolute_difference: f64,
-    tuner_transferred: bool,
-    anchor_transferred: bool,
+    tuner_holdout_approved: bool,
+    anchor_holdout_approved: bool,
 }
 
 #[test]
@@ -116,14 +123,20 @@ fn a4_anchor_recommended_ef_identical() {
 
 #[test]
 #[ignore = "requires the trusted anchor and Docker F-pg fixture; run make seam-anchor-tests"]
-fn a5_anchor_holdout_quantile_and_transfer_match() {
+fn a5_anchor_holdout_quantile_and_approval_match() {
     let comparison = required_comparison();
+    assert!(comparison.train_confidence_absolute_difference <= 1e-6);
+    assert!(comparison.test_compliance_absolute_difference <= 1e-6);
+    assert!(comparison.confidence_absolute_difference <= 1e-6);
     assert!(
         comparison.test_quantile_absolute_difference <= 0.01,
         "observed holdout quantile difference {}",
         comparison.test_quantile_absolute_difference
     );
-    assert_eq!(comparison.tuner_transferred, comparison.anchor_transferred);
+    assert_eq!(
+        comparison.tuner_holdout_approved,
+        comparison.anchor_holdout_approved
+    );
 }
 
 fn required_comparison() -> &'static AnchorComparison {
@@ -140,6 +153,7 @@ fn required_comparison() -> &'static AnchorComparison {
 fn build_comparison() -> Result<AnchorComparison> {
     let anchor = read_anchor_comparison::<AnchorOutput>()?;
     ensure!(anchor.value == 0.8);
+    ensure!(anchor.target_confidence == 0.9);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -256,15 +270,30 @@ fn build_comparison() -> Result<AnchorComparison> {
             .recommended_ef
             .context("A-suite output was unexpectedly insufficient")?,
         anchor_recommended_ef: anchor.recommended_ef,
+        train_confidence_absolute_difference: (output
+            .train_confidence
+            .context("A-suite output omitted train confidence")?
+            - anchor.train_confidence)
+            .abs(),
+        test_compliance_absolute_difference: (output
+            .test_compliance
+            .context("A-suite output omitted test compliance")?
+            - anchor.test_compliance)
+            .abs(),
+        confidence_absolute_difference: (output
+            .confidence
+            .context("A-suite output omitted holdout confidence")?
+            - anchor.confidence)
+            .abs(),
         test_quantile_absolute_difference: (output
             .test_quantile_recall
             .context("A-suite output omitted the holdout quantile")?
             - anchor.test_quantile_recall)
             .abs(),
-        tuner_transferred: output
-            .transferred
-            .context("A-suite output omitted the transfer decision")?,
-        anchor_transferred: anchor.transferred,
+        tuner_holdout_approved: output
+            .confidence
+            .is_some_and(|confidence| confidence >= output.target.confidence),
+        anchor_holdout_approved: anchor.holdout_approved,
     })
 }
 
@@ -276,7 +305,6 @@ fn anchor_config() -> Config {
             ef_search: EF_GRID.to_vec(),
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         },
         storage: StorageConfig {
             root: fixture_root().join("storage"),
@@ -311,6 +339,7 @@ fn anchor_config() -> Config {
                 k: 10,
                 value: 0.8,
                 percentile: 0.90,
+                confidence: 0.90,
                 window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
             },
         )]),

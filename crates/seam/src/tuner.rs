@@ -635,7 +635,6 @@ mod tests {
                 ef_search: vec![20],
                 train_fraction: 0.7,
                 split_seed: 7,
-                min_samples: 100,
             },
             storage: StorageConfig {
                 root: "/unused-in-memory".into(),
@@ -666,6 +665,7 @@ mod tests {
             k,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.9,
             window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
         }
     }

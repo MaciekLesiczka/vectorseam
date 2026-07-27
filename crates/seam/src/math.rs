@@ -29,8 +29,8 @@ pub enum MathError {
     /// Selection received no ef values.
     #[error("ef selection requires a non-empty grid")]
     EmptyEfGrid,
-    /// Selection inputs were non-finite or outside recall bounds.
-    #[error("ef selection requires finite quantiles in [0, 1] and target value in (0, 1]")]
+    /// Selection inputs were non-finite or outside probability bounds.
+    #[error("ef selection requires finite scores in [0, 1] and threshold in (0, 1]")]
     InvalidSelectionInput,
     /// Confidence inputs violated `m <= n` or percentile bounds.
     #[error("confidence requires m <= n and finite percentile in (0, 1)")]
@@ -116,40 +116,36 @@ pub fn quantile_type7(values: &[f64], q: f64) -> Result<f64, MathError> {
     Ok(sorted[lower] + fraction * (sorted[lower + 1] - sorted[lower]))
 }
 
-/// Selects the smallest clearing ef, or the maximum ef if none clears.
-pub fn select_ef(
-    train_quantiles: &BTreeMap<i32, f64>,
-    target_value: f64,
-) -> Result<EfSelection, MathError> {
-    if !target_value.is_finite()
-        || !(0.0..=1.0).contains(&target_value)
-        || target_value == 0.0
-        || train_quantiles
+/// Selects the smallest ef whose score clears a threshold, or the maximum.
+pub fn select_ef(scores: &BTreeMap<i32, f64>, threshold: f64) -> Result<EfSelection, MathError> {
+    if !threshold.is_finite()
+        || !(0.0..=1.0).contains(&threshold)
+        || threshold == 0.0
+        || scores
             .values()
-            .any(|quantile| !quantile.is_finite() || !(0.0..=1.0).contains(quantile))
+            .any(|score| !score.is_finite() || !(0.0..=1.0).contains(score))
     {
         return Err(MathError::InvalidSelectionInput);
     }
-    let (&maximum, _) = train_quantiles
-        .last_key_value()
-        .ok_or(MathError::EmptyEfGrid)?;
-    if let Some((&ef, _)) = train_quantiles
-        .iter()
-        .find(|(_ef, quantile)| **quantile >= target_value)
-    {
+    let (&maximum, _) = scores.last_key_value().ok_or(MathError::EmptyEfGrid)?;
+    if scores[&maximum] < threshold {
         return Ok(EfSelection {
-            recommended_ef: ef,
-            status: RoundStatus::Ok,
+            recommended_ef: maximum,
+            status: RoundStatus::TargetUnmet,
         });
     }
+    let (&recommended_ef, _) = scores
+        .iter()
+        .find(|(_ef, score)| **score >= threshold)
+        .expect("maximum ef was already verified to clear the threshold");
     Ok(EfSelection {
-        recommended_ef: maximum,
-        status: RoundStatus::TargetUnmet,
+        recommended_ef,
+        status: RoundStatus::Ok,
     })
 }
 
 /// Computes the Beta-posterior survival probability from the frozen formula.
-pub fn transfer_confidence(n: usize, m: usize, percentile: f64) -> Result<f64, MathError> {
+pub fn compliance_confidence(n: usize, m: usize, percentile: f64) -> Result<f64, MathError> {
     if m > n || !percentile.is_finite() || percentile <= 0.0 || percentile >= 1.0 {
         return Err(MathError::InvalidConfidenceInput);
     }

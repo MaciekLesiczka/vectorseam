@@ -28,6 +28,8 @@ pub struct AggregationConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    pub confidence: f64,
     /// Rolling target duration in seconds.
     pub window_duration_seconds: u64,
     /// Collector storage-window duration in seconds.
@@ -38,8 +40,6 @@ pub struct AggregationConfig {
     pub train_fraction: f64,
     /// Deterministic split seed.
     pub split_seed: u64,
-    /// Minimum deduplicated sample count.
-    pub min_samples: usize,
 }
 
 impl AggregationConfig {
@@ -61,12 +61,12 @@ impl AggregationConfig {
             k: target.k,
             value: target.value,
             percentile: target.percentile,
+            confidence: target.confidence,
             window_duration_seconds: target.window.as_secs(),
             storage_window_seconds: config.storage.window_seconds,
             ef_grid: config.calibration.ef_search.clone(),
             train_fraction: config.calibration.train_fraction,
             split_seed: config.calibration.split_seed,
-            min_samples: config.calibration.min_samples,
         })
     }
 }
@@ -201,7 +201,7 @@ impl PhaseAAbort {
 pub enum RoundStatus {
     /// The smallest clearing ef was selected.
     Ok,
-    /// No ef cleared, so the maximum grid value was selected.
+    /// The maximum ef did not clear the training assurance target.
     TargetUnmet,
     /// Selection was refused due to population/split size or a Phase A abort.
     InsufficientSamples,
@@ -218,6 +218,8 @@ pub struct RoundTarget {
     pub value: f64,
     /// Required compliant fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    pub confidence: f64,
 }
 
 /// Published rolling-window description.
@@ -310,14 +312,17 @@ pub struct RoundOutput {
     pub recommended_ef: Option<i32>,
     /// Holdout posterior confidence, absent when insufficient.
     pub confidence: Option<f64>,
-    /// Whether holdout quantile transferred, absent when insufficient.
-    pub transferred: Option<bool>,
+    /// Training posterior confidence at the selected ef.
+    pub train_confidence: Option<f64>,
+    /// Fraction of train samples meeting the recall target.
+    pub train_compliance: Option<f64>,
     /// Train compliance quantile at the selected ef.
     pub train_quantile_recall: Option<f64>,
+    /// Fraction of holdout samples meeting the recall target.
+    pub test_compliance: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
-    /// Last known good recommendation a consumer should apply now.
-    #[serde(default)]
+    /// Holdout-approved recommendation a consumer should apply.
     pub effective: Option<EffectiveRecommendation>,
     /// Sample counters.
     pub samples: SampleCounts,
@@ -330,7 +335,6 @@ pub struct RoundOutput {
     /// In-scope intermediate pairs skipped for config mismatch.
     pub incompatible_parts: u64,
     /// Mean ground-truth statement latency over the deduplicated population.
-    #[serde(default)]
     pub ground_truth_latency_mean_ms: Option<f64>,
     /// Informational summaries over the full deduplicated population.
     pub per_ef: Vec<PerEfSummary>,

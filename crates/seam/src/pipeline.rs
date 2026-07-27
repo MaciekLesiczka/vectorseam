@@ -422,21 +422,7 @@ async fn load_previous_round(
             return Ok(None);
         }
     };
-    let value: serde_json::Value = match serde_json::from_slice(&bytes) {
-        Ok(value) => value,
-        Err(error) => {
-            warn!(
-                path = %path,
-                %error,
-                "previous latest round is malformed; effective recommendation will not carry"
-            );
-            return Ok(None);
-        }
-    };
-    let has_effective_field = value
-        .as_object()
-        .is_some_and(|object| object.contains_key("effective"));
-    let round = match serde_json::from_value(value) {
+    let round = match serde_json::from_slice(&bytes) {
         Ok(round) => round,
         Err(error) => {
             warn!(
@@ -447,13 +433,6 @@ async fn load_previous_round(
             return Ok(None);
         }
     };
-    if !has_effective_field {
-        warn!(
-            path = %path,
-            "previous latest round predates effective recommendations; effective recommendation will not carry"
-        );
-        return Ok(None);
-    }
     Ok(Some(round))
 }
 
@@ -1084,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2_newest_target_unmet_signal_wins_and_is_then_carried() {
+    async fn e2_target_unmet_and_insufficient_rounds_carry_effective() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
         let mut first_measurer = CountingMeasurer { calls: 0 };
@@ -1119,9 +1098,9 @@ mod tests {
         assert_eq!(unmet.status, crate::model::RoundStatus::TargetUnmet);
         assert_eq!(unmet.recommended_ef, Some(40));
         let unmet_effective = unmet.effective.as_ref().unwrap();
-        assert_eq!(unmet_effective.recommended_ef, 40);
-        assert!(!unmet_effective.carried);
-        assert_eq!(unmet_effective.source_round, "2026-07-08T12:20:00Z");
+        assert_eq!(unmet_effective.recommended_ef, 20);
+        assert!(unmet_effective.carried);
+        assert_eq!(unmet_effective.source_round, "2026-07-08T12:10:00Z");
 
         let mut insufficient_measurer = CountingMeasurer { calls: 0 };
         let insufficient = run_at(
@@ -1137,9 +1116,9 @@ mod tests {
         };
         assert_eq!(insufficient.recommended_ef, None);
         let carried = insufficient.effective.as_ref().unwrap();
-        assert_eq!(carried.recommended_ef, 40);
+        assert_eq!(carried.recommended_ef, 20);
         assert_eq!(carried.confidence, unmet_effective.confidence);
-        assert_eq!(carried.source_round, "2026-07-08T12:20:00Z");
+        assert_eq!(carried.source_round, "2026-07-08T12:10:00Z");
         assert!(carried.carried);
     }
 
@@ -1159,7 +1138,6 @@ mod tests {
             .await;
             assert!(matches!(first, CohortRoundOutcome::Published(_)));
         }
-
         // `run_cohort_round` has no retained state; only the shared object
         // store crosses this fresh invocation boundary.
         let mut fresh_measurer = CountingMeasurer { calls: 0 };
@@ -1208,6 +1186,10 @@ mod tests {
                 percentile: 0.9,
                 ..aggregation_config(10)
             },
+            AggregationConfig {
+                confidence: 0.8,
+                ..aggregation_config(10)
+            },
         ] {
             let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
             seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
@@ -1239,7 +1221,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e5_bootstrap_content_and_get_failure_policy_preserves_effective_chain() {
+    async fn e5_bootstrap_corruption_and_get_failure_preserve_effective_chain() {
         let round_end = WINDOW_START + u64::from(WINDOW_SECONDS);
         let (_, latest_path) = round_paths(COHORT, round_end).unwrap();
 
@@ -1298,62 +1280,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(corrupt_latest["effective"], serde_json::Value::Null);
-
-        let legacy_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        seed_source_vectors_at(
-            &legacy_store,
-            WINDOW_START,
-            FIRST_ULID,
-            &fixture_vectors(0.0),
-        )
-        .await;
-        let mut legacy_seed_measurer = CountingMeasurer { calls: 0 };
-        let legacy_seed = run_at(
-            Arc::clone(&legacy_store),
-            aggregation_config(10),
-            round_end,
-            "2026-07-08T12:10:00Z",
-            &mut legacy_seed_measurer,
-        )
-        .await;
-        let CohortRoundOutcome::Published(legacy_seed) = legacy_seed else {
-            panic!("legacy seed round must publish");
-        };
-        let mut legacy_json = serde_json::to_value(&legacy_seed).unwrap();
-        legacy_json.as_object_mut().unwrap().remove("effective");
-        legacy_store
-            .put(
-                &latest_path,
-                PutPayload::from(serde_json::to_vec(&legacy_json).unwrap()),
-            )
-            .await
-            .unwrap();
-
-        let mut legacy_measurer = CountingMeasurer { calls: 0 };
-        let (legacy_logs, legacy_subscriber) = warning_capture();
-        let legacy = run_at(
-            Arc::clone(&legacy_store),
-            aggregation_config(10),
-            WINDOW_START + 2 * u64::from(WINDOW_SECONDS),
-            "2026-07-08T12:20:00Z",
-            &mut legacy_measurer,
-        )
-        .with_subscriber(legacy_subscriber)
-        .await;
-        let CohortRoundOutcome::Published(legacy) = legacy else {
-            panic!("pre-effective carry round must publish");
-        };
-        assert_eq!(legacy.effective, None);
-        let legacy_logs = legacy_logs.contents();
-        assert_eq!(legacy_logs.lines().count(), 1);
-        assert!(legacy_logs.contains("predates effective recommendations"));
-        let legacy_latest: serde_json::Value = serde_json::from_slice(
-            &get_bytes(legacy_store.as_ref(), &latest_path)
-                .await
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(legacy_latest["effective"], serde_json::Value::Null);
 
         let failing_store = Arc::new(RecordingStore::default());
         let failing_store_dyn: Arc<dyn ObjectStore> = failing_store.clone();
@@ -1653,6 +1579,7 @@ mod tests {
             k,
             value: 0.9,
             percentile: 0.95,
+            confidence: 0.75,
             window_duration_seconds: u64::from(WINDOW_SECONDS),
             storage_window_seconds: WINDOW_SECONDS,
             ef_grid: if k == 10 {
@@ -1662,7 +1589,6 @@ mod tests {
             },
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         }
     }
 

@@ -1,17 +1,6 @@
 """Static server for the VectorSeam calibration dashboard.
 
-Serves the Claude Design dashboard component (``index.dc.html`` + its
-``support.js`` runtime, vendored React/ReactDOM/Babel, and ``sample-data.js``)
-together with the read-only calibration store the tuner writes under
-``STORE_ROOT/calibrations/<cohort>/``.
-
-The tuner emits one ``latest.json`` plus discrete ``round-*.json`` files per
-cohort; static hosting cannot directory-list the latter, so this server
-synthesizes the ``rounds.json`` history manifest the dashboard fetches by
-reading those files on demand.
-
-Standard library only — the container needs no third-party dependencies. The
-dashboard is configured entirely through environment variables:
+The dashboard is configured entirely through environment variables:
 
     VECTORSEAM_DASHBOARD_HOST     bind host (default 0.0.0.0)
     VECTORSEAM_DASHBOARD_PORT     bind port (default 8080)
@@ -81,9 +70,7 @@ def build_rounds_manifest(cohort_dir: Path, max_rounds: int) -> dict[str, object
     """Concatenates round-*.json documents into a history manifest.
 
     Rounds sort by filename, which the tuner names with a UTC timestamp, so
-    lexical order is chronological. Unreadable or malformed files are skipped
-    rather than failing the whole manifest. Each round is returned whole: the
-    dashboard consumes the full RoundOutput shape (window, coverage, per_ef…).
+    lexical order is chronological. Unreadable or malformed files are skipped.
     """
     rounds: list[object] = []
     for path in sorted(cohort_dir.glob("round-*.json")):

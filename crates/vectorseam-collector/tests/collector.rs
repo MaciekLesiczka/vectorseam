@@ -15,7 +15,7 @@ use object_store::{
     PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as StoreResult,
 };
 use tempfile::TempDir;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use vectorseam_collector::{Config, run_with_store};
@@ -289,7 +289,7 @@ async fn send_frames(addr: SocketAddr, frames: &[Vec<u8>]) {
     for frame in frames {
         stream.write_all(frame).await.unwrap();
     }
-    stream.shutdown().await.unwrap();
+    await_ingest(stream).await;
 }
 
 async fn send_frames_with_pause(
@@ -305,7 +305,31 @@ async fn send_frames_with_pause(
             tokio::time::sleep(pause).await;
         }
     }
+    await_ingest(stream).await;
+}
+
+/// Half-closes the connection and waits for the collector to close its side.
+///
+/// Returning as soon as the last `write_all` resolves only proves the bytes
+/// reached the kernel, not that the daemon accepted the connection, parsed the
+/// frames, and handed them to the writer. A test that signals shutdown at that
+/// point races the accept loop and can observe anything from every frame to
+/// none of them.
+///
+/// The protocol already provides the synchronization point: the collector never
+/// writes to a connection, so the sole readable event is the close that follows
+/// its reader task consuming the stream to EOF and forwarding every frame down
+/// the writer channel. Once that read returns, shutdown is ordered after ingest
+/// — the writer drains its queue when the last sender drops — so the assertions
+/// hold without sleeping or polling.
+async fn await_ingest(mut stream: TcpStream) {
     stream.shutdown().await.unwrap();
+    let mut trailing = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut trailing))
+        .await
+        .expect("collector did not close the connection within 10s")
+        .expect("reading collector close");
+    assert_eq!(read, 0, "collector unexpectedly sent {read} bytes");
 }
 
 fn frame(name: &str, seed: u32) -> Vec<u8> {

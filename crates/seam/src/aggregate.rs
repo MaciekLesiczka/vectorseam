@@ -8,13 +8,14 @@ use vectorseam_core::window::{WindowError, format_window_timestamp};
 use crate::accounting::{
     coverage, dropped_frame_fraction, in_scope_window_starts, unique_in_scope_parts,
 };
-use crate::math::{MathError, is_train_member, split_threshold};
+use crate::math::{MathError, compliance_confidence, is_train_member, split_threshold};
 use crate::model::{
     AggregationConfig, AggregationInput, EffectiveRecommendation, IntermediatePart, RoundOutput,
     RoundStatus, RoundTarget, RoundWindow, SampleCounts,
 };
 use crate::population::{
-    deduplicate_samples, per_ef_summaries, select_and_validate, validate_population,
+    CompletedSelection, deduplicate_samples, per_ef_summaries, select_and_validate,
+    validate_population,
 };
 
 /// Invalid or internally inconsistent Phase B input.
@@ -175,54 +176,33 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         train: train.len() as u64,
         test: test.len() as u64,
     };
+    // If even an all-success split cannot clear the assurance target, the
+    // round lacks evidence; it has not demonstrated that the recall target
+    // is unmet.
+    let train_confidence_ceiling =
+        compliance_confidence(train.len(), train.len(), input.config.percentile)?;
+    let test_confidence_ceiling =
+        compliance_confidence(test.len(), test.len(), input.config.percentile)?;
     let insufficient = input.phase_a_abort.is_some()
-        || population.len() < input.config.min_samples
         || train.is_empty()
-        || test.is_empty();
+        || test.is_empty()
+        || train_confidence_ceiling < input.config.confidence
+        || test_confidence_ceiling < input.config.confidence;
 
     let selection = if insufficient {
         None
     } else {
         Some(select_and_validate(&input.config, &train, &test)?)
     };
-    let (status, recommended_ef, confidence, transferred, train_quantile, test_quantile) =
-        match selection {
-            None => (
-                RoundStatus::InsufficientSamples,
-                None,
-                None,
-                None,
-                None,
-                None,
-            ),
-            Some(selection) => (
-                selection.status,
-                Some(selection.recommended_ef),
-                Some(selection.confidence),
-                Some(selection.transferred),
-                Some(selection.train_quantile),
-                Some(selection.test_quantile),
-            ),
-        };
+    let selected = selection.as_ref();
     let window_end = iso8601_seconds(input.round_end)?;
-    let effective = match (recommended_ef, confidence) {
-        (Some(recommended_ef), Some(confidence)) => Some(EffectiveRecommendation {
-            recommended_ef,
-            confidence,
-            source_round: window_end.clone(),
-            carried: false,
-        }),
-        (None, None) => input
-            .previous_round
-            .as_ref()
-            .filter(|previous| carry_fingerprint_matches(&input.config, previous))
-            .and_then(|previous| previous.effective.clone())
-            .map(|mut effective| {
-                effective.carried = true;
-                effective
-            }),
-        _ => unreachable!("selection always emits recommendation and confidence together"),
-    };
+    let previous_effective = input
+        .previous_round
+        .as_ref()
+        .filter(|previous| carry_fingerprint_matches(&input.config, previous))
+        .and_then(|previous| previous.effective.clone());
+    let effective =
+        effective_recommendation(&input.config, selected, previous_effective, &window_end);
     Ok(RoundOutput {
         format_version: 1,
         cohort: input.config.cohort.clone(),
@@ -237,19 +217,22 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
             k: input.config.k,
             value: input.config.value,
             percentile: input.config.percentile,
+            confidence: input.config.confidence,
         },
         index: input.config.index.clone(),
         ef_grid: input.config.ef_grid.clone(),
-        status,
+        status: selected.map_or(RoundStatus::InsufficientSamples, |s| s.status),
         error: input
             .phase_a_abort
             .as_ref()
             .map(|abort| abort.error().to_owned()),
-        recommended_ef,
-        confidence,
-        transferred,
-        train_quantile_recall: train_quantile,
-        test_quantile_recall: test_quantile,
+        recommended_ef: selected.map(|s| s.recommended_ef),
+        confidence: selected.map(|s| s.confidence),
+        train_confidence: selected.map(|s| s.train_confidence),
+        train_compliance: selected.map(|s| s.train_compliance),
+        train_quantile_recall: selected.map(|s| s.train_quantile),
+        test_compliance: selected.map(|s| s.test_compliance),
+        test_quantile_recall: selected.map(|s| s.test_quantile),
         effective,
         samples,
         dropped_frame_fraction: drop_fraction,
@@ -268,6 +251,38 @@ fn carry_fingerprint_matches(config: &AggregationConfig, previous: &RoundOutput)
         && previous.target.k == config.k
         && previous.target.value == config.value
         && previous.target.percentile == config.percentile
+        && previous.target.confidence == config.confidence
+}
+
+fn effective_recommendation(
+    config: &AggregationConfig,
+    selection: Option<&CompletedSelection>,
+    previous: Option<EffectiveRecommendation>,
+    source_round: &str,
+) -> Option<EffectiveRecommendation> {
+    let carried = || {
+        previous.clone().map(|mut effective| {
+            effective.carried = true;
+            effective
+        })
+    };
+    let fresh = |recommended_ef, confidence| {
+        Some(EffectiveRecommendation {
+            recommended_ef,
+            confidence,
+            source_round: source_round.to_owned(),
+            carried: false,
+        })
+    };
+
+    let Some(selection) = selection else {
+        return carried();
+    };
+    if selection.status == RoundStatus::Ok && selection.confidence >= config.confidence {
+        fresh(selection.recommended_ef, selection.confidence)
+    } else {
+        carried()
+    }
 }
 
 /// Serializes a round record with deterministic struct-field ordering.
@@ -336,6 +351,11 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
             "percentile must be in (0, 1)".to_owned(),
         ));
     }
+    if !(config.confidence > 0.0 && config.confidence < 1.0) {
+        return Err(AggregateError::InvalidConfig(
+            "confidence must be in (0, 1)".to_owned(),
+        ));
+    }
     if config.ef_grid.is_empty()
         || config.ef_grid.windows(2).any(|pair| pair[0] >= pair[1])
         || config.ef_grid[0] < i32::try_from(config.k).unwrap_or(i32::MAX)
@@ -346,11 +366,6 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
         ));
     }
     split_threshold(config.train_fraction)?;
-    if config.min_samples < 10 {
-        return Err(AggregateError::InvalidConfig(
-            "min_samples must be >= 10".to_owned(),
-        ));
-    }
     Ok(())
 }
 

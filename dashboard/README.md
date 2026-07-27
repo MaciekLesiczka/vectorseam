@@ -1,9 +1,26 @@
 # VectorSeam calibration dashboard
 
 A self-contained web dashboard for the VectorSeam tuner's calibration output.
-It renders, per cohort, the recommended `ef_search`, holdout confidence,
+It renders, per cohort, the recommended `ef_search` and its confidence,
 recall-vs-latency tradeoff, metrics-over-time charts, and an expandable
 round-by-round history.
+
+Two subjects run through the view and are kept apart deliberately. The
+**recommended** ef is what a client should apply right now; it is what the
+cohort cards, the left-hand chart, and the tradeoff curve show. The
+**candidate** ef is what a single round selected on its train split and
+tested on its holdout; it is what the right-hand chart and the round history
+show. They are the same value whenever a round's candidate clears the
+assurance target, and differ when the tuner keeps the previous
+recommendation. Every ef on screen is shown with its own confidence, never
+the other one's.
+
+A card reads `CARRIED` when the latest round did not replace the
+recommendation, with the reason beside the carry timestamp, and shows the
+round's candidate underneath when it differs. A history row reads
+`NOT APPROVED` when that round's candidate failed to clear the holdout
+target. A hollow marker on the left chart means the round kept the previous
+recommendation.
 
 
 ## What it reads
@@ -63,4 +80,3 @@ All via environment variables:
 Note: the component's live path is all-or-nothing per page load — if any listed
 cohort has no published `latest.json`, the whole view drops to sample data. List
 only cohorts that are actually publishing.
-

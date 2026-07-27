@@ -38,7 +38,7 @@ effective-recommendation extension.
   ordered round records, including current-versus-carried effective
   recommendation selection and its exact config fingerprint.
 - `crates/seam/src/model.rs` — owns the pure previous-round input contract and
-  additive effective-recommendation JSON schema.
+  round-output holdout/effective recommendation schema.
 - `crates/seam/src/intermediate.rs` — validates the frozen parquet schemas and
   pair metadata, cross-checks `measured_count`, encodes zstd pairs, and joins
   authoritative stored sweep observations without reimplementing recall.
@@ -137,16 +137,16 @@ so a missing environment flag or stale comparison is fail-visible.
 I am confident in the effective-recommendation extension. The async pipeline
 performs exactly one `latest.json` GET before publication and passes the
 deserialized prior round into the pure estimator. Not-found bootstrap is
-silent; malformed, unreadable-body, and pre-extension content warn and
-degrade to no carry; every other GET failure aborts publication, preserving
-the stored chain for retry.
-`ok` and `target_unmet` always publish their current recommendation with the
-current round end as `source_round`; insufficient rounds alone may carry,
-and only after exact cohort/index/grid/k/value/percentile matching. E1–E5
-cover durable history/latest output, idempotent republication, newest
-target-unmet precedence, restart behavior, every required fingerprint field,
-bootstrap logging, corruption, legacy JSON, and injected transient GET
-failure. C6 additionally proves that a
+silent; malformed or unreadable content warns and degrades to no carry; every
+other GET failure aborts publication, preserving the stored chain for retry.
+An `ok` candidate whose holdout confidence meets the target becomes the
+effective recommendation with the current round end as `source_round`.
+Insufficient-sample rounds, `target_unmet` rounds, and `ok` candidates below
+the holdout target carry the prior effective recommendation. Carry requires
+exact cohort/index/grid/k/value/percentile/confidence matching. E1–E5 cover
+durable history/latest output, idempotent carry, target-unmet carry, restart
+behavior, every required fingerprint field, bootstrap logging, corruption,
+and injected transient GET failure. C6 additionally proves that a
 table-smaller-than-k abort retains the previous recommendation, and E1
 separately covers a round in which every live-connection sample fails.
 

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::aggregate::AggregateError;
-use crate::math::{quantile_type7, select_ef, transfer_confidence};
+use crate::math::{compliance_confidence, quantile_type7, select_ef};
 use crate::model::{
     AggregationConfig, MeasuredSample, PerEfSummary, RoundStatus, SweepMeasurement,
 };
@@ -126,10 +126,43 @@ pub(crate) fn per_ef_summaries(
 pub(crate) struct CompletedSelection {
     pub(crate) recommended_ef: i32,
     pub(crate) status: RoundStatus,
-    pub(crate) confidence: f64,
-    pub(crate) transferred: bool,
+    pub(crate) train_confidence: f64,
+    pub(crate) train_compliance: f64,
     pub(crate) train_quantile: f64,
+    pub(crate) confidence: f64,
+    pub(crate) test_compliance: f64,
     pub(crate) test_quantile: f64,
+}
+
+/// The three per-split statistics at one ef: how many samples cleared the
+/// recall target, the posterior confidence that reading generalizes, and the
+/// compliance quantile.
+pub(crate) struct SplitEvaluation {
+    pub(crate) confidence: f64,
+    pub(crate) compliance: f64,
+    pub(crate) quantile: f64,
+}
+
+/// Train and holdout report the same statistics through this one function, so
+/// the two sides of a round are never computed by divergent code.
+fn evaluate_split(
+    config: &AggregationConfig,
+    samples: &[&PopulationSample],
+    ef: i32,
+) -> Result<SplitEvaluation, AggregateError> {
+    let recalls = samples
+        .iter()
+        .map(|sample| sample.sweeps[&ef].recall)
+        .collect::<Vec<_>>();
+    let successes = recalls
+        .iter()
+        .filter(|recall| **recall >= config.value)
+        .count();
+    Ok(SplitEvaluation {
+        confidence: compliance_confidence(samples.len(), successes, config.percentile)?,
+        compliance: successes as f64 / samples.len() as f64,
+        quantile: quantile_type7(&recalls, 1.0 - config.percentile)?,
+    })
 }
 
 pub(crate) fn select_and_validate(
@@ -137,34 +170,31 @@ pub(crate) fn select_and_validate(
     train: &[&PopulationSample],
     test: &[&PopulationSample],
 ) -> Result<CompletedSelection, AggregateError> {
-    let q = 1.0 - config.percentile;
-    let train_quantiles = config
+    let train_confidences = config
         .ef_grid
         .iter()
         .map(|ef| {
-            let recalls = train
+            let successes = train
                 .iter()
-                .map(|sample| sample.sweeps[ef].recall)
-                .collect::<Vec<_>>();
-            Ok((*ef, quantile_type7(&recalls, q)?))
+                .filter(|sample| sample.sweeps[ef].recall >= config.value)
+                .count();
+            Ok((
+                *ef,
+                compliance_confidence(train.len(), successes, config.percentile)?,
+            ))
         })
         .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
-    let selected = select_ef(&train_quantiles, config.value)?;
-    let test_recalls = test
-        .iter()
-        .map(|sample| sample.sweeps[&selected.recommended_ef].recall)
-        .collect::<Vec<_>>();
-    let test_quantile = quantile_type7(&test_recalls, q)?;
-    let successes = test_recalls
-        .iter()
-        .filter(|recall| **recall >= config.value)
-        .count();
+    let selected = select_ef(&train_confidences, config.confidence)?;
+    let train_stats = evaluate_split(config, train, selected.recommended_ef)?;
+    let holdout = evaluate_split(config, test, selected.recommended_ef)?;
     Ok(CompletedSelection {
         recommended_ef: selected.recommended_ef,
         status: selected.status,
-        confidence: transfer_confidence(test.len(), successes, config.percentile)?,
-        transferred: test_quantile >= config.value,
-        train_quantile: train_quantiles[&selected.recommended_ef],
-        test_quantile,
+        train_confidence: train_stats.confidence,
+        train_compliance: train_stats.compliance,
+        train_quantile: train_stats.quantile,
+        confidence: holdout.confidence,
+        test_compliance: holdout.compliance,
+        test_quantile: holdout.quantile,
     })
 }

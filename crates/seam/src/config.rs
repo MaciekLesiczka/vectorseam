@@ -40,8 +40,6 @@ pub struct CalibrationConfig {
     pub train_fraction: f64,
     /// Deterministic split seed.
     pub split_seed: u64,
-    /// Minimum deduplicated population required for selection.
-    pub min_samples: usize,
 }
 
 /// Object-store layout settings.
@@ -99,6 +97,8 @@ pub struct TargetConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
+    /// Required posterior probability that compliance clears `percentile`.
+    pub confidence: f64,
     /// Rolling calibration-window duration.
     pub window: Duration,
 }
@@ -162,8 +162,6 @@ struct RawCalibrationConfig {
     train_fraction: f64,
     #[serde(default = "default_split_seed")]
     split_seed: u64,
-    #[serde(default = "default_min_samples")]
-    min_samples: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +238,8 @@ struct RawTargetConfig {
     k: u32,
     value: f64,
     percentile: f64,
+    #[serde(default = "default_confidence")]
+    confidence: f64,
     #[serde(deserialize_with = "deserialize_duration")]
     window: Duration,
 }
@@ -332,6 +332,7 @@ impl Config {
                         k: target.k,
                         value: target.value,
                         percentile: target.percentile,
+                        confidence: target.confidence,
                         window: target.window,
                     },
                 )
@@ -344,7 +345,6 @@ impl Config {
                 ef_search: raw.calibration.ef_search,
                 train_fraction: raw.calibration.train_fraction,
                 split_seed: raw.calibration.split_seed,
-                min_samples: raw.calibration.min_samples,
             },
             storage: StorageConfig {
                 root: raw.storage.root,
@@ -384,9 +384,6 @@ fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError
         return Err(invalid(
             "calibration.train_fraction rounds to an empty train/holdout split",
         ));
-    }
-    if config.min_samples < 10 {
-        return Err(invalid("calibration.min_samples must be >= 10"));
     }
     Ok(())
 }
@@ -524,6 +521,11 @@ fn validate_targets(
                 "target {name:?} percentile must be in (0, 1)"
             )));
         }
+        if !(target.confidence > 0.0 && target.confidence < 1.0) {
+            return Err(invalid(format!(
+                "target {name:?} confidence must be in (0, 1)"
+            )));
+        }
         if target.window.as_secs() < u64::from(storage_window_seconds) {
             return Err(invalid(format!(
                 "target {name:?} window must be at least storage.window_seconds"
@@ -536,6 +538,15 @@ fn validate_targets(
                 "target {name:?} window must be a multiple of storage.window_seconds"
             )));
         }
+        // This derived log value is informational. Aggregation enforces the
+        // authoritative boundary with compliance_confidence().
+        let n_min = ((1.0 - target.confidence).ln() / target.percentile.ln()).ceil() as u64;
+        let n_min = n_min.saturating_sub(1);
+        tracing::info!(
+            target_name = name,
+            n_min,
+            "derived per-split sample minimum"
+        );
     }
     Ok(())
 }
@@ -575,8 +586,8 @@ fn default_split_seed() -> u64 {
     7
 }
 
-fn default_min_samples() -> usize {
-    1000
+fn default_confidence() -> f64 {
+    0.95
 }
 
 fn default_window_seconds() -> u32 {
@@ -638,7 +649,7 @@ cohorts:
         let config = Config::from_yaml_str(VALID_CONFIG).unwrap();
         assert_eq!(config.calibration.train_fraction, 0.7);
         assert_eq!(config.calibration.split_seed, 7);
-        assert_eq!(config.calibration.min_samples, 1000);
+        assert_eq!(config.targets["recall"].confidence, 0.95);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
         assert_eq!(config.budget.client_timeout, Duration::from_secs(10));
         assert_eq!(config.indexes["fixture"].data_source, "primary");
@@ -659,13 +670,15 @@ cohorts:
     }
 
     #[test]
-    fn accepts_min_samples_10_and_rejects_9() {
-        let ten = VALID_CONFIG.replace("storage:", "  min_samples: 10\nstorage:");
-        assert!(Config::from_yaml_str(&ten).is_ok());
-
-        let nine = VALID_CONFIG.replace("storage:", "  min_samples: 9\nstorage:");
-        let error = Config::from_yaml_str(&nine).unwrap_err().to_string();
-        assert!(error.contains("min_samples must be >= 10"));
+    fn rejects_confidence_outside_open_unit_interval() {
+        for confidence in ["0", "1", "nan"] {
+            let yaml = VALID_CONFIG.replace(
+                "    percentile: 0.95",
+                &format!("    percentile: 0.95\n    confidence: {confidence}"),
+            );
+            let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+            assert!(error.contains("confidence must be in (0, 1)"));
+        }
     }
 
     #[test]

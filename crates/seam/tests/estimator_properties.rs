@@ -2,24 +2,24 @@ use std::collections::BTreeMap;
 
 use proptest::collection::{btree_set, vec};
 use proptest::prelude::*;
-use seam::math::{is_train_member, quantile_type7, select_ef, transfer_confidence};
+use seam::math::{compliance_confidence, is_train_member, quantile_type7, select_ef};
 
 proptest! {
     #[test]
-    fn selected_ef_is_monotone_non_increasing_when_value_is_relaxed(
-        quantiles in vec(0.0_f64..=1.0, 5),
-        first_value in 1.0e-12_f64..=1.0,
-        second_value in 1.0e-12_f64..=1.0,
+    fn selected_ef_is_monotone_non_increasing_when_threshold_is_relaxed(
+        scores in vec(0.0_f64..=1.0, 5),
+        first_threshold in 1.0e-12_f64..=1.0,
+        second_threshold in 1.0e-12_f64..=1.0,
     ) {
-        let strict_value = first_value.max(second_value);
-        let relaxed_value = first_value.min(second_value);
+        let strict_threshold = first_threshold.max(second_threshold);
+        let relaxed_threshold = first_threshold.min(second_threshold);
         let grid = [10, 20, 40, 80, 160]
             .into_iter()
-            .zip(quantiles)
+            .zip(scores)
             .collect::<BTreeMap<_, _>>();
 
-        let strict = select_ef(&grid, strict_value).unwrap();
-        let relaxed = select_ef(&grid, relaxed_value).unwrap();
+        let strict = select_ef(&grid, strict_threshold).unwrap();
+        let relaxed = select_ef(&grid, relaxed_threshold).unwrap();
 
         prop_assert!(relaxed.recommended_ef <= strict.recommended_ef);
     }
@@ -69,8 +69,8 @@ proptest! {
     ) {
         let lower_m = first_m.min(second_m).min(n);
         let upper_m = first_m.max(second_m).min(n);
-        let lower = transfer_confidence(n, lower_m, percentile).unwrap();
-        let upper = transfer_confidence(n, upper_m, percentile).unwrap();
+        let lower = compliance_confidence(n, lower_m, percentile).unwrap();
+        let upper = compliance_confidence(n, upper_m, percentile).unwrap();
 
         prop_assert!(lower <= upper + 1e-12);
     }
