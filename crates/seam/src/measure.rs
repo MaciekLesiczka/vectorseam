@@ -549,7 +549,6 @@ mod tests {
             ef_grid: vec![10, 20, 40, 80, 160],
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         }
     }
 

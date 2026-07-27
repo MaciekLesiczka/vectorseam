@@ -40,8 +40,6 @@ pub struct AggregationConfig {
     pub train_fraction: f64,
     /// Deterministic split seed.
     pub split_seed: u64,
-    /// Minimum deduplicated sample count.
-    pub min_samples: usize,
 }
 
 impl AggregationConfig {
@@ -69,7 +67,6 @@ impl AggregationConfig {
             ef_grid: config.calibration.ef_search.clone(),
             train_fraction: config.calibration.train_fraction,
             split_seed: config.calibration.split_seed,
-            min_samples: config.calibration.min_samples,
         })
     }
 }
@@ -204,22 +201,10 @@ impl PhaseAAbort {
 pub enum RoundStatus {
     /// The smallest clearing ef was selected.
     Ok,
-    /// The maximum ef did not clear, so it remains the protective selection.
+    /// The maximum ef did not clear the training assurance target.
     TargetUnmet,
     /// Selection was refused due to population/split size or a Phase A abort.
     InsufficientSamples,
-}
-
-/// Holdout evidence for the train-selected candidate.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HoldoutStatus {
-    /// Confidence cleared the configured assurance target.
-    Approved,
-    /// Confidence was neither high enough to approve nor low enough to reject.
-    Inconclusive,
-    /// Confidence was at or below the hardcoded strong-rejection threshold.
-    Rejected,
 }
 
 /// Published target description.
@@ -289,18 +274,6 @@ pub struct PerEfSummary {
     pub latency_p50_ms: f64,
 }
 
-/// Why an effective recommendation was published.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EffectiveBasis {
-    /// The candidate cleared holdout assurance.
-    Approved,
-    /// The tuner moved to or bootstrapped at a safer grid value.
-    Protective,
-    /// The training split could not clear the target at the maximum grid value.
-    TargetUnmet,
-}
-
 /// Client-facing recommendation to apply until a newer round supersedes it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EffectiveRecommendation {
@@ -308,8 +281,6 @@ pub struct EffectiveRecommendation {
     pub recommended_ef: i32,
     /// Holdout posterior confidence from the source round.
     pub confidence: f64,
-    /// Evidence or safety basis for this recommendation.
-    pub basis: EffectiveBasis,
     /// Round end that computed this recommendation.
     pub source_round: String,
     /// Whether this round carried the recommendation from prior state.
@@ -345,13 +316,11 @@ pub struct RoundOutput {
     pub train_confidence: Option<f64>,
     /// Fraction of holdout samples meeting the recall target.
     pub test_compliance: Option<f64>,
-    /// Holdout evidence state, absent when selection was refused.
-    pub holdout_status: Option<HoldoutStatus>,
     /// Train compliance quantile at the selected ef.
     pub train_quantile_recall: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
-    /// Approved or protective recommendation a consumer should apply now.
+    /// Holdout-approved recommendation a consumer should apply.
     pub effective: Option<EffectiveRecommendation>,
     /// Sample counters.
     pub samples: SampleCounts,

@@ -113,7 +113,6 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
     assert_eq!(observed.test_compliance, None);
-    assert_eq!(observed.holdout_status, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);
     assert_eq!(observed.ground_truth_latency_mean_ms, None);
@@ -157,7 +156,7 @@ fn c5_config_validation_distinct_errors_and_password_env_guidance() {
 }
 
 #[test]
-fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
+fn c6_phase_a_abort_forces_insufficient_despite_cached_population() {
     let mut input = aggregation_input(vec![IntermediatePart {
         metadata: metadata(100),
         samples: measured_samples(100),
@@ -178,7 +177,6 @@ fn c6_phase_a_abort_forces_insufficient_despite_cached_min_samples() {
     );
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
-    assert_eq!(observed.holdout_status, None);
 }
 
 #[test]
@@ -286,7 +284,6 @@ fn aggregation_input(intermediates: Vec<IntermediatePart>) -> AggregationInput {
             ef_grid: vec![10, 20, 40, 80, 160],
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         },
         round_end: DEFAULT_WINDOW_START + u64::from(DEFAULT_WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),

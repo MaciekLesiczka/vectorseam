@@ -87,7 +87,6 @@ fn aggregation_input() -> AggregationInput {
             ef_grid: metadata.ef_grid.clone(),
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 1_000,
         },
         round_end: WINDOW_START + u64::from(WINDOW_SECONDS),
         computed_at: "2026-07-08T12:10:00Z".to_owned(),

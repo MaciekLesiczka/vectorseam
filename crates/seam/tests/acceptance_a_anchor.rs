@@ -15,7 +15,6 @@ use seam::config::{
 };
 use seam::intermediate::read_intermediate_pair;
 use seam::math::{is_train_member, quantile_type7};
-use seam::model::HoldoutStatus;
 use seam::tuner::Tuner;
 
 use support::anchor::{fixture_root, read_anchor_comparison};
@@ -291,7 +290,9 @@ fn build_comparison() -> Result<AnchorComparison> {
             .context("A-suite output omitted the holdout quantile")?
             - anchor.test_quantile_recall)
             .abs(),
-        tuner_holdout_approved: output.holdout_status == Some(HoldoutStatus::Approved),
+        tuner_holdout_approved: output
+            .confidence
+            .is_some_and(|confidence| confidence >= output.target.confidence),
         anchor_holdout_approved: anchor.holdout_approved,
     })
 }
@@ -304,7 +305,6 @@ fn anchor_config() -> Config {
             ef_search: EF_GRID.to_vec(),
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         },
         storage: StorageConfig {
             root: fixture_root().join("storage"),

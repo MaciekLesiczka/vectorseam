@@ -1063,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn e2_newest_target_unmet_signal_wins_and_is_then_carried() {
+    async fn e2_target_unmet_and_insufficient_rounds_carry_effective() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         seed_source_vectors_at(&store, WINDOW_START, FIRST_ULID, &fixture_vectors(0.0)).await;
         let mut first_measurer = CountingMeasurer { calls: 0 };
@@ -1098,9 +1098,9 @@ mod tests {
         assert_eq!(unmet.status, crate::model::RoundStatus::TargetUnmet);
         assert_eq!(unmet.recommended_ef, Some(40));
         let unmet_effective = unmet.effective.as_ref().unwrap();
-        assert_eq!(unmet_effective.recommended_ef, 40);
-        assert!(!unmet_effective.carried);
-        assert_eq!(unmet_effective.source_round, "2026-07-08T12:20:00Z");
+        assert_eq!(unmet_effective.recommended_ef, 20);
+        assert!(unmet_effective.carried);
+        assert_eq!(unmet_effective.source_round, "2026-07-08T12:10:00Z");
 
         let mut insufficient_measurer = CountingMeasurer { calls: 0 };
         let insufficient = run_at(
@@ -1116,9 +1116,9 @@ mod tests {
         };
         assert_eq!(insufficient.recommended_ef, None);
         let carried = insufficient.effective.as_ref().unwrap();
-        assert_eq!(carried.recommended_ef, 40);
+        assert_eq!(carried.recommended_ef, 20);
         assert_eq!(carried.confidence, unmet_effective.confidence);
-        assert_eq!(carried.source_round, "2026-07-08T12:20:00Z");
+        assert_eq!(carried.source_round, "2026-07-08T12:10:00Z");
         assert!(carried.carried);
     }
 
@@ -1154,7 +1154,6 @@ mod tests {
         };
         let effective = restarted.effective.as_ref().unwrap();
         assert_eq!(effective.recommended_ef, 20);
-        assert_eq!(effective.basis, crate::model::EffectiveBasis::Approved);
         assert_eq!(effective.source_round, "2026-07-08T12:10:00Z");
         assert!(effective.carried);
     }
@@ -1590,7 +1589,6 @@ mod tests {
             },
             train_fraction: 0.7,
             split_seed: 7,
-            min_samples: 100,
         }
     }
 

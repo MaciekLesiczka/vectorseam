@@ -40,8 +40,6 @@ pub struct CalibrationConfig {
     pub train_fraction: f64,
     /// Deterministic split seed.
     pub split_seed: u64,
-    /// Minimum deduplicated population required for selection.
-    pub min_samples: usize,
 }
 
 /// Object-store layout settings.
@@ -164,8 +162,6 @@ struct RawCalibrationConfig {
     train_fraction: f64,
     #[serde(default = "default_split_seed")]
     split_seed: u64,
-    #[serde(default = "default_min_samples")]
-    min_samples: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -349,7 +345,6 @@ impl Config {
                 ef_search: raw.calibration.ef_search,
                 train_fraction: raw.calibration.train_fraction,
                 split_seed: raw.calibration.split_seed,
-                min_samples: raw.calibration.min_samples,
             },
             storage: StorageConfig {
                 root: raw.storage.root,
@@ -389,9 +384,6 @@ fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError
         return Err(invalid(
             "calibration.train_fraction rounds to an empty train/holdout split",
         ));
-    }
-    if config.min_samples < 10 {
-        return Err(invalid("calibration.min_samples must be >= 10"));
     }
     Ok(())
 }
@@ -546,6 +538,15 @@ fn validate_targets(
                 "target {name:?} window must be a multiple of storage.window_seconds"
             )));
         }
+        // This derived log value is informational. Aggregation enforces the
+        // authoritative boundary with compliance_confidence().
+        let n_min = ((1.0 - target.confidence).ln() / target.percentile.ln()).ceil() as u64;
+        let n_min = n_min.saturating_sub(1);
+        tracing::info!(
+            target_name = name,
+            n_min,
+            "derived per-split sample minimum"
+        );
     }
     Ok(())
 }
@@ -583,10 +584,6 @@ fn default_train_fraction() -> f64 {
 
 fn default_split_seed() -> u64 {
     7
-}
-
-fn default_min_samples() -> usize {
-    1000
 }
 
 fn default_confidence() -> f64 {
@@ -652,7 +649,6 @@ cohorts:
         let config = Config::from_yaml_str(VALID_CONFIG).unwrap();
         assert_eq!(config.calibration.train_fraction, 0.7);
         assert_eq!(config.calibration.split_seed, 7);
-        assert_eq!(config.calibration.min_samples, 1000);
         assert_eq!(config.targets["recall"].confidence, 0.95);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
         assert_eq!(config.budget.client_timeout, Duration::from_secs(10));
@@ -671,16 +667,6 @@ cohorts:
         );
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("empty train/holdout split"));
-    }
-
-    #[test]
-    fn accepts_min_samples_10_and_rejects_9() {
-        let ten = VALID_CONFIG.replace("storage:", "  min_samples: 10\nstorage:");
-        assert!(Config::from_yaml_str(&ten).is_ok());
-
-        let nine = VALID_CONFIG.replace("storage:", "  min_samples: 9\nstorage:");
-        let error = Config::from_yaml_str(&nine).unwrap_err().to_string();
-        assert!(error.contains("min_samples must be >= 10"));
     }
 
     #[test]

@@ -159,7 +159,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ efChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried or protective recommendation. Hover to read per-cohort values.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried recommendations. Hover to read per-cohort values.</div>
           </sc-if>
         </div>
 
@@ -191,7 +191,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ confChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed lines mark the assurance target and 0.10 rejection threshold. Gaps mark rounds without a measured candidate.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed lines mark assurance targets. Gaps mark rounds without a measured candidate.</div>
           </sc-if>
         </div>
 
@@ -400,18 +400,13 @@ class Component extends DCLogic {
   hm(s) { const d = new Date(s); return this.pad2(d.getUTCHours()) + ':' + this.pad2(d.getUTCMinutes()); }
   hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
   rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
-  holdoutStatus(rd) {
-    return rd.holdout_status || null;
+  holdoutApproved(rd) {
+    return rd.confidence != null && rd.confidence >= rd.target.confidence;
   }
   statusMeta(rd) {
     const s = rd.status;
     if (s === 'target_unmet') return { label: 'TARGET UNMET', color: 'oklch(0.84 0.13 82)' };
-    if (s === 'ok') {
-      const holdout = this.holdoutStatus(rd);
-      if (holdout === 'rejected') return { label: 'REJECTED', color: 'oklch(0.72 0.16 26)' };
-      if (holdout === 'inconclusive') return { label: 'INCONCLUSIVE', color: 'oklch(0.84 0.13 82)' };
-      return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
-    }
+    if (s === 'ok') return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
     return { label: 'INSUFFICIENT SAMPLES', color: 'oklch(0.72 0.16 26)' };
   }
   vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
@@ -426,7 +421,7 @@ class Component extends DCLogic {
       rounds.forEach((rd, i) => {
         const x = this.xAt(i, nn);
         let y = null, val = null;
-        if (metric === 'ef') { if (rd.status === 'ok' && this.holdoutStatus(rd) === 'approved' && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
+        if (metric === 'ef') { if (rd.status === 'ok' && this.holdoutApproved(rd) && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
         else { if (rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
         if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
         else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
@@ -440,10 +435,10 @@ class Component extends DCLogic {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
       const refs = cohorts.map((name) => store[name].latest.target.confidence ?? 0.95);
-      const ticks = [1, 0.75, 0.5, 0.25, 0.10, 0].concat(refs)
+      const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
         .filter((v, i, values) => values.findIndex((x) => Math.abs(x - v) < 1e-9) === i)
         .sort((a, b) => b - a);
-      ticks.forEach((v) => { const ref = refs.some((x) => Math.abs(x - v) < 1e-9); const rejection = Math.abs(v - 0.10) < 1e-9; hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : (rejection ? 'oklch(0.55 0.11 26)' : 'oklch(0.27 0.013 258)'), dash: ref || rejection ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : (rejection ? 'oklch(0.72 0.16 26)' : 'oklch(0.52 0.014 258)') }); });
+      ticks.forEach((v) => { const ref = refs.some((x) => Math.abs(x - v) < 1e-9); hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
     }
     const xTicks = []; const count = Math.min(6, nn);
     for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(first[first.length - nn + i].computed_at) }); }
@@ -452,7 +447,7 @@ class Component extends DCLogic {
       hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(first[first.length - nn + hoverIndex].computed_at);
       readoutRows = cohorts.map((name) => {
         const rd = this.vis(store[name].rounds, nn)[hoverIndex]; let text = '—';
-        if (metric === 'ef') text = (rd.status === 'ok' && this.holdoutStatus(rd) === 'approved' && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : ' · protective')) : 'calibrating');
+        if (metric === 'ef') text = (rd.status === 'ok' && this.holdoutApproved(rd) && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : '')) : 'calibrating');
         else text = rd.confidence != null ? (Math.round(rd.confidence * 100) + '%') : '—';
         return { name, color: colors[name], text };
       });
@@ -587,7 +582,7 @@ class Component extends DCLogic {
       const metrics = [
         { label: 'Window', value: this.hm(w.start) + ' → ' + this.hm(w.end) + ' · ' + Math.round(w.duration_seconds / 60) + 'm' },
         { label: 'Round candidate ef', value: rd.recommended_ef != null ? String(rd.recommended_ef) : '—' },
-        { label: 'Effective ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : (rd.effective.basis === 'protective' ? ' · protective' : '')) : '—' },
+        { label: 'Effective ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
@@ -602,7 +597,6 @@ class Component extends DCLogic {
         { label: 'Holdout compliance', value: rd.test_compliance != null ? (rd.test_compliance * 100).toFixed(1) + '%' : '—' },
         { label: 'Holdout confidence', value: rd.confidence != null ? (rd.confidence * 100).toFixed(1) + '%' : '—' },
         { label: 'Holdout recall @ ef', value: rd.test_quantile_recall != null ? rd.test_quantile_recall.toFixed(3) : '—' },
-        { label: 'Holdout status', value: this.holdoutStatus(rd) || '—' },
       ];
       const perEf = rd.per_ef.map((p) => ({
         ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),

@@ -10,12 +10,12 @@ use crate::accounting::{
 };
 use crate::math::{MathError, compliance_confidence, is_train_member, split_threshold};
 use crate::model::{
-    AggregationConfig, AggregationInput, EffectiveBasis, EffectiveRecommendation, HoldoutStatus,
-    IntermediatePart, RoundOutput, RoundStatus, RoundTarget, RoundWindow, SampleCounts,
+    AggregationConfig, AggregationInput, EffectiveRecommendation, IntermediatePart, RoundOutput,
+    RoundStatus, RoundTarget, RoundWindow, SampleCounts,
 };
 use crate::population::{
-    CompletedSelection, deduplicate_samples, evaluate_holdout, per_ef_summaries,
-    select_and_validate, validate_population,
+    CompletedSelection, deduplicate_samples, per_ef_summaries, select_and_validate,
+    validate_population,
 };
 
 /// Invalid or internally inconsistent Phase B input.
@@ -184,7 +184,6 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
     let test_confidence_ceiling =
         compliance_confidence(test.len(), test.len(), input.config.percentile)?;
     let insufficient = input.phase_a_abort.is_some()
-        || population.len() < input.config.min_samples
         || train.is_empty()
         || test.is_empty()
         || train_confidence_ceiling < input.config.confidence
@@ -201,13 +200,11 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         train_confidence,
         confidence,
         test_compliance,
-        holdout_status,
         train_quantile,
         test_quantile,
     ) = match selection.as_ref() {
         None => (
             RoundStatus::InsufficientSamples,
-            None,
             None,
             None,
             None,
@@ -221,7 +218,6 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
             Some(selection.train_confidence),
             Some(selection.confidence),
             Some(selection.test_compliance),
-            Some(selection.holdout_status),
             Some(selection.train_quantile),
             Some(selection.test_quantile),
         ),
@@ -234,11 +230,10 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         .and_then(|previous| previous.effective.clone());
     let effective = effective_recommendation(
         &input.config,
-        &test,
         selection.as_ref(),
         previous_effective,
         &window_end,
-    )?;
+    );
     Ok(RoundOutput {
         format_version: 1,
         cohort: input.config.cohort.clone(),
@@ -266,7 +261,6 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         confidence,
         train_confidence,
         test_compliance,
-        holdout_status,
         train_quantile_recall: train_quantile,
         test_quantile_recall: test_quantile,
         effective,
@@ -292,91 +286,33 @@ fn carry_fingerprint_matches(config: &AggregationConfig, previous: &RoundOutput)
 
 fn effective_recommendation(
     config: &AggregationConfig,
-    test: &[&crate::population::PopulationSample],
     selection: Option<&CompletedSelection>,
     previous: Option<EffectiveRecommendation>,
     source_round: &str,
-) -> Result<Option<EffectiveRecommendation>, AggregateError> {
+) -> Option<EffectiveRecommendation> {
     let carried = || {
         previous.clone().map(|mut effective| {
             effective.carried = true;
             effective
         })
     };
-    let fresh = |recommended_ef, confidence, basis| {
+    let fresh = |recommended_ef, confidence| {
         Some(EffectiveRecommendation {
             recommended_ef,
             confidence,
-            basis,
             source_round: source_round.to_owned(),
             carried: false,
         })
     };
 
     let Some(selection) = selection else {
-        return Ok(carried());
+        return carried();
     };
-    let candidate = selection.recommended_ef;
-    let candidate_confidence = selection.confidence;
-
-    if selection.status == RoundStatus::TargetUnmet {
-        return Ok(fresh(
-            candidate,
-            candidate_confidence,
-            EffectiveBasis::TargetUnmet,
-        ));
+    if selection.status == RoundStatus::Ok && selection.confidence >= config.confidence {
+        fresh(selection.recommended_ef, selection.confidence)
+    } else {
+        carried()
     }
-
-    match selection.holdout_status {
-        HoldoutStatus::Approved => Ok(fresh(
-            candidate,
-            candidate_confidence,
-            EffectiveBasis::Approved,
-        )),
-        HoldoutStatus::Inconclusive => match previous {
-            Some(_) => Ok(carried()),
-            None => protective_recommendation(
-                config,
-                test,
-                *config.ef_grid.last().unwrap(),
-                source_round,
-            ),
-        },
-        HoldoutStatus::Rejected => match previous {
-            Some(ref effective) if effective.recommended_ef == candidate => {
-                let protective_ef = config
-                    .ef_grid
-                    .iter()
-                    .copied()
-                    .find(|ef| *ef > candidate)
-                    .unwrap_or(candidate);
-                protective_recommendation(config, test, protective_ef, source_round)
-            }
-            Some(_) => Ok(carried()),
-            None => protective_recommendation(
-                config,
-                test,
-                *config.ef_grid.last().unwrap(),
-                source_round,
-            ),
-        },
-    }
-}
-
-fn protective_recommendation(
-    config: &AggregationConfig,
-    test: &[&crate::population::PopulationSample],
-    recommended_ef: i32,
-    source_round: &str,
-) -> Result<Option<EffectiveRecommendation>, AggregateError> {
-    let confidence = evaluate_holdout(config, test, recommended_ef)?.confidence;
-    Ok(Some(EffectiveRecommendation {
-        recommended_ef,
-        confidence,
-        basis: EffectiveBasis::Protective,
-        source_round: source_round.to_owned(),
-        carried: false,
-    }))
 }
 
 /// Serializes a round record with deterministic struct-field ordering.
@@ -459,11 +395,6 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
         ));
     }
     split_threshold(config.train_fraction)?;
-    if config.min_samples < 10 {
-        return Err(AggregateError::InvalidConfig(
-            "min_samples must be >= 10".to_owned(),
-        ));
-    }
     Ok(())
 }
 

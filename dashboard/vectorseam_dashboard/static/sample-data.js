@@ -69,7 +69,7 @@ function genCohort(cfg) {
     const test = unique - train;
     const trainCeiling = 1 - Math.pow(0.9, train + 1);
     const testCeiling = 1 - Math.pow(0.9, test + 1);
-    const insufficient = i === 0 || unique < 10 || transient || trainCeiling < ASSURANCE || testCeiling < ASSURANCE;
+    const insufficient = transient || train === 0 || test === 0 || trainCeiling < ASSURANCE || testCeiling < ASSURANCE;
     const trainScores = per_ef.map((p) => ({ ef: p.ef, confidence: confidenceFor(p.quantile_recall, train) }));
     const cleared = trainScores.find((p) => p.confidence >= ASSURANCE);
     const highestClears = trainScores[trainScores.length - 1].confidence >= ASSURANCE;
@@ -84,7 +84,6 @@ function genCohort(cfg) {
     let recommended_ef = null;
     let train_q = null;
     let test_q = null;
-    let holdout_status = null;
     let error = null;
 
     if (!insufficient) {
@@ -94,42 +93,12 @@ function genCohort(cfg) {
       test_q = r4(Math.max(0.85, recSummary.quantile_recall - 0.002 - 0.005 * rnd()));
       test_compliance = r4(Math.max(0, Math.min(1, 0.9 + (test_q - 0.9) * 1.5)));
       confidence = r4(Math.min(0.995, confidenceFor(test_q, test) * (0.985 + 0.03 * rnd())));
-      holdout_status = confidence >= ASSURANCE ? "approved" : confidence <= 0.10 ? "rejected" : "inconclusive";
-      if (status === "target_unmet") {
-        effective = { recommended_ef, confidence, basis: "target_unmet", source_round: computedAt, carried: false };
-      } else if (holdout_status === "approved") {
-        effective = { recommended_ef, confidence, basis: "approved", source_round: computedAt, carried: false };
-      } else if (holdout_status === "rejected" && effective && effective.recommended_ef === recommended_ef) {
-        const currentGi = EF_GRID.indexOf(recommended_ef);
-        const protectiveEf = EF_GRID[Math.min(EF_GRID.length - 1, currentGi + 1)];
-        const protectiveSummary = per_ef.find((p) => p.ef === protectiveEf);
-        effective = {
-          recommended_ef: protectiveEf,
-          confidence: r4(confidenceFor(protectiveSummary.quantile_recall, test)),
-          basis: "protective",
-          source_round: computedAt,
-          carried: false,
-        };
-      } else if (effective) {
-        effective = { ...effective, carried: true };
-      } else {
-        const protectiveEf = EF_GRID[EF_GRID.length - 1];
-        const protectiveSummary = per_ef[per_ef.length - 1];
-        effective = {
-          recommended_ef: protectiveEf,
-          confidence: r4(confidenceFor(protectiveSummary.quantile_recall, test)),
-          basis: "protective",
-          source_round: computedAt,
-          carried: false,
-        };
-      }
+      if (status === "ok" && confidence >= ASSURANCE) {
+        effective = { recommended_ef, confidence, source_round: computedAt, carried: false };
+      } else if (effective) effective = { ...effective, carried: true };
     } else {
       if (transient) {
         error = `holdout validation failed: ${failed} statement timeouts left only ${Math.max(0, unique - failed)} measured samples`;
-      } else if (i === 0) {
-        error = "no closed storage window in scope yet";
-      } else {
-        error = `insufficient unique samples: ${unique} < min_samples 10`;
       }
       if (effective) effective = { ...effective, carried: true };
     }
@@ -150,7 +119,6 @@ function genCohort(cfg) {
       confidence,
       train_confidence,
       test_compliance,
-      holdout_status,
       train_quantile_recall: train_q,
       test_quantile_recall: test_q,
       effective: effective ? { ...effective } : null,

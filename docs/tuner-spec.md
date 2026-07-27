@@ -234,9 +234,8 @@ the HNSW index scan.
   naming the condition, and continues with the other cohorts. The recall
   denominator is never adjusted for small tables. Phase A passes this
   condition to Phase B as a typed cohort abort. It takes precedence over
-  cached population size: even if prior compatible intermediates still meet
-  `min_samples`, selection is skipped and the insufficient output shape is
-  forced.
+  cached population size: compatible intermediates may provide samples, but
+  selection is skipped and the insufficient output shape is forced.
 
 - **Decision — snapshot semantics**: ground truth and all ef results for one
   sample share one REPEATABLE READ snapshot, so each per-sample recall is
@@ -332,8 +331,8 @@ of the per-query recall values
 
 #### ef selection rule
 
-For each configured ef, let `n_train` be the train size and `m_ef` the number
-of train samples with `recall@k ≥ value`. Compute:
+For each configured ef, `n_train` is the train size and `m_ef` is the number
+of train samples with `recall@k ≥ value`. The tuner computes:
 
 ```
 train_confidence(ef) = P(θ ≥ percentile)
@@ -344,47 +343,51 @@ clearing = { ef | train_confidence(ef) ≥ confidence }
 selected = min(clearing)             → status "ok"
 ```
 
-- "Smallest clearing ef" is unique because the grid is strictly increasing;
-  no tie-break is needed. `train_confidence` in the round output is the value
-  for the selected ef. This makes uncertainty part of selection: sparse
-  populations start at a conservative high ef, then can move downward as
-  lower candidates accumulate enough evidence.
-- **Decision — highest ef misses the target with sufficient evidence**: emit
-  `max(grid)` flagged `target_unmet`, with transfer and confidence still
-  computed at that ef. This status is reserved for a sufficiently large
-  realized split where the highest configured ef fails to clear the
-  confidence-gated recall SLA. Rationale: fail-visible beats fail-silent — the
-  max grid value is the most protective actionable setting, and the demo
-  dashboard needs an output every round.
+- The strictly increasing grid makes the smallest clearing ef unique.
+  `train_confidence` in the round output is the selected ef's value. Sparse
+  populations can select a high ef; lower candidates can become eligible as
+  evidence accumulates.
+- If the highest ef misses the assurance target, the round reports
+  `recommended_ef = max(grid)` and `status = "target_unmet"`. Training and
+  holdout confidence, compliance, and quantiles are populated at that ef.
+  These measurements let an operator distinguish a grid that needs resizing
+  from a target that needs adjustment. The effective recommendation carries
+  its prior value as defined below.
 
-#### Minimum sample count
+#### Sample sufficiency
 
-- **Decision**: config `min_samples` (default 1000, validated ≥ 10),
-  compared against the round's deduplicated population size
-  (`samples.unique`). Below it the round
-  publishes `status: "insufficient_samples"` with `recommended_ef: null`,
-  `train_confidence: null`, `confidence: null`, `test_compliance: null`,
-  `holdout_status: null`, `train_quantile_recall: null`,
-  `test_quantile_recall: null`, and full
-  sample/coverage metadata. The
-  full-population `per_ef` summaries are still computed when the population is
-  non-empty; for an empty population `per_ef` is `[]`. No degraded-confidence
-  emission. Rationale: a compliance estimate with too little evidence is
-  noise; publishing an explicit refusal keeps the "app stays at its
-  conservative default until the tuner speaks" demo narrative honest.
-  Demo configs simply lower the threshold. The refusal is scoped to *this
-  round's* fields: a previously calibrated ef is still served through the
-  `effective` block (see "Effective recommendation" below), so the
-  conservative default applies only until the tuner first speaks, not again
-  on every transient gap.
-- The same `insufficient_samples` output is published if the realized train or
-  holdout split is empty, or if either split is too small to reach the target
-  assurance even under the best possible result (every sample compliant).
-  The ceiling for a split of size `n` is `1 − percentile^(n+1)`. This is
-  checked after splitting even when `samples.unique >= min_samples`; for
-  `percentile: 0.90` and `confidence: 0.90`, each split needs at least 21
-  samples. Configuration also rejects a `train_fraction` whose rounded
-  10,000-bucket threshold is 0 or 10,000, preventing a guaranteed-empty side.
+Selection requires two non-empty realized splits. Each split must also be
+large enough that an all-success result could reach `target.confidence`.
+For a split of size `n`, that confidence ceiling is:
+
+```
+ceiling(n) = compliance_confidence(n, n, percentile)
+           = 1 − percentile^(n + 1)
+```
+
+The tuner calls `compliance_confidence` for both ceilings. It checks split
+emptiness separately because a legal low assurance target can fall below the
+mathematical ceiling at `n = 0`, while quantile calculation requires at least
+one sample. A `train_fraction` whose rounded 10,000-bucket threshold is 0 or
+10,000 is rejected at configuration load.
+
+The derived minimum for each realized split is:
+
+```
+n_min = ceil(ln(1 − confidence) / ln(percentile)) − 1
+```
+
+Examples are 21 samples for percentile 0.90 and confidence 0.90, 44 for
+percentile 0.95 and confidence 0.90, and 58 for percentile 0.95 and
+confidence 0.95. Configuration validation logs `n_min` once per target.
+
+An empty split, a split below its confidence ceiling, or a Phase A cohort
+abort publishes `status: "insufficient_samples"`. The fields
+`recommended_ef`, `train_confidence`, `confidence`, `test_compliance`,
+`train_quantile_recall`, and `test_quantile_recall` are null. Sample and
+coverage metadata are populated. Full-population `per_ef` summaries are
+included for a non-empty population; an empty population produces `[]`.
+The `effective` block carries a compatible prior recommendation or is null.
 
 #### Rolling window semantics
 
@@ -416,10 +419,10 @@ The train-selected ef is evaluated exactly once on the untouched holdout. The
 round reports `test_compliance` (the fraction of holdout recalls at the
 selected ef that are at least `value`), `test_quantile_recall` (a diagnostic
 compliance quantile), and `confidence` from the same posterior formula used
-for training. `holdout_status` is `approved` when confidence clears
-`target.confidence`, `rejected` when confidence is at or below the hardcoded
-0.10 threshold, and `inconclusive` otherwise. The point quantile alone does
-not approve or reject a recommendation.
+for training. A candidate is approved when `confidence >= target.confidence`.
+The point quantile is diagnostic and does not participate in approval. The
+round record does not serialize a separate holdout state because consumers
+can derive approval from the confidence and target fields.
 
 - **Decision — confidence is one closed-form number per evaluated ef**: with
   `n` samples of which `m` have `recall ≥ value` at an ef,
@@ -445,49 +448,41 @@ not approve or reject a recommendation.
 
 #### Effective recommendation
 
-`recommended_ef` describes what *this round* computed, and stays honestly
-`null` when the round refuses selection. The client-facing signal is a
-separate `effective` block — the ef a consumer should apply right now —
-published in every round record (schema in §2.4):
+`recommended_ef` describes the current round's candidate and is null when
+selection is refused. `effective` is the client-facing recommendation. Its
+complete publication rule is:
 
-- **Decision — confidence has a hold band.** An approved `ok` candidate sets
-  `effective` from itself (`basis: "approved"`, `carried: false`). An
-  inconclusive candidate carries the prior effective value. A rejected
-  candidate also carries the prior value when it is a different challenger;
-  when the rejected candidate is the active effective ef, the tuner moves one
-  grid step higher with `basis: "protective"`. During bootstrap, an
-  inconclusive or rejected candidate uses max(grid) protectively. An
-  `insufficient_samples` round carries prior state or leaves it null if no
-  selection has ever run. This avoids turning a narrow failure to re-prove an
-  active setting into oscillation while still reacting to strong evidence of
-  regression. `target_unmet` overrides prior state with max(grid).
-- **The carry source is storage, never memory.** Before publishing, the
-  round GETs the cohort's current `latest.json` (one GET per cohort per
-  round) and takes its `effective` block as the carry source, so the chain
-  survives restarts. Failure handling distinguishes three cases. Not-found
-  is the normal bootstrap state: no carry source, no warning. A record that
-  is malformed — or written before this field existed — is a persistent
-  condition: no carry source, a warning; treating it as fatal would wedge
-  the cohort, since `latest.json` is only rewritten by a successful publish.
-  Any other GET failure is transient storage trouble and aborts the cohort
-  round without publishing, exactly like every other storage failure (§3.2):
-  publishing with an absent carry source would durably replace the last
-  known good recommendation with `null` — the regression this block exists
-  to prevent — while aborting preserves the stored chain for the next tick.
+1. An `insufficient_samples` round carries the prior `effective` block.
+2. A `target_unmet` round carries the prior `effective` block.
+3. An `ok` candidate with `confidence >= target.confidence` publishes a fresh
+   block with `recommended_ef` and `confidence` from that candidate,
+   `source_round` equal to the round end, and `carried: false`.
+4. Any other `ok` candidate carries the prior `effective` block.
+
+Carrying copies `recommended_ef`, `confidence`, and `source_round`, and sets
+`carried: true`. If there is no compatible prior block, carrying produces
+null. A target-unmet candidate is fully reported in the round fields but does
+not replace a known-good effective ef with a setting that failed training.
+
+- **The carry source is storage.** Before publishing, the round GETs the
+  cohort's current `latest.json` once and reads its `effective` block. A
+  not-found object is the bootstrap state and supplies no carry source. A
+  malformed record supplies no carry source and emits a warning. Any other
+  GET failure aborts the cohort round without publishing, as defined in
+  §3.2. The storage-backed chain survives process restarts.
 - **Config-fingerprint invalidation.** The carry source is used only when
   the previous round record's `cohort`, `index`, `ef_grid`, and `target`
-  fields (`k`, `value`, `percentile`, `confidence`) all equal the current configuration;
-  otherwise `effective` resets to `null`. Same philosophy as §2.4
-  intermediate compatibility: never serve a recommendation calibrated for a
-  different target or index. Carrying preserves this check inductively —
-  every published `effective` is consistent with its own round's top-level
-  fields — so validating against the previous round's fields alone is
-  sufficient.
-- **No expiry.** The tuner never silently decays `effective` to `null`;
-  staleness is visible through `source_round`, and any maximum-age policy
-  belongs to the consumer. Before the first successful round `effective` is
-  `null` — the app stays at its conservative default until the tuner speaks,
-  but never re-enters that state on a transient gap.
+  fields (`k`, `value`, `percentile`, `confidence`) all equal the current
+  configuration; otherwise `effective` resets to `null`. Same philosophy as
+  §2.4 intermediate compatibility: never serve a recommendation calibrated
+  for a different target or index. Carrying preserves this check
+  inductively — every published `effective` is consistent with its own
+  round's top-level fields — so validating against the previous round's
+  fields alone is sufficient.
+- **No expiry.** `effective` has no tuner-side maximum age. Staleness is
+  visible through `source_round`, and any maximum-age policy belongs to the
+  consumer. Until a candidate clears holdout assurance, `effective` is null
+  and the application uses its configured default.
 
 #### Determinism summary
 
@@ -507,7 +502,6 @@ calibration:
   ef_search: [20, 40, 60, 80, 100, 150, 200, 300, 400]  # REQUIRED: the sweep buckets
   train_fraction: 0.7
   split_seed: 7
-  min_samples: 1000
 
 storage:
   root: /var/lib/vectorseam       # same object-store root the collector writes
@@ -606,7 +600,7 @@ optional advice.
   increasing, `min(grid) ≥ k` for every configured target (pgvector caps
   results at `ef_search`, so `ef < k` can never satisfy the target),
   `max(grid) ≤ 1000` (pgvector bound)
-- `0 < train_fraction < 1`, `min_samples ≥ 10`, `0 < db_share ≤ 1`,
+- `0 < train_fraction < 1`, `0 < db_share ≤ 1`,
   `statement_timeout > 0`, `client_timeout > 0`; additionally,
   `round(train_fraction * 10000)` must be in `1..=9999`
 - `table`, `column`, `key` are valid PostgreSQL quoted/delimited identifiers:
@@ -698,14 +692,12 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "confidence": 0.971,               // null when insufficient_samples
   "train_confidence": 0.976,         // selected ef on train; null when insufficient_samples
   "test_compliance": 0.963,          // fraction meeting value; null when insufficient_samples
-  "holdout_status": "approved",      // "approved" | "inconclusive" | "rejected"; null when insufficient
   "train_quantile_recall": 0.90,     // null when insufficient_samples
   "test_quantile_recall": 0.90,      // null when insufficient_samples
-  "effective": {                     // approved or protective ef a client applies now (§2.2);
-                                     // null only before any round has ever recommended
+  "effective": {                     // holdout-approved ef a client applies (§2.2);
+                                     // null without a compatible approved candidate
     "recommended_ef": 200,           // never null inside a non-null block
     "confidence": 0.971,             // confidence as of source_round
-    "basis": "approved",             // "approved" | "protective" | "target_unmet"
     "source_round": "2026-07-15T12:00:00Z",  // round_end that computed it
     "carried": false                 // true when copied from a previous round
   },
@@ -784,30 +776,31 @@ long-lived, and no reconnect is attempted mid-round.
 2. Load truth and sweep rows; the stored `recall` column is authoritative.
 3. Deduplicate across the window by `vector_hash`, keeping the row with the
    smallest `(part_ulid, record_index)` (§2.2); the survivors are the
-   population (`samples.unique`).
-4. Split per §2.2; if Phase A supplied a table-smaller-than-k abort,
-   `unique < min_samples`, either realized split is empty, or either split's
-   all-success confidence ceiling is below the assurance target, publish
-   `insufficient_samples` per §2.2 and stop selection. The Phase A abort's
-   error string is copied to the round. Full-population `per_ef` summaries are
-   still included for a non-empty cached population.
-5. Compute confidence for every ef on train and select per §2.2; compute the
-   selected candidate's holdout compliance, quantile, confidence, and
-   three-way `holdout_status`.
-6. Compute `dropped_frame_fraction` from part headers and the `coverage`
-   block from the window/part listing.
-7. GET the cohort's current `latest.json` and derive this round's
-   `effective` block per §2.2 (not-found, malformed, pre-`effective`, or
-   fingerprint-incompatible → no carry source; any other GET failure aborts
-   the cohort round per §3.2).
-8. Compose the round JSON (all counters from part headers and file
-   metadata); PUT `round-<ts>.json`, then `latest.json`.
+   population (`samples.unique`). Compute full-population `per_ef` summaries
+   when the population is non-empty.
+4. Split per §2.2. Publish `insufficient_samples` and skip selection if Phase
+   A supplied a table-smaller-than-k abort, either realized split is empty,
+   or either split's all-success confidence ceiling is below
+   `target.confidence`. Copy a Phase A abort's error string to the round.
+5. Compute confidence for every ef on train and select per §2.2. Evaluate the
+   train-selected candidate exactly once on holdout to obtain compliance,
+   quantile, and confidence. A target-unmet selection uses `max(grid)` for
+   these measurements.
+6. Compute `dropped_frame_fraction` from part headers and `coverage` from the
+   window and part listing.
+7. GET the cohort's current `latest.json` and derive `effective` from the
+   four-case rule in §2.2. A not-found or malformed record, or a fingerprint
+   mismatch, supplies no carry source. Any other GET failure aborts the cohort
+   round per §3.2.
+8. Compose the round JSON with counters from part headers and file metadata;
+   PUT `round-<ts>.json`, then `latest.json`.
 
 Publishing the same `round_end` twice (interval shorter than the storage
 window, or restart) overwrites the same key with a fresher computation —
-idempotent by design. This includes `effective`: approved candidates and
-protective transitions are re-derived deterministically, while inconclusive,
-rejected-challenger, and insufficient rounds re-carry the same prior block.
+idempotent by design. An approved candidate reconstructs the same fresh
+`effective` block. Every carry case copies the same stored recommendation and
+sets `carried: true`, so repeated publication produces identical effective
+state.
 
 ## 3. Non-functional requirements
 
@@ -1034,18 +1027,18 @@ point quantiles and VectorSeam's confidence-gated selection.
   80:0.93, 160:0.95}`, assurance 0.9 → `recommended_ef = 40`,
   `status = "ok"`. A separate fixture has ef 20's point quantile exactly at
   the recall target but insufficient confidence, so ef 40 is selected. A
-  lower rejected challenger carries the prior effective ef. An active ef with
-  confidence between 0.10 and assurance is inconclusive and carried; an
-  active ef at or below 0.10 backs off one grid step. A sparse fixture selects
-  ef 40; a denser fixture with stronger evidence at ef 20 selects ef 20.
-- **B6 target unmet**: value 0.99 across B5's recall population → `recommended_ef =
-  160`, `status = "target_unmet"`, confidence, `test_compliance`, and
-  `test_quantile_recall` still present.
-- **B7 min samples**: `min_samples = 1000`; a unique population of 999 →
-  `status = "insufficient_samples"`, `recommended_ef = null`,
-  `train_confidence = null`, `confidence = null`, `test_compliance = null`,
-  sample counts still reported;
-  a unique population of 1000 → a recommendation is emitted.
+  holdout confidence below assurance carries the prior effective ef. A sparse
+  fixture selects ef 40; a denser fixture with stronger evidence at ef 20
+  selects ef 20.
+- **B6 target unmet**: value 0.99 across B5's recall population produces
+  `recommended_ef = 160` and `status = "target_unmet"`. Confidence,
+  `train_confidence`, `test_compliance`, and both quantiles are populated at
+  ef 160. A prior effective recommendation is carried.
+- **B7 sample sufficiency**: percentile 0.95 and assurance 0.90 require 44
+  samples in each realized split. Train/holdout counts 44/43 produce
+  `status = "insufficient_samples"` and null selection fields; counts 44/44
+  produce a recommendation. A legal low-assurance target with an empty
+  realized split also produces `insufficient_samples`.
 - **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
   round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
   starting 11:00–11:50 are in scope; parts at 10:50 and 12:00 are excluded;
@@ -1100,8 +1093,8 @@ point quantiles and VectorSeam's confidence-gated selection.
   Phase A aborts for that cohort after the first ground-truth result (at
   most one exact scan issued, no sweep statements), the round publishes
   `insufficient_samples` with a non-null `error` even when cached compatible
-  intermediates meet `min_samples`, and the other cohorts' rounds proceed
-  normally.
+  intermediates contain enough samples, and the other cohorts' rounds
+  proceed normally.
 - **C7 snapshot semantics** (F-pg; requires pausing the tuner's connection
   between statements, e.g. via a test proxy): after a sample's ground-truth
   statement returns and before its sweep statements run, a second connection
@@ -1138,10 +1131,10 @@ mock-measured local store)
   to the first round's, in both `round-<ts>.json` and `latest.json`;
   republishing the insufficient round's `round_end` again yields the
   identical `effective` block.
-- **E2 newest honest signal wins**: an `ok` round at ef `X` followed by a
-  `target_unmet` round → `effective.recommended_ef = max(grid)` with
-  `carried: false`; a subsequent `insufficient_samples` round carries the
-  `target_unmet` value, not the older `ok` one.
+- **E2 target-unmet carry**: an `ok` round at ef `X` followed by a
+  `target_unmet` round reports `recommended_ef = max(grid)` while
+  `effective.recommended_ef = X` with `carried: true`. A subsequent
+  `insufficient_samples` round carries the same effective block.
 - **E3 carry survives restart**: publish an `ok` round, discard all
   in-memory state (a fresh pipeline/tuner instance over the same store),
   run an `insufficient_samples` round → `effective` still carries the first
