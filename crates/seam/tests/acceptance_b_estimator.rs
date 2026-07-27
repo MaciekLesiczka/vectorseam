@@ -192,6 +192,7 @@ fn b6_target_unmet_reports_max_ef_and_carries_effective_recommendation() {
     assert_eq!(observed.status, RoundStatus::TargetUnmet);
     assert!(observed.confidence.is_some());
     assert!(observed.train_confidence.is_some());
+    assert!(observed.train_compliance.is_some());
     assert_eq!(observed.test_compliance, Some(0.0));
     assert!(observed.train_quantile_recall.is_some());
     assert!(observed.test_quantile_recall.is_some());
@@ -216,6 +217,7 @@ fn b7_split_one_below_assurance_minimum_is_insufficient() {
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
     assert_eq!(observed.train_confidence, None);
+    assert_eq!(observed.train_compliance, None);
     assert_eq!(observed.test_compliance, None);
 }
 
@@ -232,6 +234,7 @@ fn b7_splits_at_assurance_minimum_emit_recommendation() {
     assert_eq!(observed.status, RoundStatus::Ok);
     assert!(observed.recommended_ef.is_some());
     assert!(observed.train_confidence.is_some());
+    assert_eq!(observed.train_compliance, Some(1.0));
     assert_eq!(observed.test_compliance, Some(1.0));
 }
 
@@ -266,6 +269,7 @@ fn b7_unattainable_assurance_is_insufficient_not_target_unmet() {
     assert_eq!(observed.status, RoundStatus::InsufficientSamples);
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.train_confidence, None);
+    assert_eq!(observed.train_compliance, None);
     assert_eq!(observed.test_compliance, None);
     assert_eq!(observed.confidence, None);
 }
@@ -361,29 +365,44 @@ fn b10_confidence_matches_closed_form_and_scipy_grid() {
 }
 
 #[test]
-fn b10_round_exposes_test_compliance_fraction() {
+fn b10_round_exposes_train_and_test_compliance_fractions() {
     let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
     let mut input = populated_input(200, 0.9, &recalls);
-    let holdout = input.intermediates[0]
-        .samples
-        .iter_mut()
-        .filter(|sample| !is_train_member(sample.vector_hash, 7, 0.7).unwrap())
-        .collect::<Vec<_>>();
-    let holdout_count = holdout.len();
-    for sample in holdout.into_iter().take(3) {
-        for sweep in sample.sweeps.values_mut() {
-            sweep.recall = 0.8;
+    let mut train_count = 0;
+    let mut holdout_count = 0;
+    let mut train_failed = 0;
+    let mut holdout_failed = 0;
+    for sample in &mut input.intermediates[0].samples {
+        if is_train_member(sample.vector_hash, 7, 0.7).unwrap() {
+            train_count += 1;
+            if train_failed < 5 {
+                train_failed += 1;
+                for sweep in sample.sweeps.values_mut() {
+                    sweep.recall = 0.8;
+                }
+            }
+        } else {
+            holdout_count += 1;
+            if holdout_failed < 3 {
+                holdout_failed += 1;
+                for sweep in sample.sweeps.values_mut() {
+                    sweep.recall = 0.8;
+                }
+            }
         }
     }
+    assert_eq!((train_failed, holdout_failed), (5, 3));
 
     let observed = aggregate(&input).unwrap();
-    let expected = (holdout_count - 3) as f64 / holdout_count as f64;
+    let expected_train = (train_count - train_failed) as f64 / train_count as f64;
+    let expected = (holdout_count - holdout_failed) as f64 / holdout_count as f64;
 
+    // Both splits report the same statistic over their own members.
+    assert_eq!(observed.train_compliance, Some(expected_train));
     assert_eq!(observed.test_compliance, Some(expected));
-    assert_eq!(
-        serde_json::to_value(observed).unwrap()["test_compliance"],
-        expected
-    );
+    let json = serde_json::to_value(observed).unwrap();
+    assert_eq!(json["train_compliance"], expected_train);
+    assert_eq!(json["test_compliance"], expected);
 }
 
 #[test]

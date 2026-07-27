@@ -194,46 +194,15 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
     } else {
         Some(select_and_validate(&input.config, &train, &test)?)
     };
-    let (
-        status,
-        recommended_ef,
-        train_confidence,
-        confidence,
-        test_compliance,
-        train_quantile,
-        test_quantile,
-    ) = match selection.as_ref() {
-        None => (
-            RoundStatus::InsufficientSamples,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
-        Some(selection) => (
-            selection.status,
-            Some(selection.recommended_ef),
-            Some(selection.train_confidence),
-            Some(selection.confidence),
-            Some(selection.test_compliance),
-            Some(selection.train_quantile),
-            Some(selection.test_quantile),
-        ),
-    };
+    let selected = selection.as_ref();
     let window_end = iso8601_seconds(input.round_end)?;
     let previous_effective = input
         .previous_round
         .as_ref()
         .filter(|previous| carry_fingerprint_matches(&input.config, previous))
         .and_then(|previous| previous.effective.clone());
-    let effective = effective_recommendation(
-        &input.config,
-        selection.as_ref(),
-        previous_effective,
-        &window_end,
-    );
+    let effective =
+        effective_recommendation(&input.config, selected, previous_effective, &window_end);
     Ok(RoundOutput {
         format_version: 1,
         cohort: input.config.cohort.clone(),
@@ -252,17 +221,18 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
         },
         index: input.config.index.clone(),
         ef_grid: input.config.ef_grid.clone(),
-        status,
+        status: selected.map_or(RoundStatus::InsufficientSamples, |s| s.status),
         error: input
             .phase_a_abort
             .as_ref()
             .map(|abort| abort.error().to_owned()),
-        recommended_ef,
-        confidence,
-        train_confidence,
-        test_compliance,
-        train_quantile_recall: train_quantile,
-        test_quantile_recall: test_quantile,
+        recommended_ef: selected.map(|s| s.recommended_ef),
+        confidence: selected.map(|s| s.confidence),
+        train_confidence: selected.map(|s| s.train_confidence),
+        train_compliance: selected.map(|s| s.train_compliance),
+        train_quantile_recall: selected.map(|s| s.train_quantile),
+        test_compliance: selected.map(|s| s.test_compliance),
+        test_quantile_recall: selected.map(|s| s.test_quantile),
         effective,
         samples,
         dropped_frame_fraction: drop_fraction,

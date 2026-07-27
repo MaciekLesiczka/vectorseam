@@ -130,6 +130,7 @@ fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     assert_eq!(observed.coverage.empty_window_fraction, 1.0);
     assert_eq!(observed.recommended_ef, None);
     assert_eq!(observed.confidence, None);
+    assert_eq!(observed.train_compliance, None);
     assert_eq!(observed.test_compliance, None);
     assert_eq!(observed.train_quantile_recall, None);
     assert_eq!(observed.test_quantile_recall, None);

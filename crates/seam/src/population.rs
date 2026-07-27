@@ -127,35 +127,41 @@ pub(crate) struct CompletedSelection {
     pub(crate) recommended_ef: i32,
     pub(crate) status: RoundStatus,
     pub(crate) train_confidence: f64,
+    pub(crate) train_compliance: f64,
+    pub(crate) train_quantile: f64,
     pub(crate) confidence: f64,
     pub(crate) test_compliance: f64,
-    pub(crate) train_quantile: f64,
     pub(crate) test_quantile: f64,
 }
 
-struct HoldoutEvaluation {
-    confidence: f64,
-    test_compliance: f64,
-    quantile: f64,
+/// The three per-split statistics at one ef: how many samples cleared the
+/// recall target, the posterior confidence that reading generalizes, and the
+/// compliance quantile.
+pub(crate) struct SplitEvaluation {
+    pub(crate) confidence: f64,
+    pub(crate) compliance: f64,
+    pub(crate) quantile: f64,
 }
 
-fn evaluate_holdout(
+/// Train and holdout report the same statistics through this one function, so
+/// the two sides of a round are never computed by divergent code.
+fn evaluate_split(
     config: &AggregationConfig,
-    test: &[&PopulationSample],
+    samples: &[&PopulationSample],
     ef: i32,
-) -> Result<HoldoutEvaluation, AggregateError> {
-    let test_recalls = test
+) -> Result<SplitEvaluation, AggregateError> {
+    let recalls = samples
         .iter()
         .map(|sample| sample.sweeps[&ef].recall)
         .collect::<Vec<_>>();
-    let successes = test_recalls
+    let successes = recalls
         .iter()
         .filter(|recall| **recall >= config.value)
         .count();
-    Ok(HoldoutEvaluation {
-        confidence: compliance_confidence(test.len(), successes, config.percentile)?,
-        test_compliance: successes as f64 / test.len() as f64,
-        quantile: quantile_type7(&test_recalls, 1.0 - config.percentile)?,
+    Ok(SplitEvaluation {
+        confidence: compliance_confidence(samples.len(), successes, config.percentile)?,
+        compliance: successes as f64 / samples.len() as f64,
+        quantile: quantile_type7(&recalls, 1.0 - config.percentile)?,
     })
 }
 
@@ -164,18 +170,6 @@ pub(crate) fn select_and_validate(
     train: &[&PopulationSample],
     test: &[&PopulationSample],
 ) -> Result<CompletedSelection, AggregateError> {
-    let q = 1.0 - config.percentile;
-    let train_quantiles = config
-        .ef_grid
-        .iter()
-        .map(|ef| {
-            let recalls = train
-                .iter()
-                .map(|sample| sample.sweeps[ef].recall)
-                .collect::<Vec<_>>();
-            Ok((*ef, quantile_type7(&recalls, q)?))
-        })
-        .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
     let train_confidences = config
         .ef_grid
         .iter()
@@ -191,14 +185,16 @@ pub(crate) fn select_and_validate(
         })
         .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
     let selected = select_ef(&train_confidences, config.confidence)?;
-    let holdout = evaluate_holdout(config, test, selected.recommended_ef)?;
+    let train_stats = evaluate_split(config, train, selected.recommended_ef)?;
+    let holdout = evaluate_split(config, test, selected.recommended_ef)?;
     Ok(CompletedSelection {
         recommended_ef: selected.recommended_ef,
         status: selected.status,
-        train_confidence: train_confidences[&selected.recommended_ef],
+        train_confidence: train_stats.confidence,
+        train_compliance: train_stats.compliance,
+        train_quantile: train_stats.quantile,
         confidence: holdout.confidence,
-        test_compliance: holdout.test_compliance,
-        train_quantile: train_quantiles[&selected.recommended_ef],
+        test_compliance: holdout.compliance,
         test_quantile: holdout.quantile,
     })
 }

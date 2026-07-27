@@ -285,7 +285,7 @@
                     <sc-if value="{{ r.error }}" hint-placeholder-val="">
                       <div style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:oklch(0.82 0.09 62);background:oklch(0.24 0.03 62 / 0.35);border:1px solid oklch(0.4 0.06 62);border-radius:8px;padding:9px 12px;">{{ r.error }}</div>
                     </sc-if>
-                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 24px;">
+                    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 24px;">
                       <sc-for list="{{ r.metrics }}" as="m" hint-placeholder-count="12">
                         <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;border-bottom:1px dotted oklch(0.28 0.013 258);padding-bottom:5px;">
                           <span style="font-size:12px;color:oklch(0.58 0.014 258);">{{ m.label }}</span>
@@ -414,6 +414,41 @@ class Component extends DCLogic {
   // recall axis, which would flatten every low value onto the floor.
   confChartY(v) { const vv = Math.max(0, Math.min(1, v)); return this.PY1 - vv * (this.PY1 - this.PY0); }
   pad2(x) { return String(x).padStart(2, '0'); }
+  // Target windows run from minutes to weeks, so a flat minute count stops
+  // being readable well before the 24h and 7d windows production uses. A
+  // duration that is exactly one unit reads better one unit down — 1h as
+  // "60m", 1d as "24h", 1w as "7d" — because that is the size an operator
+  // compares against the storage window. Everything else splits largest-first.
+  // Not worth a dependency: the dashboard vendors everything it loads, and
+  // Intl.DurationFormat is both unevenly supported and unable to express the
+  // exactly-one-unit rule.
+  DURATION_UNITS = [['w', 604800], ['d', 86400], ['h', 3600], ['m', 60], ['s', 1]];
+  fmtDuration(seconds) {
+    if (!isFinite(seconds) || seconds <= 0) return '0m';
+    for (let i = 0; i < 3; i++) {
+      const [, size] = this.DURATION_UNITS[i];
+      if (seconds === size) {
+        const [nextLabel, nextSize] = this.DURATION_UNITS[i + 1];
+        return (size / nextSize) + nextLabel;
+      }
+    }
+    let rest = seconds; const parts = [];
+    for (const [label, size] of this.DURATION_UNITS) {
+      const count = Math.floor(rest / size);
+      if (count > 0) { parts.push(count + label); rest -= count * size; }
+    }
+    return parts.join(' ');
+  }
+  md(s) { const d = new Date(s); return this.pad2(d.getUTCMonth() + 1) + '-' + this.pad2(d.getUTCDate()); }
+  // A window of a day or more has the same wall-clock time at both ends, so
+  // the bare "11:35 → 11:35" reads as a zero-length window. Date-qualify both
+  // ends once the span can cross midnight.
+  fmtWindow(w) {
+    const stamp = w.duration_seconds >= 86400
+      ? (s) => this.md(s) + ' ' + this.hm(s)
+      : (s) => this.hm(s);
+    return stamp(w.start) + ' → ' + stamp(w.end) + ' · ' + this.fmtDuration(w.duration_seconds);
+  }
   hm(s) { const d = new Date(s); return this.pad2(d.getUTCHours()) + ':' + this.pad2(d.getUTCMinutes()); }
   hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
   rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
@@ -650,24 +685,30 @@ class Component extends DCLogic {
       // that never selected. The recommendation in force is a detail row.
       const candidateEf = rd.recommended_ef;
       const w = rd.window; const c = rd.coverage; const sm = rd.samples;
+      const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '—';
+      const num = (v) => v != null ? v.toFixed(3) : '—';
+      // The grid is exactly two columns, so consecutive pairs sit side by side.
+      // Train metrics take the left column and holdout the right, and the three
+      // statistics appear in the same order on both sides.
       const metrics = [
-        { label: 'Window', value: this.hm(w.start) + ' → ' + this.hm(w.end) + ' · ' + Math.round(w.duration_seconds / 60) + 'm' },
         { label: 'Candidate ef', value: candidateEf != null ? String(candidateEf) : '—' },
         { label: 'Recommended ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
+        { label: 'Window', value: this.fmtWindow(w) },
+        { label: 'Assurance target', value: Math.round(rd.target.confidence * 100) + '%' },
+        { label: 'Train recall', value: num(rd.train_quantile_recall) },
+        { label: 'Holdout recall', value: num(rd.test_quantile_recall) },
+        { label: 'Train compliance', value: pct(rd.train_compliance) },
+        { label: 'Holdout compliance', value: pct(rd.test_compliance) },
+        { label: 'Train confidence', value: pct(rd.train_confidence) },
+        { label: 'Holdout confidence', value: pct(rd.confidence) },
+        { label: 'Train / holdout samples', value: sm.train.toLocaleString() + ' / ' + sm.test.toLocaleString() },
         { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
-        { label: 'Train / holdout', value: sm.train.toLocaleString() + ' / ' + sm.test.toLocaleString() },
         { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + Math.round(c.empty_window_fraction * 100) + '% empty' },
         { label: 'Dropped frames', value: (rd.dropped_frame_fraction * 100).toFixed(2) + '%' },
         { label: 'Parts used', value: rd.parts_used + ' · ' + rd.incompatible_parts + ' incompat.' },
         { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
-        { label: 'Assurance target', value: Math.round(rd.target.confidence * 100) + '%' },
-        { label: 'Train confidence @ ef', value: rd.train_confidence != null ? (rd.train_confidence * 100).toFixed(1) + '%' : '—' },
-        { label: 'Train recall @ ef', value: rd.train_quantile_recall != null ? rd.train_quantile_recall.toFixed(3) : '—' },
-        { label: 'Holdout compliance', value: rd.test_compliance != null ? (rd.test_compliance * 100).toFixed(1) + '%' : '—' },
-        { label: 'Holdout confidence', value: rd.confidence != null ? (rd.confidence * 100).toFixed(1) + '%' : '—' },
-        { label: 'Holdout recall @ ef', value: rd.test_quantile_recall != null ? rd.test_quantile_recall.toFixed(3) : '—' },
       ];
       const perEf = rd.per_ef.map((p) => ({
         ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),

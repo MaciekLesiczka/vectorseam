@@ -80,6 +80,7 @@ function genCohort(cfg) {
 
     let confidence = null;
     let train_confidence = null;
+    let train_compliance = null;
     let test_compliance = null;
     let recommended_ef = null;
     let train_q = null;
@@ -91,6 +92,7 @@ function genCohort(cfg) {
       train_confidence = r4(selectedTrain.confidence);
       train_q = r4(Math.min(0.999, recSummary.quantile_recall + 0.004 + 0.01 * rnd()));
       test_q = r4(Math.max(0.85, recSummary.quantile_recall - 0.002 - 0.005 * rnd()));
+      train_compliance = r4(Math.max(0, Math.min(1, 0.9 + (train_q - 0.9) * 1.5)));
       test_compliance = r4(Math.max(0, Math.min(1, 0.9 + (test_q - 0.9) * 1.5)));
       confidence = r4(Math.min(0.995, confidenceFor(test_q, test) * (0.985 + 0.03 * rnd())));
       if (status === "ok" && confidence >= ASSURANCE) {
@@ -118,8 +120,9 @@ function genCohort(cfg) {
       recommended_ef,
       confidence,
       train_confidence,
-      test_compliance,
+      train_compliance,
       train_quantile_recall: train_q,
+      test_compliance,
       test_quantile_recall: test_q,
       effective: effective ? { ...effective } : null,
       samples: { available, measured, failed, unique, train, test },

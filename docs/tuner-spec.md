@@ -387,8 +387,9 @@ confidence 0.95. Configuration validation logs `n_min` once per target.
 
 An empty split, a split below its confidence ceiling, or a Phase A cohort
 abort publishes `status: "insufficient_samples"`. The fields
-`recommended_ef`, `train_confidence`, `confidence`, `test_compliance`,
-`train_quantile_recall`, and `test_quantile_recall` are null. Sample and
+`recommended_ef`, `train_confidence`, `train_compliance`,
+`train_quantile_recall`, `confidence`, `test_compliance`, and
+`test_quantile_recall` are null. Sample and
 coverage metadata are populated. Full-population `per_ef` summaries are
 included for a non-empty population; an empty population produces `[]`.
 The `effective` block carries a compatible prior recommendation or is null.
@@ -419,14 +420,23 @@ The `effective` block carries a compatible prior recommendation or is null.
 
 #### Transferability and confidence
 
-The train-selected ef is evaluated exactly once on the untouched holdout. The
-round reports `test_compliance` (the fraction of holdout recalls at the
-selected ef that are at least `value`), `test_quantile_recall` (a diagnostic
-compliance quantile), and `confidence` from the same posterior formula used
-for training. A candidate is approved when `confidence >= target.confidence`.
-The point quantile is diagnostic and does not participate in approval. The
-round record does not serialize a separate holdout state because consumers
-can derive approval from the confidence and target fields.
+The train-selected ef is evaluated exactly once on the untouched holdout.
+Both splits report the same three statistics at the selected ef, computed by
+the same code so the two sides are always comparable:
+
+| statistic | train | holdout |
+| --- | --- | --- |
+| compliance quantile | `train_quantile_recall` | `test_quantile_recall` |
+| fraction meeting `value` | `train_compliance` | `test_compliance` |
+| posterior confidence | `train_confidence` | `confidence` |
+
+A candidate is approved when `confidence >= target.confidence`. The point
+quantile and the raw compliance fraction are diagnostic and do not
+participate in approval; only the posterior confidence does. The round record
+does not serialize a separate holdout state because consumers can derive
+approval from the confidence and target fields. Comparing the train and
+holdout columns shows how far a candidate moved between the split it was
+chosen on and the split that judged it.
 
 - **Decision — confidence is one closed-form number per evaluated ef**: with
   `n` samples of which `m` have `recall ≥ value` at an ef,
@@ -695,8 +705,9 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "recommended_ef": 200,             // null when insufficient_samples
   "confidence": 0.971,               // null when insufficient_samples
   "train_confidence": 0.976,         // selected ef on train; null when insufficient_samples
-  "test_compliance": 0.963,          // fraction meeting value; null when insufficient_samples
+  "train_compliance": 0.981,         // train fraction meeting value; null when insufficient_samples
   "train_quantile_recall": 0.90,     // null when insufficient_samples
+  "test_compliance": 0.963,          // holdout fraction meeting value; null when insufficient_samples
   "test_quantile_recall": 0.90,      // null when insufficient_samples
   "effective": {                     // holdout-approved ef a client applies (§2.2);
                                      // null without a compatible approved candidate
@@ -1036,8 +1047,9 @@ point quantiles and VectorSeam's confidence-gated selection.
   selects ef 20.
 - **B6 target unmet**: value 0.99 across B5's recall population produces
   `recommended_ef = 160` and `status = "target_unmet"`. Confidence,
-  `train_confidence`, `test_compliance`, and both quantiles are populated at
-  ef 160. A prior effective recommendation is carried.
+  `train_confidence`, `train_compliance`, `test_compliance`, and both
+  quantiles are populated at ef 160. A prior effective recommendation is
+  carried.
 - **B7 sample sufficiency**: percentile 0.95 and assurance 0.90 require 44
   samples in each realized split. Train/holdout counts 44/43 produce
   `status = "insufficient_samples"` and null selection fields; counts 44/44
@@ -1056,7 +1068,8 @@ point quantiles and VectorSeam's confidence-gated selection.
   `confidence = 1 − 0.95¹⁰¹ ≈ 0.99438` within 1e-5; m = 0 → confidence
   < 1e-6; confidence values agree with `scipy.stats.beta.sf(percentile,
   m+1, n−m+1)` within 1e-6 on a grid of (n, m); completed round output reports
-  `test_compliance = m/n`.
+  `test_compliance = m/n`, and `train_compliance` is the same statistic over
+  the train split.
 - **B11 drop fraction**: part headers (received = 100, records = 80) and
   (received = 50, records = 50) → `dropped_frame_fraction = 2/15 ± 1e-12`.
 - **B12 deduplication**: a part containing the same vector at record

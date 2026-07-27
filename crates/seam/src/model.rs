@@ -314,10 +314,12 @@ pub struct RoundOutput {
     pub confidence: Option<f64>,
     /// Training posterior confidence at the selected ef.
     pub train_confidence: Option<f64>,
-    /// Fraction of holdout samples meeting the recall target.
-    pub test_compliance: Option<f64>,
+    /// Fraction of train samples meeting the recall target.
+    pub train_compliance: Option<f64>,
     /// Train compliance quantile at the selected ef.
     pub train_quantile_recall: Option<f64>,
+    /// Fraction of holdout samples meeting the recall target.
+    pub test_compliance: Option<f64>,
     /// Holdout compliance quantile at the selected ef.
     pub test_quantile_recall: Option<f64>,
     /// Holdout-approved recommendation a consumer should apply.
