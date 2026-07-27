@@ -120,17 +120,26 @@ jq '{
   demo/data/store/calibrations/superuser/latest.json
 ```
 
-The round reports `insufficient_samples` until both realized splits could
-attain the configured assurance with all successes. For percentile 0.90 and
-confidence 0.90, each split needs at least 21 samples. The first eligible
-candidate may be conservative and high; as evidence accumulates, the tuner
-should step downward and settle near `recommended_ef: 60`. It selects the
-smallest ef whose training confidence clears 90%, then evaluates that ef once
-on the untouched holdout. A holdout confidence of at least 90% replaces
-`effective`; any lower confidence carries the prior effective block or leaves
-it null. A `target_unmet` round reports the maximum grid ef and its evidence,
-while carrying the prior effective block. M1 displays the effective value but
-does not apply it; recommendation consumption remains milestone 2.
+The round reports `insufficient_samples` until each realized split can attain
+its own gate with all successes. At percentile 0.90 the 0.98 selection gate
+needs 37 train samples and the 0.90 approval gate needs 21 holdout samples,
+so 62 unique samples at `train_fraction: 0.6`.
+
+The tuner then selects the smallest ef whose training confidence clears the
+98% selection gate, and evaluates that ef exactly once on the untouched
+holdout. A holdout confidence of at least the 90% approval gate replaces
+`effective`; anything lower carries the prior effective block, or leaves it
+null before the first approval. A `target_unmet` round reports the maximum
+grid ef with its evidence and also carries.
+
+The two gates differ on purpose. The holdout is the smaller split, so at the
+same true compliance its confidence is lower than the train split's —
+selecting at 0.90 would keep proposing ef values the holdout cannot confirm.
+The 0.98 selection gate spends that margin deliberately: a slightly higher ef
+that gets approved beats the smallest ef that never does. Expect the first
+recommendation to be conservative and to settle near `recommended_ef: 60` as
+evidence accumulates. M1 displays the effective value but does not apply it;
+recommendation consumption remains milestone 2.
 
 Typical timings at 5 qps are up to two minutes for the first `.vseam`, three
 to four minutes for the first Parquet pair, and six to ten minutes for the

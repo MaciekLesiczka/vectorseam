@@ -17,7 +17,8 @@ const r4 = (x) => Math.round(x * 1e4) / 1e4;
 const r3 = (x) => Math.round(x * 1e3) / 1e3;
 const r2 = (x) => Math.round(x * 1e2) / 1e2;
 const iso = (sec) => new Date(sec * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
-const ASSURANCE = 0.9;
+const SELECTION_CONFIDENCE = 0.98;
+const APPROVAL_CONFIDENCE = 0.9;
 const confidenceFor = (quantile, n) => 1 / (1 + Math.exp(-(quantile - 0.9) * Math.sqrt(Math.max(1, n)) * 5));
 
 // Compliance quantile recall as a function of ef. The generated training
@@ -65,14 +66,14 @@ function genCohort(cfg) {
     const failed = transient ? Math.round(18 + 8 * rnd()) : Math.round(1 + 4 * rnd());
     const measured = Math.round(unique * (1 + 0.08 * rnd()));
     const available = measured + failed + Math.round(unique * 0.05);
-    const train = Math.round(unique * 0.7);
+    const train = Math.round(unique * 0.6);
     const test = unique - train;
     const trainCeiling = 1 - Math.pow(0.9, train + 1);
     const testCeiling = 1 - Math.pow(0.9, test + 1);
-    const insufficient = transient || train === 0 || test === 0 || trainCeiling < ASSURANCE || testCeiling < ASSURANCE;
+    const insufficient = transient || train === 0 || test === 0 || trainCeiling < SELECTION_CONFIDENCE || testCeiling < APPROVAL_CONFIDENCE;
     const trainScores = per_ef.map((p) => ({ ef: p.ef, confidence: confidenceFor(p.quantile_recall, train) }));
-    const cleared = trainScores.find((p) => p.confidence >= ASSURANCE);
-    const highestClears = trainScores[trainScores.length - 1].confidence >= ASSURANCE;
+    const cleared = trainScores.find((p) => p.confidence >= SELECTION_CONFIDENCE);
+    const highestClears = trainScores[trainScores.length - 1].confidence >= SELECTION_CONFIDENCE;
     const recommended = highestClears ? cleared.ef : EF_GRID[EF_GRID.length - 1];
     const recSummary = per_ef.find((p) => p.ef === recommended);
     const selectedTrain = trainScores.find((p) => p.ef === recommended);
@@ -95,7 +96,7 @@ function genCohort(cfg) {
       train_compliance = r4(Math.max(0, Math.min(1, 0.9 + (train_q - 0.9) * 1.5)));
       test_compliance = r4(Math.max(0, Math.min(1, 0.9 + (test_q - 0.9) * 1.5)));
       confidence = r4(Math.min(0.995, confidenceFor(test_q, test) * (0.985 + 0.03 * rnd())));
-      if (status === "ok" && confidence >= ASSURANCE) {
+      if (status === "ok" && confidence >= APPROVAL_CONFIDENCE) {
         effective = { recommended_ef, confidence, source_round: computedAt, carried: false };
       } else if (effective) effective = { ...effective, carried: true };
     } else {
@@ -112,7 +113,7 @@ function genCohort(cfg) {
       cohort: cfg.name,
       computed_at: computedAt,
       window: { start: windowStart, end: windowEnd, duration_seconds: 600 },
-      target: { name: "demo_recall", k: 10, value: 0.9, percentile: 0.9, confidence: ASSURANCE },
+      target: { name: "demo_recall", k: 10, value: 0.9, percentile: 0.9, selection_confidence: SELECTION_CONFIDENCE, approval_confidence: APPROVAL_CONFIDENCE },
       index: cfg.index,
       ef_grid: EF_GRID.slice(),
       status,

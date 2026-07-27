@@ -22,6 +22,14 @@ round's candidate underneath when it differs. A history row reads
 target. A hollow marker on the left chart means the round kept the previous
 recommendation.
 
+Each round passes an ef through two gates, both shown in the expanded history
+with the statistics they judge directly beneath them: the **selection gate**
+on the train split decides which ef is worth proposing, and the **approval
+gate** on the holdout decides whether it may replace what is applied. Reading
+the train and holdout columns against each other is the main tuning signal —
+a candidate whose holdout confidence sits persistently below the approval
+gate means the selection gate is too low for this cohort's sample volume.
+
 
 ## What it reads
 

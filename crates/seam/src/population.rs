@@ -184,7 +184,7 @@ pub(crate) fn select_and_validate(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, AggregateError>>()?;
-    let selected = select_ef(&train_confidences, config.confidence)?;
+    let selected = select_ef(&train_confidences, config.selection_confidence)?;
     let train_stats = evaluate_split(config, train, selected.recommended_ef)?;
     let holdout = evaluate_split(config, test, selected.recommended_ef)?;
     Ok(CompletedSelection {

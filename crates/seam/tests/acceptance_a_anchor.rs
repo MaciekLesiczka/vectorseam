@@ -30,7 +30,8 @@ static COMPARISON: OnceLock<Result<AnchorComparison, String>> = OnceLock::new();
 #[derive(Debug, Deserialize)]
 struct AnchorOutput {
     value: f64,
-    target_confidence: f64,
+    selection_confidence: f64,
+    approval_confidence: f64,
     confidence: f64,
     query_order: Vec<i64>,
     recall_rows: Vec<AnchorRecallRow>,
@@ -153,7 +154,8 @@ fn required_comparison() -> &'static AnchorComparison {
 fn build_comparison() -> Result<AnchorComparison> {
     let anchor = read_anchor_comparison::<AnchorOutput>()?;
     ensure!(anchor.value == 0.8);
-    ensure!(anchor.target_confidence == 0.9);
+    ensure!(anchor.selection_confidence == 0.9);
+    ensure!(anchor.approval_confidence == 0.9);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -292,7 +294,7 @@ fn build_comparison() -> Result<AnchorComparison> {
             .abs(),
         tuner_holdout_approved: output
             .confidence
-            .is_some_and(|confidence| confidence >= output.target.confidence),
+            .is_some_and(|confidence| confidence >= output.target.approval_confidence),
         anchor_holdout_approved: anchor.holdout_approved,
     })
 }
@@ -339,7 +341,8 @@ fn anchor_config() -> Config {
                 k: 10,
                 value: 0.8,
                 percentile: 0.90,
-                confidence: 0.90,
+                selection_confidence: 0.90,
+                approval_confidence: 0.90,
                 window: Duration::from_secs(u64::from(WINDOW_SECONDS)),
             },
         )]),

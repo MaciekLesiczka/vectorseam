@@ -453,7 +453,7 @@ class Component extends DCLogic {
   hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
   rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
   holdoutApproved(rd) {
-    return rd.confidence != null && rd.confidence >= rd.target.confidence;
+    return rd.confidence != null && rd.confidence >= rd.target.approval_confidence;
   }
   // Two badges, two subjects. A round's status describes what *that round*
   // decided about its own candidate; the card describes the recommendation
@@ -526,7 +526,7 @@ class Component extends DCLogic {
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
-      const refs = cohorts.map((name) => store[name].latest.target.confidence);
+      const refs = cohorts.map((name) => store[name].latest.target.approval_confidence);
       const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
         .filter((v, i, values) => values.findIndex((x) => Math.abs(x - v) < 1e-9) === i)
         .sort((a, b) => b - a);
@@ -631,7 +631,7 @@ class Component extends DCLogic {
           : '',
         confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
         confBarW: confVal != null ? Math.round(confVal * 100) : 0,
-        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round(latest.target.confidence * 100) + ' · k=' + latest.target.k,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · sel ' + Math.round(latest.target.selection_confidence * 100) + '/app ' + Math.round(latest.target.approval_confidence * 100) + ' · k=' + latest.target.k,
         gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
         uniqueText: latest.samples.unique.toLocaleString(),
         sparkPath: spark.path, sparkDot: spark.dot,
@@ -688,21 +688,26 @@ class Component extends DCLogic {
       const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '—';
       const num = (v) => v != null ? v.toFixed(3) : '—';
       // The grid is exactly two columns, so consecutive pairs sit side by side.
-      // Train metrics take the left column and holdout the right, and the three
-      // statistics appear in the same order on both sides.
+      // Train metrics take the left column and holdout the right; the gates head
+      // that block so each threshold sits directly above the statistics judged
+      // against it, and the three statistics appear in the same order on both
+      // sides. Reading straight down the columns compares the split that chose
+      // the candidate against the split that judged it.
       const metrics = [
         { label: 'Candidate ef', value: candidateEf != null ? String(candidateEf) : '—' },
         { label: 'Recommended ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Window', value: this.fmtWindow(w) },
-        { label: 'Assurance target', value: Math.round(rd.target.confidence * 100) + '%' },
+        { label: 'Unique samples', value: sm.unique.toLocaleString() },
+        { label: 'Selection gate', value: Math.round(rd.target.selection_confidence * 100) + '%' },
+        { label: 'Approval gate', value: Math.round(rd.target.approval_confidence * 100) + '%' },
+        { label: 'Train samples', value: sm.train.toLocaleString() },
+        { label: 'Holdout samples', value: sm.test.toLocaleString() },
         { label: 'Train recall', value: num(rd.train_quantile_recall) },
         { label: 'Holdout recall', value: num(rd.test_quantile_recall) },
         { label: 'Train compliance', value: pct(rd.train_compliance) },
         { label: 'Holdout compliance', value: pct(rd.test_compliance) },
         { label: 'Train confidence', value: pct(rd.train_confidence) },
         { label: 'Holdout confidence', value: pct(rd.confidence) },
-        { label: 'Train / holdout samples', value: sm.train.toLocaleString() + ' / ' + sm.test.toLocaleString() },
-        { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
         { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + Math.round(c.empty_window_fraction * 100) + '% empty' },
