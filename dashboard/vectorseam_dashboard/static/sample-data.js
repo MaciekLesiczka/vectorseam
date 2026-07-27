@@ -154,4 +154,3 @@ export const SAMPLE_STORE = CONFIGS.reduce((acc, cfg) => {
   acc[cfg.name] = { rounds, latest: rounds[rounds.length - 1] };
   return acc;
 }, {});
-export const EF_GRID_VALUES = EF_GRID;

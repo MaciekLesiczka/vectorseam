@@ -319,7 +319,6 @@
 </x-dc>
 <script type="text/x-dc" data-dc-script data-props="{&quot;showTradeoffCurve&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;visibleRounds&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;default&quot;:24,&quot;min&quot;:6,&quot;max&quot;:28,&quot;step&quot;:1,&quot;unit&quot;:&quot; rounds&quot;,&quot;tsType&quot;:&quot;number&quot;,&quot;section&quot;:&quot;Charts&quot;},&quot;expandFirstRound&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;History&quot;}}">
 class Component extends DCLogic {
-  EF = [10, 20, 40, 60, 80, 100, 150, 200, 300, 400];
   COLORS = { 'superuser': 'oklch(0.83 0.11 195)', 'products/search': 'oklch(0.76 0.13 292)', 'support/tickets': 'oklch(0.84 0.12 74)' };
   PALETTE = ['oklch(0.83 0.11 195)', 'oklch(0.76 0.13 292)', 'oklch(0.84 0.12 74)', 'oklch(0.80 0.13 150)', 'oklch(0.74 0.15 18)'];
   CW = 760; CH = 290; PX0 = 46; PX1 = 742; PY0 = 14; PY1 = 260;
@@ -407,7 +406,31 @@ class Component extends DCLogic {
   colorFor(name, i) { return this.COLORS[name] || this.PALETTE[i % this.PALETTE.length]; }
   r(x) { return Math.round(x * 100) / 100; }
   xAt(i, n) { return this.PX0 + (n <= 1 ? 0 : (i / (n - 1))) * (this.PX1 - this.PX0); }
-  efY(ef) { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.PY1 - t * (this.PY1 - this.PY0); }
+  // The ef grid is per-cohort configuration and is published in every round
+  // record, so the axis is derived from the data rather than assumed. A
+  // hardcoded grid silently mislocates any ef it does not contain — an ef
+  // missing from it lands at index -1, and an ef at a different position than
+  // the round's own grid draws one or more grid steps away from the truth.
+  // Rounds published before a config change may carry a different grid, so the
+  // scale spans the union of everything on screen.
+  efGridFor(cohorts, store) {
+    const seen = new Set();
+    cohorts.forEach((name) => {
+      const cohort = store[name];
+      [cohort.latest, ...cohort.rounds].forEach((rd) => {
+        (rd && rd.ef_grid ? rd.ef_grid : []).forEach((ef) => seen.add(ef));
+      });
+    });
+    return [...seen].sort((a, b) => a - b);
+  }
+  // Returns null for an ef outside the scale so callers can skip the point
+  // rather than draw it at the axis floor.
+  efY(ef, grid) {
+    const gi = grid.indexOf(ef);
+    if (gi < 0) return null;
+    const t = grid.length <= 1 ? 1 : gi / (grid.length - 1);
+    return this.PY1 - t * (this.PY1 - this.PY0);
+  }
   confY(v) { const vv = Math.max(0.4, Math.min(1, v)); return this.PY1 - ((vv - 0.4) / 0.6) * (this.PY1 - this.PY0); }
   // Holdout confidence spans the full [0, 1] — it routinely sits well below 0.40
   // (e.g. sparse rounds), so the confidence chart cannot share confY's [0.4, 1]
@@ -482,7 +505,7 @@ class Component extends DCLogic {
   }
   vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
 
-  buildTimeChart(metric, cohorts, store, colors, n, hoverIndex) {
+  buildTimeChart(metric, cohorts, store, colors, n, hoverIndex, efGrid) {
     const first = store[cohorts[0]].rounds;
     const nn = Math.min(n, first.length);
     const series = cohorts.map((name) => {
@@ -495,10 +518,10 @@ class Component extends DCLogic {
         // Solid = the round published a fresh recommendation; hollow = it kept
         // the previous one. Both read off `effective`, so this panel answers
         // "what is in force" without reference to the round's own candidate.
-        if (metric === 'ef') { if (rd.effective && !rd.effective.carried) { val = rd.effective.recommended_ef; y = this.efY(val); } }
+        if (metric === 'ef') { if (rd.effective && !rd.effective.carried) { const ey = this.efY(rd.effective.recommended_ef, efGrid); if (ey != null) { val = rd.effective.recommended_ef; y = ey; } } }
         else { if (rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
         if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
-        else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
+        else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) { const cy = this.efY(rd.effective.recommended_ef, efGrid); if (cy != null) carried.push({ cx: this.r(x), cy: this.r(cy) }); } }
       });
       if (cur.length) segs.push(cur);
       const path = segs.map((sg) => sg.map((p, j) => (j ? 'L' : 'M') + this.r(p[0]) + ' ' + this.r(p[1])).join(' ')).join(' ');
@@ -515,8 +538,9 @@ class Component extends DCLogic {
       const rounds = this.vis(store[name].rounds, nn);
       const pts = []; const segs = []; let cur = [];
       rounds.forEach((rd, i) => {
-        if (rd.recommended_ef == null) { if (cur.length) { segs.push(cur); cur = []; } return; }
-        const x = this.xAt(i, nn); const y = this.efY(rd.recommended_ef);
+        const y = rd.recommended_ef == null ? null : this.efY(rd.recommended_ef, efGrid);
+        if (y == null) { if (cur.length) { segs.push(cur); cur = []; } return; }
+        const x = this.xAt(i, nn);
         cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) });
       });
       if (cur.length) segs.push(cur);
@@ -524,7 +548,11 @@ class Component extends DCLogic {
     }) : [];
     const hLines = [];
     if (metric === 'ef') {
-      this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
+      const labelStep = Math.max(1, Math.ceil(efGrid.length / 5));
+      efGrid.forEach((ef, gi) => {
+        const labelled = gi % labelStep === 0 || gi === efGrid.length - 1;
+        hLines.push({ y: this.r(this.efY(ef, efGrid)), label: labelled ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' });
+      });
     } else {
       const refs = cohorts.map((name) => store[name].latest.target.approval_confidence);
       const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
@@ -560,7 +588,7 @@ class Component extends DCLogic {
     const recallPath = recallPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const latPath = latPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const recEf = round.effective ? round.effective.recommended_ef : null;
-    const recGi = recEf != null ? this.EF.indexOf(recEf) : -1;
+    const recGi = recEf != null ? per.findIndex((p) => p.ef === recEf) : -1;
     const latColor = 'oklch(0.82 0.1 62)';
     // Hover snaps to the nearest grid position; a solid vertical guide (vs the
     // dashed recommended-ef line) plus a readout of that ef's exact values.
@@ -587,12 +615,12 @@ class Component extends DCLogic {
     };
   }
 
-  buildSpark(name, store, n) {
+  buildSpark(name, store, n, efGrid) {
     const rounds = this.vis(store[name].rounds, n); const W = 120, H = 34, p = 3;
     const xs = (i) => this.r(p + (rounds.length <= 1 ? 0 : (i / (rounds.length - 1))) * (W - 2 * p));
-    const ey = (ef) => { const gi = this.EF.indexOf(ef); const t = gi < 0 ? 0 : gi / (this.EF.length - 1); return this.r(H - p - t * (H - 2 * p)); };
+    const ey = (ef) => { const gi = efGrid.indexOf(ef); if (gi < 0) return null; const t = efGrid.length <= 1 ? 1 : gi / (efGrid.length - 1); return this.r(H - p - t * (H - 2 * p)); };
     const pts = [];
-    rounds.forEach((rd, i) => { const ef = rd.effective ? rd.effective.recommended_ef : null; if (ef != null) pts.push([xs(i), ey(ef)]); });
+    rounds.forEach((rd, i) => { const ef = rd.effective ? rd.effective.recommended_ef : null; const y = ef == null ? null : ey(ef); if (y != null) pts.push([xs(i), y]); });
     return { path: pts.map((p2, j) => (j ? 'L' : 'M') + p2[0] + ' ' + p2[1]).join(' '), dot: pts.length ? { cx: pts[pts.length - 1][0], cy: pts[pts.length - 1][1] } : null };
   }
 
@@ -605,6 +633,7 @@ class Component extends DCLogic {
     const total = store[cohorts[0]].rounds.length;
     const refNow = store[cohorts[0]].latest.computed_at;
     const n = Math.max(6, Math.min(total, s.chartRange || 24));
+    const efGrid = this.efGridFor(cohorts, store);
 
     const cards = cohorts.map((name) => {
       const latest = store[name].latest; const meta = this.cardStatusMeta(latest); const color = colors[name];
@@ -617,7 +646,7 @@ class Component extends DCLogic {
       const effEf = latest.effective ? latest.effective.recommended_ef : null;
       const candidateEf = latest.recommended_ef;
       const showCandidate = candidateEf != null && candidateEf !== effEf;
-      const spark = this.buildSpark(name, store, n);
+      const spark = this.buildSpark(name, store, n, efGrid);
       return {
         name, index: latest.index, statusLabel: meta.label, color, efColor: color, selected,
         onSelect: () => this.setState({ selectedCohort: name }),
@@ -651,8 +680,8 @@ class Component extends DCLogic {
         fg: active ? 'oklch(0.9 0.09 195)' : 'oklch(0.62 0.012 258)' };
     });
 
-    const efChart = this.buildTimeChart('ef', cohorts, store, colors, n, s.hoverIndex);
-    const confChart = this.buildTimeChart('conf', cohorts, store, colors, n, s.hoverIndex);
+    const efChart = this.buildTimeChart('ef', cohorts, store, colors, n, s.hoverIndex, efGrid);
+    const confChart = this.buildTimeChart('conf', cohorts, store, colors, n, s.hoverIndex, efGrid);
     const onHoverMove = (e) => {
       const rect = e.currentTarget.getBoundingClientRect();
       const vx = (e.clientX - rect.left) / rect.width * this.CW;
