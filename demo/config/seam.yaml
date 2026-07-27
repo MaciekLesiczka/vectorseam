@@ -30,7 +30,8 @@ targets:
     k: 10
     value: 0.9
     percentile: 0.90
-    confidence: 0.90
+    selection_confidence: 0.98
+    approval_confidence: 0.90
     window: 600s
 
 cohorts:

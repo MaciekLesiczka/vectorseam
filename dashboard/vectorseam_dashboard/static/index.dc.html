@@ -220,7 +220,7 @@
             </div>
             <div style="display:flex;gap:16px;">
               <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.color }};"></span>quantile recall</span>
-              <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.latColor }};"></span>p50 latency</span>
+              <span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:oklch(0.66 0.012 258);"><span style="width:16px;height:2.5px;border-radius:2px;background:{{ tradeoff.latColor }};"></span>mean latency</span>
             </div>
             <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onTradeoffMove }}" onMouseLeave="{{ onTradeoffLeave }}">
               <sc-for list="{{ tradeoff.leftTicks }}" as="h" hint-placeholder-count="4">
@@ -295,7 +295,7 @@
                     </div>
                     <div style="display:flex;flex-direction:column;gap:3px;">
                       <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:4px 10px;font:600 10px 'IBM Plex Sans',sans-serif;letter-spacing:0.07em;text-transform:uppercase;color:oklch(0.52 0.014 258);">
-                        <span>ef</span><span>quantile</span><span>mean</span><span>p50 ms</span>
+                        <span>ef</span><span>quantile</span><span>mean</span><span>mean ms</span>
                       </div>
                       <sc-for list="{{ r.perEf }}" as="p" hint-placeholder-count="10">
                         <div style="{{ p.rowStyle }}"><span>{{ p.ef }}</span><span>{{ p.q }}</span><span>{{ p.mean }}</span><span>{{ p.lat }}</span></div>
@@ -453,7 +453,7 @@ class Component extends DCLogic {
   hms(s) { const d = new Date(s); return this.hm(s) + ':' + this.pad2(d.getUTCSeconds()); }
   rel(s, now) { const d = (new Date(now) - new Date(s)) / 1000; if (d < 45) return 'just now'; if (d < 5400) return Math.round(d / 60) + 'm ago'; return Math.round(d / 3600) + 'h ago'; }
   holdoutApproved(rd) {
-    return rd.confidence != null && rd.confidence >= rd.target.confidence;
+    return rd.confidence != null && rd.confidence >= rd.target.approval_confidence;
   }
   // Two badges, two subjects. A round's status describes what *that round*
   // decided about its own candidate; the card describes the recommendation
@@ -526,7 +526,7 @@ class Component extends DCLogic {
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
-      const refs = cohorts.map((name) => store[name].latest.target.confidence);
+      const refs = cohorts.map((name) => store[name].latest.target.approval_confidence);
       const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
         .filter((v, i, values) => values.findIndex((x) => Math.abs(x - v) < 1e-9) === i)
         .sort((a, b) => b - a);
@@ -550,13 +550,13 @@ class Component extends DCLogic {
 
   buildTradeoff(name, store, color, hoverGi) {
     const round = store[name].latest; const per = round.per_ef; const n = per.length;
-    const maxLat = Math.max.apply(null, per.map((p) => p.latency_p50_ms));
+    const maxLat = Math.max.apply(null, per.map((p) => p.latency_mean_ms));
     const niceMax = Math.max(10, Math.ceil(maxLat / 10) * 10);
     const xO = (gi) => this.r(this.PX0 + (gi / (n - 1)) * (this.PX1 - this.PX0));
     const rY = (v) => this.r(this.confY(v));
     const lY = (l) => this.r(this.PY1 - (l / niceMax) * (this.PY1 - this.PY0));
     const recallPts = per.map((p, gi) => ({ cx: xO(gi), cy: rY(p.quantile_recall) }));
-    const latPts = per.map((p, gi) => ({ cx: xO(gi), cy: lY(p.latency_p50_ms) }));
+    const latPts = per.map((p, gi) => ({ cx: xO(gi), cy: lY(p.latency_mean_ms) }));
     const recallPath = recallPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const latPath = latPts.map((p, j) => (j ? 'L' : 'M') + p.cx + ' ' + p.cy).join(' ');
     const recEf = round.effective ? round.effective.recommended_ef : null;
@@ -569,11 +569,11 @@ class Component extends DCLogic {
       const p = per[hoverGi];
       hasHover = true; hoverX = xO(hoverGi); hoverEf = 'ef ' + p.ef;
       recallDot = { cx: xO(hoverGi), cy: rY(p.quantile_recall) };
-      latDot = { cx: xO(hoverGi), cy: lY(p.latency_p50_ms) };
+      latDot = { cx: xO(hoverGi), cy: lY(p.latency_mean_ms) };
       readoutRows = [
         { color, name: 'quantile recall', text: p.quantile_recall.toFixed(3) },
         { color, name: 'mean recall', text: p.mean_recall.toFixed(3) },
-        { color: latColor, name: 'p50 latency', text: p.latency_p50_ms.toFixed(1) + ' ms' },
+        { color: latColor, name: 'mean latency', text: p.latency_mean_ms.toFixed(1) + ' ms' },
       ];
     }
     return {
@@ -631,7 +631,7 @@ class Component extends DCLogic {
           : '',
         confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
         confBarW: confVal != null ? Math.round(confVal * 100) : 0,
-        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round(latest.target.confidence * 100) + ' · k=' + latest.target.k,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · sel ' + Math.round(latest.target.selection_confidence * 100) + '/app ' + Math.round(latest.target.approval_confidence * 100) + ' · k=' + latest.target.k,
         gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
         uniqueText: latest.samples.unique.toLocaleString(),
         sparkPath: spark.path, sparkDot: spark.dot,
@@ -688,21 +688,26 @@ class Component extends DCLogic {
       const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '—';
       const num = (v) => v != null ? v.toFixed(3) : '—';
       // The grid is exactly two columns, so consecutive pairs sit side by side.
-      // Train metrics take the left column and holdout the right, and the three
-      // statistics appear in the same order on both sides.
+      // Train metrics take the left column and holdout the right; the gates head
+      // that block so each threshold sits directly above the statistics judged
+      // against it, and the three statistics appear in the same order on both
+      // sides. Reading straight down the columns compares the split that chose
+      // the candidate against the split that judged it.
       const metrics = [
         { label: 'Candidate ef', value: candidateEf != null ? String(candidateEf) : '—' },
         { label: 'Recommended ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Window', value: this.fmtWindow(w) },
-        { label: 'Assurance target', value: Math.round(rd.target.confidence * 100) + '%' },
+        { label: 'Unique samples', value: sm.unique.toLocaleString() },
+        { label: 'Selection gate', value: Math.round(rd.target.selection_confidence * 100) + '%' },
+        { label: 'Approval gate', value: Math.round(rd.target.approval_confidence * 100) + '%' },
+        { label: 'Train samples', value: sm.train.toLocaleString() },
+        { label: 'Holdout samples', value: sm.test.toLocaleString() },
         { label: 'Train recall', value: num(rd.train_quantile_recall) },
         { label: 'Holdout recall', value: num(rd.test_quantile_recall) },
         { label: 'Train compliance', value: pct(rd.train_compliance) },
         { label: 'Holdout compliance', value: pct(rd.test_compliance) },
         { label: 'Train confidence', value: pct(rd.train_confidence) },
         { label: 'Holdout confidence', value: pct(rd.confidence) },
-        { label: 'Train / holdout samples', value: sm.train.toLocaleString() + ' / ' + sm.test.toLocaleString() },
-        { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
         { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + Math.round(c.empty_window_fraction * 100) + '% empty' },
@@ -711,7 +716,7 @@ class Component extends DCLogic {
         { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
       ];
       const perEf = rd.per_ef.map((p) => ({
-        ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),
+        ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_mean_ms.toFixed(1),
         rowStyle: "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:6px 10px;border-radius:7px;font:500 12.5px/1.2 'IBM Plex Mono',monospace;" + (p.ef === candidateEf ? 'background:color-mix(in oklab, ' + selColor + ' 16%, transparent);color:oklch(0.96 0.004 258);' : 'color:oklch(0.7 0.012 258);'),
       }));
       return {

@@ -23,7 +23,8 @@ _DATASET = "seam_fixture"
 _K = 10
 _EF_GRID = [10, 20, 40, 80, 160]
 _PERCENTILE = 0.90
-_CONFIDENCE = 0.90
+_SELECTION_CONFIDENCE = 0.90
+_APPROVAL_CONFIDENCE = 0.90
 _VALUE = 0.8
 _TRAIN_FRACTION = 0.7
 _SPLIT_SEED = 7
@@ -116,13 +117,13 @@ def _product_calibration(
             len(recalls), successes
         )
     maximum_ef = max(_EF_GRID)
-    if train_confidences[maximum_ef] < _CONFIDENCE:
+    if train_confidences[maximum_ef] < _SELECTION_CONFIDENCE:
         selected_ef = maximum_ef
     else:
         clearing = [
             ef_search
             for ef_search, confidence in train_confidences.items()
-            if confidence >= _CONFIDENCE
+            if confidence >= _SELECTION_CONFIDENCE
         ]
         selected_ef = min(clearing)
     test_recalls = recalls_for(selected_ef, test_ids)
@@ -139,7 +140,7 @@ def _product_calibration(
         "test_quantile_recall": analyze._p10_for_subset(
             rows, _DATASET, selected_ef, test_ids
         ),
-        "holdout_approved": confidence >= _CONFIDENCE,
+        "holdout_approved": confidence >= _APPROVAL_CONFIDENCE,
     }
 
 
@@ -211,7 +212,8 @@ def run_anchor(
         "k": _K,
         "ef_grid": _EF_GRID,
         "percentile": _PERCENTILE,
-        "target_confidence": _CONFIDENCE,
+        "selection_confidence": _SELECTION_CONFIDENCE,
+        "approval_confidence": _APPROVAL_CONFIDENCE,
         "value": _VALUE,
         "train_fraction": _TRAIN_FRACTION,
         "split_seed": _SPLIT_SEED,

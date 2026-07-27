@@ -1187,7 +1187,8 @@ mod tests {
                 ..aggregation_config(10)
             },
             AggregationConfig {
-                confidence: 0.8,
+                selection_confidence: 0.8,
+                approval_confidence: 0.8,
                 ..aggregation_config(10)
             },
         ] {
@@ -1579,7 +1580,8 @@ mod tests {
             k,
             value: 0.9,
             percentile: 0.95,
-            confidence: 0.75,
+            selection_confidence: 0.75,
+            approval_confidence: 0.75,
             window_duration_seconds: u64::from(WINDOW_SECONDS),
             storage_window_seconds: WINDOW_SECONDS,
             ef_grid: if k == 10 {

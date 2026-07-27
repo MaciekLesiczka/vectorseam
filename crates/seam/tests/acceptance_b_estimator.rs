@@ -64,6 +64,37 @@ fn b5_selects_smallest_clearing_ef_40() {
 }
 
 #[test]
+fn b5_selection_gate_above_approval_gate_picks_a_higher_ef() {
+    // The holdout is the smaller split, so for the same underlying compliance
+    // its posterior is wider and its confidence lower. Selecting at the
+    // approval threshold therefore proposes ef values the holdout cannot
+    // confirm; raising the selection gate is what buys the margin back.
+    let confidences = BTreeMap::from([(10, 0.62), (20, 0.85), (40, 0.91), (80, 0.93), (160, 0.99)]);
+
+    let at_approval_gate = select_ef(&confidences, 0.90).unwrap();
+    let at_selection_gate = select_ef(&confidences, 0.98).unwrap();
+
+    assert_eq!(at_approval_gate.recommended_ef, 40);
+    assert_eq!(at_selection_gate.recommended_ef, 160);
+    assert_eq!(at_selection_gate.status, RoundStatus::Ok);
+}
+
+#[test]
+fn b5_split_sizes_make_the_same_compliance_less_confident_on_holdout() {
+    // 1000 samples at a 0.6 split, 92% compliant on both sides against
+    // percentile 0.90. Identical evidence *rate*, different sample counts.
+    let train = compliance_confidence(600, 552, 0.9).unwrap();
+    let holdout = compliance_confidence(400, 368, 0.9).unwrap();
+
+    assert!((train - 0.946_038).abs() < 1e-5, "train {train}");
+    assert!((holdout - 0.899_836).abs() < 1e-5, "holdout {holdout}");
+    // A single shared gate anywhere in this band selects on train and then
+    // fails on holdout every round. That gap is what the two thresholds
+    // absorb, and it widens as train_fraction rises.
+    assert!(train > 0.92 && holdout < 0.92);
+}
+
+#[test]
 fn b6_target_unmet_is_decided_by_the_highest_ef() {
     let non_monotone_confidences = BTreeMap::from([(20, 0.95), (40, 0.85)]);
 
@@ -92,11 +123,11 @@ fn b5_more_evidence_can_reduce_the_selected_ef() {
 fn b5_rejects_invalid_direct_aggregation_confidence() {
     let recalls = EF_GRID.into_iter().map(|ef| (ef, 1.0)).collect();
     let mut input = populated_input(100, 0.9, &recalls);
-    input.config.confidence = f64::NAN;
+    input.config.selection_confidence = f64::NAN;
 
     let error = aggregate(&input).unwrap_err().to_string();
 
-    assert!(error.contains("confidence must be in (0, 1)"));
+    assert!(error.contains("selection_confidence must be in (0, 1)"));
 }
 
 #[test]
@@ -104,7 +135,7 @@ fn b5_selection_requires_train_confidence_not_only_a_clearing_quantile() {
     let recalls = BTreeMap::from([(10, 0.8), (20, 0.9), (40, 1.0), (80, 1.0), (160, 1.0)]);
     let mut input = populated_input(100, 0.9, &recalls);
     input.config.percentile = 0.9;
-    input.config.confidence = 0.9;
+    input.config.selection_confidence = 0.9;
 
     let mut failures = 0;
     for sample in &mut input.intermediates[0].samples {
@@ -140,7 +171,7 @@ fn b5_selection_requires_train_confidence_not_only_a_clearing_quantile() {
 
     assert_eq!(observed.status, RoundStatus::Ok);
     assert_eq!(observed.recommended_ef, Some(40));
-    assert!(observed.train_confidence.unwrap() >= input.config.confidence);
+    assert!(observed.train_confidence.unwrap() >= input.config.selection_confidence);
 }
 
 #[test]
@@ -168,7 +199,7 @@ fn b5_holdout_below_target_carries_effective_recommendation() {
 
     assert_eq!(observed.status, RoundStatus::Ok);
     assert_eq!(observed.recommended_ef, Some(40));
-    assert!(observed.confidence.unwrap() < input.config.confidence);
+    assert!(observed.confidence.unwrap() < input.config.approval_confidence);
     let effective = observed.effective.unwrap();
     assert_eq!(effective.recommended_ef, previous_effective.recommended_ef);
     assert_eq!(effective.confidence, previous_effective.confidence);
@@ -244,7 +275,8 @@ fn b7_realized_empty_split_is_insufficient_even_when_ceiling_clears() {
     let mut input = populated_input(100, 0.9, &recalls);
     input.config.train_fraction = 0.0001;
     input.config.percentile = 0.9;
-    input.config.confidence = 0.05;
+    input.config.selection_confidence = 0.05;
+    input.config.approval_confidence = 0.05;
     assert!(
         (0_u64..100).all(|hash| !is_train_member(hash, 7, input.config.train_fraction).unwrap())
     );
@@ -513,7 +545,8 @@ fn aggregation_config(value: f64) -> AggregationConfig {
         k: 10,
         value,
         percentile: 0.95,
-        confidence: 0.9,
+        selection_confidence: 0.9,
+        approval_confidence: 0.9,
         window_duration_seconds: 600,
         storage_window_seconds: 600,
         ef_grid: EF_GRID.to_vec(),

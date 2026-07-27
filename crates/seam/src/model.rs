@@ -28,8 +28,10 @@ pub struct AggregationConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
-    /// Required posterior probability that compliance clears `percentile`.
-    pub confidence: f64,
+    /// Train-side posterior probability required before an ef is proposed.
+    pub selection_confidence: f64,
+    /// Holdout-side posterior probability required before an ef is applied.
+    pub approval_confidence: f64,
     /// Rolling target duration in seconds.
     pub window_duration_seconds: u64,
     /// Collector storage-window duration in seconds.
@@ -61,7 +63,8 @@ impl AggregationConfig {
             k: target.k,
             value: target.value,
             percentile: target.percentile,
-            confidence: target.confidence,
+            selection_confidence: target.selection_confidence,
+            approval_confidence: target.approval_confidence,
             window_duration_seconds: target.window.as_secs(),
             storage_window_seconds: config.storage.window_seconds,
             ef_grid: config.calibration.ef_search.clone(),
@@ -218,8 +221,10 @@ pub struct RoundTarget {
     pub value: f64,
     /// Required compliant fraction.
     pub percentile: f64,
-    /// Required posterior probability that compliance clears `percentile`.
-    pub confidence: f64,
+    /// Train-side posterior probability required before an ef is proposed.
+    pub selection_confidence: f64,
+    /// Holdout-side posterior probability required before an ef is applied.
+    pub approval_confidence: f64,
 }
 
 /// Published rolling-window description.
@@ -270,8 +275,8 @@ pub struct PerEfSummary {
     pub quantile_recall: f64,
     /// Full-population arithmetic mean recall.
     pub mean_recall: f64,
-    /// Full-population type-7 median client latency.
-    pub latency_p50_ms: f64,
+    /// Full-population arithmetic mean client latency.
+    pub latency_mean_ms: f64,
 }
 
 /// Client-facing recommendation to apply until a newer round supersedes it.

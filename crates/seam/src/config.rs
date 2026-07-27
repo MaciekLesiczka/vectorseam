@@ -97,8 +97,10 @@ pub struct TargetConfig {
     pub value: f64,
     /// Required compliant population fraction.
     pub percentile: f64,
-    /// Required posterior probability that compliance clears `percentile`.
-    pub confidence: f64,
+    /// Train-side posterior probability required before an ef is proposed.
+    pub selection_confidence: f64,
+    /// Holdout-side posterior probability required before an ef is applied.
+    pub approval_confidence: f64,
     /// Rolling calibration-window duration.
     pub window: Duration,
 }
@@ -238,8 +240,10 @@ struct RawTargetConfig {
     k: u32,
     value: f64,
     percentile: f64,
-    #[serde(default = "default_confidence")]
-    confidence: f64,
+    #[serde(default = "default_selection_confidence")]
+    selection_confidence: f64,
+    #[serde(default = "default_approval_confidence")]
+    approval_confidence: f64,
     #[serde(deserialize_with = "deserialize_duration")]
     window: Duration,
 }
@@ -332,7 +336,8 @@ impl Config {
                         k: target.k,
                         value: target.value,
                         percentile: target.percentile,
-                        confidence: target.confidence,
+                        selection_confidence: target.selection_confidence,
+                        approval_confidence: target.approval_confidence,
                         window: target.window,
                     },
                 )
@@ -521,9 +526,14 @@ fn validate_targets(
                 "target {name:?} percentile must be in (0, 1)"
             )));
         }
-        if !(target.confidence > 0.0 && target.confidence < 1.0) {
+        if !(target.selection_confidence > 0.0 && target.selection_confidence < 1.0) {
             return Err(invalid(format!(
-                "target {name:?} confidence must be in (0, 1)"
+                "target {name:?} selection_confidence must be in (0, 1)"
+            )));
+        }
+        if !(target.approval_confidence > 0.0 && target.approval_confidence < 1.0) {
+            return Err(invalid(format!(
+                "target {name:?} approval_confidence must be in (0, 1)"
             )));
         }
         if target.window.as_secs() < u64::from(storage_window_seconds) {
@@ -538,14 +548,28 @@ fn validate_targets(
                 "target {name:?} window must be a multiple of storage.window_seconds"
             )));
         }
-        // This derived log value is informational. Aggregation enforces the
-        // authoritative boundary with compliance_confidence().
-        let n_min = ((1.0 - target.confidence).ln() / target.percentile.ln()).ceil() as u64;
-        let n_min = n_min.saturating_sub(1);
+        // A selection threshold at or below the approval threshold inverts the
+        // design: it proposes ef values the smaller holdout cannot confirm, so
+        // rounds churn between selecting and failing to approve. Legal, but
+        // almost always a mistake, so it is loud rather than fatal.
+        if target.selection_confidence <= target.approval_confidence {
+            tracing::warn!(
+                target_name = name,
+                selection_confidence = target.selection_confidence,
+                approval_confidence = target.approval_confidence,
+                "selection_confidence is not above approval_confidence; the holdout \
+                 has fewer samples than the train split, so candidates chosen this \
+                 way will often fail approval"
+            );
+        }
+        // Derived log values, informational only. Aggregation enforces the
+        // authoritative boundaries with compliance_confidence(). Each split is
+        // sized against the threshold it must actually clear.
         tracing::info!(
             target_name = name,
-            n_min,
-            "derived per-split sample minimum"
+            train = split_minimum(target.selection_confidence, target.percentile),
+            holdout = split_minimum(target.approval_confidence, target.percentile),
+            "derived per-split sample minimums"
         );
     }
     Ok(())
@@ -578,16 +602,29 @@ where
     humantime::parse_duration(&text).map_err(serde::de::Error::custom)
 }
 
+/// Smallest split size whose all-success posterior can still reach `confidence`.
+///
+/// Inverts `1 − percentile^(n+1) ≥ confidence`. Reported at config load so an
+/// operator can see how much traffic a target needs before it can speak.
+fn split_minimum(confidence: f64, percentile: f64) -> u64 {
+    let exact = (1.0 - confidence).ln() / percentile.ln();
+    (exact.ceil() as u64).saturating_sub(1)
+}
+
 fn default_train_fraction() -> f64 {
-    0.7
+    0.6
 }
 
 fn default_split_seed() -> u64 {
     7
 }
 
-fn default_confidence() -> f64 {
-    0.95
+fn default_selection_confidence() -> f64 {
+    0.98
+}
+
+fn default_approval_confidence() -> f64 {
+    0.90
 }
 
 fn default_window_seconds() -> u32 {
@@ -647,9 +684,10 @@ cohorts:
     #[test]
     fn parses_defaults_and_quoted_identifiers() {
         let config = Config::from_yaml_str(VALID_CONFIG).unwrap();
-        assert_eq!(config.calibration.train_fraction, 0.7);
+        assert_eq!(config.calibration.train_fraction, 0.6);
         assert_eq!(config.calibration.split_seed, 7);
-        assert_eq!(config.targets["recall"].confidence, 0.95);
+        assert_eq!(config.targets["recall"].selection_confidence, 0.98);
+        assert_eq!(config.targets["recall"].approval_confidence, 0.90);
         assert_eq!(config.budget.statement_timeout, Duration::from_secs(5));
         assert_eq!(config.budget.client_timeout, Duration::from_secs(10));
         assert_eq!(config.indexes["fixture"].data_source, "primary");
@@ -670,14 +708,33 @@ cohorts:
     }
 
     #[test]
-    fn rejects_confidence_outside_open_unit_interval() {
-        for confidence in ["0", "1", "nan"] {
-            let yaml = VALID_CONFIG.replace(
-                "    percentile: 0.95",
-                &format!("    percentile: 0.95\n    confidence: {confidence}"),
-            );
-            let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
-            assert!(error.contains("confidence must be in (0, 1)"));
+    fn rejects_confidence_thresholds_outside_open_unit_interval() {
+        for field in ["selection_confidence", "approval_confidence"] {
+            for value in ["0", "1", "nan"] {
+                let yaml = VALID_CONFIG.replace(
+                    "    percentile: 0.95",
+                    &format!("    percentile: 0.95\n    {field}: {value}"),
+                );
+                let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+                assert!(
+                    error.contains(&format!("{field} must be in (0, 1)")),
+                    "{field}={value} produced {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derived_split_minimum_inverts_the_confidence_ceiling() {
+        // Smallest n where an all-success split reaches the threshold:
+        // 1 − percentile^(n+1) >= confidence.
+        assert_eq!(split_minimum(0.90, 0.90), 21);
+        assert_eq!(split_minimum(0.98, 0.90), 37);
+        assert_eq!(split_minimum(0.90, 0.95), 44);
+        for (confidence, percentile) in [(0.90, 0.90), (0.98, 0.90), (0.90, 0.95), (0.95, 0.95)] {
+            let n = split_minimum(confidence, percentile);
+            assert!(1.0 - percentile.powi(n as i32 + 1) >= confidence);
+            assert!(1.0 - percentile.powi(n as i32) < confidence);
         }
     }
 

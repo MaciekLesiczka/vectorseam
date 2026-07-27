@@ -246,11 +246,30 @@ the HNSW index scan.
   after the fact, Phase B is — reproducibility lives in the durable
   intermediates.
 - **Decision — repeats**: each ANN query runs once (the anchor's `repeats: 3`
-  exists for latency medians; recall is deterministic given the snapshot).
+  exists for latency statistics; recall is deterministic given the snapshot).
   Rationale: repeats triple database load against the traffic-control goal;
   latency here is informational only.
 - Client-observed latency per ef statement is recorded (informational, never
-  part of the target).
+  part of the target). It is a round-trip measurement — it includes network
+  and protocol time, not just server execution.
+- **Decision — the ef sweep runs in a per-sample shuffled order.** The
+  ground-truth query preceding the sweep is an exact scan that pulls the heap
+  through shared buffers and evicts index pages, so whichever ef runs first
+  pays to fault the HNSW index back in while later ef values reuse it warm.
+  Sweeping in ascending order would charge that cost to `ef_grid[0]` on every
+  sample, converting a per-query artifact into a systematic penalty on one
+  grid point. The order is derived from the query vector, so it is stable
+  across re-measurement and a resumed part reproduces a clean run exactly.
+  Results are stored in ascending grid order regardless. Recall is unaffected:
+  all ef queries for a sample share one snapshot.
+- **Decision — `per_ef` reports mean latency, not a percentile.** The chart
+  it feeds shows the shape of the latency/recall tradeoff across the grid,
+  and a mean carries the paired structure of the measurement: every sample is
+  measured at every ef, and a difference of means equals the mean of
+  per-query differences, so the jitter shared within a sample transaction
+  cancels between adjacent grid steps. A per-ef median discards that pairing.
+  Operational latency SLOs want a high percentile instead; that is a
+  consumer-side concern and out of scope for this informational summary.
 
 MVP supports cosine distance (`<=>`) only. There is deliberately no config
 field for it — a field with exactly one legal value is dead config; other
@@ -337,9 +356,9 @@ of train samples with `recall@k ≥ value`. The tuner computes:
 ```
 train_confidence(ef) = P(θ ≥ percentile)
                        where θ ~ Beta(m_ef + 1, n_train − m_ef + 1)
-selected = max(grid) if train_confidence(max(grid)) < confidence
+selected = max(grid) if train_confidence(max(grid)) < selection_confidence
                                     → status "target_unmet"
-clearing = { ef | train_confidence(ef) ≥ confidence }
+clearing = { ef | train_confidence(ef) ≥ selection_confidence }
 selected = min(clearing)             → status "ok"
 ```
 
@@ -347,7 +366,7 @@ selected = min(clearing)             → status "ok"
   `train_confidence` in the round output is the selected ef's value. Sparse
   populations can select a high ef; lower candidates can become eligible as
   evidence accumulates.
-- If the highest ef misses the assurance target, the round reports
+- If the highest ef misses the selection gate, the round reports
   `recommended_ef = max(grid)` and `status = "target_unmet"`. Training and
   holdout confidence, compliance, and quantiles are populated at that ef.
   A lower ef that clears in the same sweep does not override this result: a
@@ -358,11 +377,62 @@ selected = min(clearing)             → status "ok"
   adjustment. The effective recommendation carries its prior value as
   defined below.
 
+#### Two gates: selection and approval
+
+A round passes an ef through two independent gates, each with its own
+threshold:
+
+| gate | split | threshold | question |
+| --- | --- | --- | --- |
+| selection | train | `selection_confidence` | which ef is worth proposing? |
+| approval | holdout | `approval_confidence` | may it be applied? |
+
+- **Decision — the two gates take separate thresholds, and selection is set
+  higher.** The splits are different sizes, so the same underlying compliance
+  produces different confidence on each side. With `train_fraction: f`, the
+  holdout posterior is `sqrt(f / (1 − f))` times wider than the train
+  posterior — 1.22× at `f = 0.6`, 1.53× at `f = 0.7`. A single shared
+  threshold therefore selects ef values the holdout is structurally unable to
+  confirm. Worked example at 1000 samples and `percentile: 0.90`, with both
+  splits observing the same 92% compliance:
+
+  | split | size | compliance | confidence |
+  | --- | --- | --- | --- |
+  | train | 600 | 92% | 0.946 |
+  | holdout | 400 | 92% | 0.900 |
+
+  Identical evidence, 0.046 apart purely from sample count. Any single gate
+  inside that band selects every round and approves none, so the recommended
+  ef never moves while the round log fills with unapproved candidates.
+  Raising the selection gate above the approval gate spends the difference
+  deliberately: the tuner proposes a more conservative ef, and that ef clears
+  the holdout because its true compliance is further above `percentile`.
+  Rationale: this keeps the holdout untouched by selection — the property
+  that makes approval meaningful — and needs no round-to-round state, unlike
+  a back-off scheme that would have to remember which candidates failed.
+
+- **Tuning.** `selection_confidence` is the conservatism dial. Raising it
+  moves selection toward higher ef, which costs latency and buys approvals;
+  lowering it chases the smallest ef and risks the stall above. It is a
+  preference, not a service level. `approval_confidence` is the service
+  level: the probability that at least `percentile` of unseen queries meet
+  `value`. Set it from the SLA, then raise `selection_confidence` until
+  approvals are routine. `train_fraction` is the third dial — moving it
+  toward 0.5 equalizes the splits and shrinks the gap the selection gate has
+  to cover, at the cost of a noisier selection.
+
+- The rolling window interacts with both. A short window holds fewer samples,
+  so every posterior is wider and the smallest ef clearing the selection gate
+  is higher: conservative, and quick to react when the workload shifts. A
+  long window tightens the posteriors and lets a lower ef clear: better
+  latency across more of the workload, slower to react.
+
 #### Sample sufficiency
 
 Selection requires two non-empty realized splits. Each split must also be
-large enough that an all-success result could reach `target.confidence`.
-For a split of size `n`, that confidence ceiling is:
+large enough that an all-success result could reach the threshold *that split
+is judged against* — `selection_confidence` for train, `approval_confidence`
+for holdout. For a split of size `n`, that confidence ceiling is:
 
 ```
 ceiling(n) = compliance_confidence(n, n, percentile)
@@ -370,20 +440,31 @@ ceiling(n) = compliance_confidence(n, n, percentile)
 ```
 
 The tuner calls `compliance_confidence` for both ceilings. It checks split
-emptiness separately because a legal low assurance target can fall below the
+emptiness separately because a legal low threshold can fall below the
 mathematical ceiling at `n = 0`, while quantile calculation requires at least
 one sample. A `train_fraction` whose rounded 10,000-bucket threshold is 0 or
 10,000 is rejected at configuration load.
 
-The derived minimum for each realized split is:
+The derived minimum for a split judged against `confidence` is:
 
 ```
 n_min = ceil(ln(1 − confidence) / ln(percentile)) − 1
 ```
 
-Examples are 21 samples for percentile 0.90 and confidence 0.90, 44 for
-percentile 0.95 and confidence 0.90, and 58 for percentile 0.95 and
-confidence 0.95. Configuration validation logs `n_min` once per target.
+| percentile | confidence | n_min |
+| --- | --- | --- |
+| 0.90 | 0.90 | 21 |
+| 0.90 | 0.98 | 37 |
+| 0.95 | 0.90 | 44 |
+| 0.95 | 0.95 | 58 |
+
+Because the two sides use different thresholds, they have different minimums,
+and the population a target needs is whichever side binds first:
+`max(n_min_train / train_fraction, n_min_holdout / (1 − train_fraction))`.
+The defaults — `percentile: 0.90`, selection 0.98, approval 0.90,
+`train_fraction: 0.6` — need 37 train and 21 holdout samples, so 62 unique
+samples in the window before the tuner can speak. Configuration validation
+logs both minimums once per target.
 
 An empty split, a split below its confidence ceiling, or a Phase A cohort
 abort publishes `status: "insufficient_samples"`. The fields
@@ -430,13 +511,16 @@ the same code so the two sides are always comparable:
 | fraction meeting `value` | `train_compliance` | `test_compliance` |
 | posterior confidence | `train_confidence` | `confidence` |
 
-A candidate is approved when `confidence >= target.confidence`. The point
-quantile and the raw compliance fraction are diagnostic and do not
+A candidate is approved when `confidence >= target.approval_confidence`. The
+point quantile and the raw compliance fraction are diagnostic and do not
 participate in approval; only the posterior confidence does. The round record
 does not serialize a separate holdout state because consumers can derive
 approval from the confidence and target fields. Comparing the train and
 holdout columns shows how far a candidate moved between the split it was
-chosen on and the split that judged it.
+chosen on and the split that judged it, which is the primary signal for
+tuning `selection_confidence`: a candidate whose holdout confidence lands
+persistently below the approval gate means the selection gate is too low for
+this workload's sample volume.
 
 - **Decision — confidence is one closed-form number per evaluated ef**: with
   `n` samples of which `m` have `recall ≥ value` at an ef,
@@ -468,7 +552,8 @@ complete publication rule is:
 
 1. An `insufficient_samples` round carries the prior `effective` block.
 2. A `target_unmet` round carries the prior `effective` block.
-3. An `ok` candidate with `confidence >= target.confidence` publishes a fresh
+3. An `ok` candidate with `confidence >= target.approval_confidence`
+   publishes a fresh
    block with `recommended_ef` and `confidence` from that candidate,
    `source_round` equal to the round end, and `carried: false`.
 4. Any other `ok` candidate carries the prior `effective` block.
@@ -495,7 +580,7 @@ not replace a known-good effective ef with a setting that failed training.
   fields alone is sufficient.
 - **No expiry.** `effective` has no tuner-side maximum age. Staleness is
   visible through `source_round`, and any maximum-age policy belongs to the
-  consumer. Until a candidate clears holdout assurance, `effective` is null
+  consumer. Until a candidate clears the approval gate, `effective` is null
   and the application uses its configured default.
 
 #### Determinism summary
@@ -514,7 +599,7 @@ startup; runtime changes are a non-goal.
 calibration:
   interval: 10min                 # round tick
   ef_search: [20, 40, 60, 80, 100, 150, 200, 300, 400]  # REQUIRED: the sweep buckets
-  train_fraction: 0.7
+  train_fraction: 0.6           # optional; default 0.6
   split_seed: 7
 
 storage:
@@ -557,7 +642,8 @@ targets:
     k: 20
     value: 0.9
     percentile: 0.95
-    confidence: 0.95             # optional; default 0.95
+    selection_confidence: 0.98   # default 0.98; train gate
+    approval_confidence: 0.90    # default 0.90; holdout gate = the SLA
     window: 24h
 
 cohorts:
@@ -605,7 +691,8 @@ optional advice.
 - every data source has a unique `(server, database)` pair; duplicate pairs
   are rejected even when their users or `password_env` values differ
 - `storage.window_seconds` is a positive multiple of 60; `0 < percentile <
-  1`, `0 < confidence < 1`, `0 < value ≤ 1`, `k ≥ 1`; every target `window`
+  1`, `0 < selection_confidence < 1`, `0 < approval_confidence < 1`,
+  `0 < value ≤ 1`, `k ≥ 1`; every target `window`
   is at least one storage window and an exact multiple of
   `storage.window_seconds`
 - ef grid present and non-empty (**required, no default** — a default grid
@@ -697,7 +784,8 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
               "duration_seconds": 86400 },
   "target": { "name": "queries_search_recall",
               "k": 20, "value": 0.9, "percentile": 0.95,
-              "confidence": 0.95 },
+              "selection_confidence": 0.98,
+              "approval_confidence": 0.90 },
   "index": "reddit",
   "ef_grid": [20, 40, 60, 80, 100, 150, 200, 300, 400],
   "status": "ok",                    // "ok" | "target_unmet" | "insufficient_samples"
@@ -730,8 +818,8 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "parts_used": 144,
   "incompatible_parts": 0,           // intermediates skipped for config mismatch
   "per_ef": [                        // full-population summary; [] for an empty population
-    { "ef": 10, "quantile_recall": 0.55, "mean_recall": 0.71, "latency_p50_ms": 0.4 },
-    { "ef": 20, "quantile_recall": 0.70, "mean_recall": 0.82, "latency_p50_ms": 0.6 }
+    { "ef": 10, "quantile_recall": 0.55, "mean_recall": 0.71, "latency_mean_ms": 0.4 },
+    { "ef": 20, "quantile_recall": 0.70, "mean_recall": 0.82, "latency_mean_ms": 0.6 }
     // ...
   ]
 }
@@ -796,7 +884,8 @@ long-lived, and no reconnect is attempted mid-round.
 4. Split per §2.2. Publish `insufficient_samples` and skip selection if Phase
    A supplied a table-smaller-than-k abort, either realized split is empty,
    or either split's all-success confidence ceiling is below
-   `target.confidence`. Copy a Phase A abort's error string to the round.
+   its own gate — `selection_confidence` for train, `approval_confidence`
+   for holdout. Copy a Phase A abort's error string to the round.
 5. Compute confidence for every ef on train and select per §2.2. Evaluate the
    train-selected candidate exactly once on holdout to obtain compliance,
    quantile, and confidence. A target-unmet selection uses `max(grid)` for
@@ -1039,10 +1128,13 @@ point quantiles and VectorSeam's confidence-gated selection.
   unchanged after simulated resume and after the surviving occurrence moves
   to a different part (same vector → same split).
 - **B5 selection**: train confidences `{10:0.62, 20:0.85, 40:0.91,
-  80:0.93, 160:0.95}`, assurance 0.9 → `recommended_ef = 40`,
+  80:0.93, 160:0.95}`, selection gate 0.9 → `recommended_ef = 40`,
   `status = "ok"`. A separate fixture has ef 20's point quantile exactly at
   the recall target but insufficient confidence, so ef 40 is selected. A
-  holdout confidence below assurance carries the prior effective ef. A sparse
+  holdout confidence below the approval gate carries the prior effective ef.
+  A selection gate above the approval gate selects a higher ef from the same
+  sweep, and equal compliance on a 600/400 split yields 0.946 train against
+  0.900 holdout confidence. A sparse
   fixture selects ef 40; a denser fixture with stronger evidence at ef 20
   selects ef 20.
 - **B6 target unmet**: value 0.99 across B5's recall population produces
@@ -1050,10 +1142,10 @@ point quantiles and VectorSeam's confidence-gated selection.
   `train_confidence`, `train_compliance`, `test_compliance`, and both
   quantiles are populated at ef 160. A prior effective recommendation is
   carried.
-- **B7 sample sufficiency**: percentile 0.95 and assurance 0.90 require 44
+- **B7 sample sufficiency**: percentile 0.95 and a 0.90 gate require 44
   samples in each realized split. Train/holdout counts 44/43 produce
   `status = "insufficient_samples"` and null selection fields; counts 44/44
-  produce a recommendation. A legal low-assurance target with an empty
+  produce a recommendation. A legal low-threshold target with an empty
   realized split also produces `insufficient_samples`.
 - **B8 window membership and coverage**: storage window 600 s, W = 3600 s, a
   round ticking at 12:07 → `round_end = 12:00` and exactly the six windows
@@ -1159,7 +1251,8 @@ mock-measured local store)
 - **E4 fingerprint reset**: an `ok` round published under `k = 10`, then the
   target changes to `k = 20` and the next round is `insufficient_samples` →
   `effective` is `null`, never a recommendation calibrated for a different
-  target; `ef_grid` or target-confidence changes behave identically.
+  target; `ef_grid`, `selection_confidence`, or `approval_confidence`
+  changes behave identically.
 - **E5 bootstrap and malformed carry source**: with no `latest.json`, an
   insufficient first round publishes `effective: null` and logs no carry
   warning; with a corrupt `latest.json`, or one lacking the `effective`

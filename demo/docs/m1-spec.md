@@ -189,7 +189,8 @@ targets:
     k: 10
     value: 0.9
     percentile: 0.90             # blog's p10 >= 0.9
-    confidence: 0.90             # posterior assurance required on train and holdout
+    selection_confidence: 0.98   # train gate; conservatism dial
+    approval_confidence: 0.90    # holdout gate; the recall SLA
     window: 600s                 # 10 storage windows; must be exact multiple of window_seconds
 
 cohorts:
@@ -224,13 +225,16 @@ Each artifact proves one arrow. Run in order:
    `status: "insufficient_samples"` and honest sample counts → Phase B works.
    Until a candidate clears both confidence gates, `effective` is null.
 4. The round reports `insufficient_samples` until both realized splits can
-   attain 0.90 assurance with all successes. Each split needs at least 21
-   samples for percentile 0.90 and confidence 0.90. An ef whose
-   `train_confidence` clears 0.90 produces `status: "ok"`; the same candidate
-   is evaluated once on holdout. Holdout `confidence >= 0.90` publishes a
-   fresh `effective` block. A lower confidence carries the prior block or
-   leaves it null. `target_unmet` reports the maximum grid ef and carries the
-   prior effective block.
+   attain their own gate with all successes: 37 train samples for the 0.98
+   selection gate and 21 holdout samples for the 0.90 approval gate, so 62
+   unique samples at `train_fraction: 0.6`. An ef whose `train_confidence`
+   clears 0.98 produces `status: "ok"`; the same candidate is evaluated once
+   on holdout. Holdout `confidence >= 0.90` publishes a fresh `effective`
+   block. A lower confidence carries the prior block or leaves it null.
+   `target_unmet` reports the maximum grid ef and carries the prior effective
+   block. The selection gate sits above the approval gate because the holdout
+   is the smaller split: at the same true compliance its confidence is lower,
+   so selecting at 0.90 would propose ef values the holdout cannot confirm.
 5. Final assertion: `recommended_ef` ≈ the benchmark's pick for the same
    corpus and target (60 for full 300k SuperUser), with the same value under
    `effective.recommended_ef` after holdout approval. The expected story is a

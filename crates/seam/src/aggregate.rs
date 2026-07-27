@@ -186,8 +186,8 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
     let insufficient = input.phase_a_abort.is_some()
         || train.is_empty()
         || test.is_empty()
-        || train_confidence_ceiling < input.config.confidence
-        || test_confidence_ceiling < input.config.confidence;
+        || train_confidence_ceiling < input.config.selection_confidence
+        || test_confidence_ceiling < input.config.approval_confidence;
 
     let selection = if insufficient {
         None
@@ -217,7 +217,8 @@ pub fn aggregate(input: &AggregationInput) -> Result<RoundOutput, AggregateError
             k: input.config.k,
             value: input.config.value,
             percentile: input.config.percentile,
-            confidence: input.config.confidence,
+            selection_confidence: input.config.selection_confidence,
+            approval_confidence: input.config.approval_confidence,
         },
         index: input.config.index.clone(),
         ef_grid: input.config.ef_grid.clone(),
@@ -251,7 +252,8 @@ fn carry_fingerprint_matches(config: &AggregationConfig, previous: &RoundOutput)
         && previous.target.k == config.k
         && previous.target.value == config.value
         && previous.target.percentile == config.percentile
-        && previous.target.confidence == config.confidence
+        && previous.target.selection_confidence == config.selection_confidence
+        && previous.target.approval_confidence == config.approval_confidence
 }
 
 fn effective_recommendation(
@@ -278,7 +280,7 @@ fn effective_recommendation(
     let Some(selection) = selection else {
         return carried();
     };
-    if selection.status == RoundStatus::Ok && selection.confidence >= config.confidence {
+    if selection.status == RoundStatus::Ok && selection.confidence >= config.approval_confidence {
         fresh(selection.recommended_ef, selection.confidence)
     } else {
         carried()
@@ -351,9 +353,14 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
             "percentile must be in (0, 1)".to_owned(),
         ));
     }
-    if !(config.confidence > 0.0 && config.confidence < 1.0) {
+    if !(config.selection_confidence > 0.0 && config.selection_confidence < 1.0) {
         return Err(AggregateError::InvalidConfig(
-            "confidence must be in (0, 1)".to_owned(),
+            "selection_confidence must be in (0, 1)".to_owned(),
+        ));
+    }
+    if !(config.approval_confidence > 0.0 && config.approval_confidence < 1.0) {
+        return Err(AggregateError::InvalidConfig(
+            "approval_confidence must be in (0, 1)".to_owned(),
         ));
     }
     if config.ef_grid.is_empty()
