@@ -59,7 +59,7 @@ function genCohort(cfg) {
       const q = Math.min(0.999, Math.max(0.4, recallAt(ef, effTarget) + (rnd() - 0.5) * 0.008));
       const mean = Math.min(0.999, q + 0.006 + 0.012 * rnd());
       const lat = (cfg.latBase + cfg.latSlope * ef) * (0.95 + 0.1 * rnd());
-      return { ef, quantile_recall: r4(q), mean_recall: r4(mean), latency_p50_ms: r2(lat) };
+      return { ef, quantile_recall: r4(q), mean_recall: r4(mean), latency_mean_ms: r2(lat) };
     });
 
     const transient = cfg.transientAt === i;

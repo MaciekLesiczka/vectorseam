@@ -246,11 +246,30 @@ the HNSW index scan.
   after the fact, Phase B is — reproducibility lives in the durable
   intermediates.
 - **Decision — repeats**: each ANN query runs once (the anchor's `repeats: 3`
-  exists for latency medians; recall is deterministic given the snapshot).
+  exists for latency statistics; recall is deterministic given the snapshot).
   Rationale: repeats triple database load against the traffic-control goal;
   latency here is informational only.
 - Client-observed latency per ef statement is recorded (informational, never
-  part of the target).
+  part of the target). It is a round-trip measurement — it includes network
+  and protocol time, not just server execution.
+- **Decision — the ef sweep runs in a per-sample shuffled order.** The
+  ground-truth query preceding the sweep is an exact scan that pulls the heap
+  through shared buffers and evicts index pages, so whichever ef runs first
+  pays to fault the HNSW index back in while later ef values reuse it warm.
+  Sweeping in ascending order would charge that cost to `ef_grid[0]` on every
+  sample, converting a per-query artifact into a systematic penalty on one
+  grid point. The order is derived from the query vector, so it is stable
+  across re-measurement and a resumed part reproduces a clean run exactly.
+  Results are stored in ascending grid order regardless. Recall is unaffected:
+  all ef queries for a sample share one snapshot.
+- **Decision — `per_ef` reports mean latency, not a percentile.** The chart
+  it feeds shows the shape of the latency/recall tradeoff across the grid,
+  and a mean carries the paired structure of the measurement: every sample is
+  measured at every ef, and a difference of means equals the mean of
+  per-query differences, so the jitter shared within a sample transaction
+  cancels between adjacent grid steps. A per-ef median discards that pairing.
+  Operational latency SLOs want a high percentile instead; that is a
+  consumer-side concern and out of scope for this informational summary.
 
 MVP supports cosine distance (`<=>`) only. There is deliberately no config
 field for it — a field with exactly one legal value is dead config; other
@@ -799,8 +818,8 @@ from scratch, overwriting both. Worst-case redo after a crash is one part.
   "parts_used": 144,
   "incompatible_parts": 0,           // intermediates skipped for config mismatch
   "per_ef": [                        // full-population summary; [] for an empty population
-    { "ef": 10, "quantile_recall": 0.55, "mean_recall": 0.71, "latency_p50_ms": 0.4 },
-    { "ef": 20, "quantile_recall": 0.70, "mean_recall": 0.82, "latency_p50_ms": 0.6 }
+    { "ef": 10, "quantile_recall": 0.55, "mean_recall": 0.71, "latency_mean_ms": 0.4 },
+    { "ef": 20, "quantile_recall": 0.70, "mean_recall": 0.82, "latency_mean_ms": 0.6 }
     // ...
   ]
 }

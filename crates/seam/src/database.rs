@@ -14,7 +14,7 @@ use tokio_postgres::{Client, Config as PostgresConfig, IsolationLevel, NoTls, Ro
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{BudgetConfig, DataSourceConfig};
-use crate::math::recall_at_k;
+use crate::math::{fnv1a64, recall_at_k};
 use crate::measure::{SampleMeasureError, SampleMeasurement, SampleMeasurer, SampleSweepResult};
 use crate::model::AggregationConfig;
 use crate::pacer::{CancelableRun, DutyCyclePacer, PacerError};
@@ -352,7 +352,7 @@ async fn measure_in_transaction(
     .await?;
     let ann_sql = ann_sql(config);
     let mut sweeps = Vec::with_capacity(config.ef_grid.len());
-    for &ef in &config.ef_grid {
+    for ef in sweep_order(vector, &config.ef_grid) {
         execute_counted(
             statements,
             client_timeout,
@@ -379,6 +379,9 @@ async fn measure_in_transaction(
             latency_ms: elapsed.as_secs_f64() * 1_000.0,
         });
     }
+    // Measured in shuffled order, stored in grid order, so nothing downstream
+    // of this function can observe the shuffle.
+    sweeps.sort_unstable_by_key(|sweep| sweep.ef);
     Ok(SampleMeasurement {
         gt_keys,
         gt_distances,
@@ -540,6 +543,39 @@ fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+/// Per-sample sweep order, deterministic in the query vector.
+///
+/// The exact-scan ground-truth query that precedes the sweep pulls the whole
+/// heap through shared buffers and evicts HNSW index pages. Whichever ef runs
+/// first then pays to fault the index back in, and every later ef reuses it
+/// warm. Sweeping in ascending order puts that cost on `ef_grid[0]` for every
+/// sample, turning a per-query artifact into a systematic penalty on one grid
+/// point — visible as a latency curve that dips after its first step.
+///
+/// Shuffling per sample spreads the cost evenly across the grid so it averages
+/// out instead of biasing one point. Seeding from the vector keeps the round
+/// reproducible: the same sample always sweeps in the same order, so a resumed
+/// part reproduces a clean run exactly. Recall is unaffected either way — all
+/// ef queries share one `REPEATABLE READ` snapshot.
+fn sweep_order(vector: &[f32], grid: &[i32]) -> Vec<i32> {
+    let mut bytes = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let mut state = fnv1a64(&bytes) | 1;
+    let mut order = grid.to_vec();
+    for index in (1..order.len()).rev() {
+        // xorshift64*, whose output bits are independent of the low bits
+        // `is_train_member` derives split membership from.
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let draw = state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 33;
+        order.swap(index, (draw % (index as u64 + 1)) as usize);
+    }
+    order
+}
+
 fn ground_truth_sql(config: &AggregationConfig) -> String {
     let key = quote_identifier(&config.key);
     let column = quote_identifier(&config.column);
@@ -574,7 +610,52 @@ fn statement_timeout_sql(timeout: Duration) -> String {
 mod tests {
     use super::*;
 
+    use std::collections::{BTreeMap, BTreeSet};
+
     use crate::config::{BudgetConfig, DataSourceConfig};
+
+    fn fixture_vector(seed: u32) -> Vec<f32> {
+        (0..8).map(|lane| seed as f32 + lane as f32).collect()
+    }
+
+    #[test]
+    fn sweep_order_is_a_permutation_and_stable_per_vector() {
+        let grid = [10, 20, 40, 60, 80, 100, 150, 200, 300, 400];
+        for seed in 0..64 {
+            let vector = fixture_vector(seed);
+            let order = sweep_order(&vector, &grid);
+            assert_eq!(
+                order.iter().copied().collect::<BTreeSet<_>>(),
+                grid.iter().copied().collect::<BTreeSet<_>>(),
+                "sweep order must measure every grid ef exactly once"
+            );
+            // Reproducibility: a resumed part must redo the identical sweep.
+            assert_eq!(order, sweep_order(&vector, &grid));
+        }
+    }
+
+    #[test]
+    fn sweep_order_spreads_the_cold_index_cost_across_the_grid() {
+        // The first ef measured pays to fault the HNSW index back in after the
+        // exact scan. Ascending order always billed ef_grid[0]; every grid value
+        // should now take that slot for a share of samples.
+        let grid = [10, 20, 40, 60, 80, 100, 150, 200, 300, 400];
+        let mut first_slot: BTreeMap<i32, usize> = BTreeMap::new();
+        let trials = 2_000;
+        for seed in 0..trials {
+            let order = sweep_order(&fixture_vector(seed), &grid);
+            *first_slot.entry(order[0]).or_default() += 1;
+        }
+
+        assert_eq!(first_slot.len(), grid.len(), "some ef never went first");
+        let expected = trials as usize / grid.len();
+        for (ef, count) in &first_slot {
+            assert!(
+                *count > expected / 2 && *count < expected * 2,
+                "ef {ef} took the first slot {count} times, expected near {expected}"
+            );
+        }
+    }
 
     fn aggregation_config() -> AggregationConfig {
         AggregationConfig {

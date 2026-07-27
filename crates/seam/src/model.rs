@@ -275,8 +275,8 @@ pub struct PerEfSummary {
     pub quantile_recall: f64,
     /// Full-population arithmetic mean recall.
     pub mean_recall: f64,
-    /// Full-population type-7 median client latency.
-    pub latency_p50_ms: f64,
+    /// Full-population arithmetic mean client latency.
+    pub latency_mean_ms: f64,
 }
 
 /// Client-facing recommendation to apply until a newer round supersedes it.

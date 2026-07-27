@@ -117,7 +117,7 @@ pub(crate) fn per_ef_summaries(
                 ef: *ef,
                 quantile_recall: quantile_type7(&recalls, q)?,
                 mean_recall: recalls.iter().sum::<f64>() / recalls.len() as f64,
-                latency_p50_ms: quantile_type7(&latencies, 0.5)?,
+                latency_mean_ms: latencies.iter().sum::<f64>() / latencies.len() as f64,
             })
         })
         .collect()
