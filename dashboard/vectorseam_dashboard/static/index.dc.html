@@ -65,7 +65,7 @@
     <section style="display:flex;flex-direction:column;gap:14px;">
       <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;">
         <h2 style="margin:0;font-size:12px;font-weight:600;letter-spacing:0.14em;text-transform:uppercase;color:oklch(0.6 0.014 258);">Cohorts · {{ cohortCountText }}</h2>
-        <span style="font-size:12px;color:oklch(0.5 0.014 258);">effective ef · confidence · status</span>
+        <span style="font-size:12px;color:oklch(0.5 0.014 258);">recommended ef · confidence · status</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;">
         <sc-for list="{{ cards }}" as="c" hint-placeholder-count="3">
@@ -79,14 +79,17 @@
             </div>
             <div style="display:flex;align-items:flex-end;gap:12px;">
               <span style="font-family:'IBM Plex Mono',monospace;font-size:47px;line-height:0.9;font-weight:600;color:{{ c.efColor }};">{{ c.efText }}</span>
-              <span style="font-size:12px;color:oklch(0.6 0.014 258);padding-bottom:6px;">effective<br>ef_search</span>
+              <span style="font-size:12px;color:oklch(0.6 0.014 258);padding-bottom:6px;">recommended<br>ef_search</span>
             </div>
             <sc-if value="{{ c.carried }}" hint-placeholder-val="">
               <span style="font-size:11.5px;color:oklch(0.84 0.13 82);margin-top:-6px;">↺ {{ c.carriedNote }}</span>
             </sc-if>
+            <sc-if value="{{ c.showCandidate }}" hint-placeholder-val="">
+              <span style="font-size:11.5px;color:{{ c.candidateColor }};margin-top:-6px;">◇ {{ c.candidateNote }}</span>
+            </sc-if>
             <div style="display:flex;flex-direction:column;gap:7px;">
               <div style="display:flex;align-items:baseline;justify-content:space-between;">
-                <span style="font-size:12px;color:oklch(0.62 0.014 258);">holdout confidence</span>
+                <span style="font-size:12px;color:oklch(0.62 0.014 258);">recommendation confidence</span>
                 <span style="font-family:'IBM Plex Mono',monospace;font-size:13.5px;color:oklch(0.9 0.008 258);">{{ c.confPct }}</span>
               </div>
               <div style="height:6px;border-radius:999px;background:oklch(0.28 0.013 258);overflow:hidden;">
@@ -131,7 +134,7 @@
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;">
 
         <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Effective ef_search</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">grid steps</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Recommended ef_search</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">in force · grid steps</span></div>
           <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
             <sc-for list="{{ efChart.hLines }}" as="h" hint-placeholder-count="5">
               <line x1="{{ efChart.PX0 }}" x2="{{ efChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="oklch(0.27 0.013 258)" strokeWidth="1"></line>
@@ -159,12 +162,12 @@
             </div>
           </sc-if>
           <sc-if value="{{ efChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">Hollow markers = carried recommendations. Hover to read per-cohort values.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);padding-top:10px;border-top:1px solid oklch(0.25 0.013 258);">What each cohort applies now. Hollow markers = the round kept the previous recommendation. Hover to read per-cohort values.</div>
           </sc-if>
         </div>
 
         <div style="padding:20px 22px;border-radius:16px;background:oklch(0.212 0.013 258);border:1px solid oklch(0.29 0.014 258);display:flex;flex-direction:column;gap:12px;">
-          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Holdout confidence</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">0.00 – 1.00</span></div>
+          <div style="display:flex;align-items:baseline;justify-content:space-between;"><span style="font-size:13.5px;font-weight:500;color:oklch(0.92 0.008 258);">Candidate ef &amp; holdout confidence</span><span style="font-size:11.5px;color:oklch(0.55 0.014 258);">under test</span></div>
           <svg viewBox="0 0 760 290" style="width:100%;height:auto;display:block;" onMouseMove="{{ onHoverMove }}" onMouseLeave="{{ onHoverLeave }}">
             <sc-for list="{{ confChart.hLines }}" as="h" hint-placeholder-count="6">
               <line x1="{{ confChart.PX0 }}" x2="{{ confChart.PX1 }}" y1="{{ h.y }}" y2="{{ h.y }}" stroke="{{ h.stroke }}" strokeWidth="1" stroke-dasharray="{{ h.dash }}"></line>
@@ -176,6 +179,10 @@
             <sc-if value="{{ confChart.hasHover }}" hint-placeholder-val="">
               <line x1="{{ confChart.hoverX }}" x2="{{ confChart.hoverX }}" y1="14" y2="260" stroke="oklch(0.7 0.02 258)" strokeWidth="1.2"></line>
             </sc-if>
+            <sc-for list="{{ confChart.efSeries }}" as="es" hint-placeholder-count="3">
+              <path d="{{ es.path }}" fill="none" stroke="{{ es.color }}" strokeWidth="1.5" stroke-dasharray="4 3" strokeLinejoin="round" strokeLinecap="round" opacity="0.55"></path>
+              <sc-for list="{{ es.points }}" as="ep" hint-placeholder-count="6"><circle cx="{{ ep.cx }}" cy="{{ ep.cy }}" r="1.6" fill="{{ es.color }}" opacity="0.55"></circle></sc-for>
+            </sc-for>
             <sc-for list="{{ confChart.series }}" as="s" hint-placeholder-count="3">
               <path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round"></path>
               <sc-for list="{{ s.points }}" as="p" hint-placeholder-count="6"><circle cx="{{ p.cx }}" cy="{{ p.cy }}" r="2.2" fill="{{ s.color }}"></circle></sc-for>
@@ -191,7 +198,7 @@
             </div>
           </sc-if>
           <sc-if value="{{ confChart.noHover }}" hint-placeholder-val="{{ true }}">
-            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed lines mark assurance targets. Gaps mark rounds without a measured candidate.</div>
+            <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">What each round tested. Solid = holdout confidence; dashed = candidate ef on the left panel's scale, so the panels agree while rounds approve and separate when one is held back. Green dashes mark assurance targets.</div>
           </sc-if>
         </div>
 
@@ -251,7 +258,7 @@
               </div>
             </sc-if>
             <sc-if value="{{ tradeoff.noHover }}" hint-placeholder-val="{{ true }}">
-              <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the calibrated ef. Hover to read recall and latency at each grid step.</div>
+              <div style="font-size:11.5px;color:oklch(0.5 0.014 258);border-top:1px solid oklch(0.25 0.013 258);padding-top:10px;">Dashed line marks the recommended ef in force. Hover to read recall and latency at each grid step.</div>
             </sc-if>
           </div>
         </sc-if>
@@ -269,8 +276,8 @@
                   <span style="font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:oklch(0.86 0.01 258);min-width:70px;">{{ r.timeText }}</span>
                   <span style="{{ r.badgeStyle }}">{{ r.statusLabel }}</span>
                   <span style="flex:1;"></span>
-                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:56px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.95 0.006 258);">{{ r.efText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">EF</span></span>
-                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:52px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.85 0.01 258);">{{ r.confText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">CONF</span></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:76px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.95 0.006 258);">{{ r.efText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">CANDIDATE EF</span></span>
+                  <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:60px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.85 0.01 258);">{{ r.confText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">HOLDOUT</span></span>
                   <span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;min-width:60px;"><span style="font-family:'IBM Plex Mono',monospace;font-size:14px;color:oklch(0.85 0.01 258);">{{ r.uniqueText }}</span><span style="font-size:9.5px;color:oklch(0.5 0.014 258);letter-spacing:0.04em;">UNIQUE</span></span>
                 </div>
                 <sc-if value="{{ r.expanded }}" hint-placeholder-val="">
@@ -316,6 +323,16 @@ class Component extends DCLogic {
   COLORS = { 'superuser': 'oklch(0.83 0.11 195)', 'products/search': 'oklch(0.76 0.13 292)', 'support/tickets': 'oklch(0.84 0.12 74)' };
   PALETTE = ['oklch(0.83 0.11 195)', 'oklch(0.76 0.13 292)', 'oklch(0.84 0.12 74)', 'oklch(0.80 0.13 150)', 'oklch(0.74 0.15 18)'];
   CW = 760; CH = 290; PX0 = 46; PX1 = 742; PY0 = 14; PY1 = 260;
+  // Status severity ramp, shared by the card and round-history badges.
+  // NEUTRAL is "no signal yet", HOLD is "kept the previous value",
+  // ALARM is the one state that needs a human (resize the grid or lower
+  // the target). CANDIDATE tints the card's secondary candidate line so it
+  // reads apart from the carried-recommendation note above it.
+  GOOD = 'oklch(0.8 0.14 158)';
+  HOLD = 'oklch(0.84 0.13 82)';
+  ALARM = 'oklch(0.72 0.16 26)';
+  NEUTRAL = 'oklch(0.62 0.014 258)';
+  CANDIDATE = 'oklch(0.72 0.11 292)';
   state = { loading: true, error: null, source: null, cohorts: [], store: {}, selectedCohort: null, expanded: {}, hoverIndex: null, tradeoffHover: null, chartRange: 24 };
 
   // Live view re-polls the calibration store on this interval so the dashboard
@@ -403,11 +420,30 @@ class Component extends DCLogic {
   holdoutApproved(rd) {
     return rd.confidence != null && rd.confidence >= rd.target.confidence;
   }
-  statusMeta(rd) {
+  // Two badges, two subjects. A round's status describes what *that round*
+  // decided about its own candidate; the card describes the recommendation
+  // currently in force. They agree when a round approves and diverge exactly
+  // when the tuner holds the previous value, which is the state that reading
+  // one badge for both questions used to hide.
+  roundStatusMeta(rd) {
     const s = rd.status;
-    if (s === 'target_unmet') return { label: 'TARGET UNMET', color: 'oklch(0.84 0.13 82)' };
-    if (s === 'ok') return { label: 'OK', color: 'oklch(0.8 0.14 158)' };
-    return { label: 'INSUFFICIENT SAMPLES', color: 'oklch(0.72 0.16 26)' };
+    if (s === 'insufficient_samples') return { label: 'INSUFFICIENT SAMPLES', color: this.NEUTRAL };
+    if (s === 'target_unmet') return { label: 'TARGET UNMET', color: this.ALARM };
+    return this.holdoutApproved(rd)
+      ? { label: 'APPROVED', color: this.GOOD }
+      : { label: 'NOT APPROVED', color: this.HOLD };
+  }
+  cardStatusMeta(latest) {
+    if (!latest.effective) return { label: 'CALIBRATING', color: this.NEUTRAL };
+    if (latest.status === 'target_unmet') return { label: 'TARGET UNMET', color: this.ALARM };
+    if (latest.effective.carried) return { label: 'CARRIED', color: this.HOLD };
+    return { label: 'APPROVED', color: this.GOOD };
+  }
+  // Why this round did not replace the recommendation.
+  carriedReason(rd) {
+    if (rd.status === 'insufficient_samples') return 'insufficient samples';
+    if (rd.status === 'target_unmet') return 'target unmet';
+    return 'not approved';
   }
   vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
 
@@ -421,7 +457,10 @@ class Component extends DCLogic {
       rounds.forEach((rd, i) => {
         const x = this.xAt(i, nn);
         let y = null, val = null;
-        if (metric === 'ef') { if (rd.status === 'ok' && this.holdoutApproved(rd) && rd.recommended_ef != null) { val = rd.recommended_ef; y = this.efY(val); } }
+        // Solid = the round published a fresh recommendation; hollow = it kept
+        // the previous one. Both read off `effective`, so this panel answers
+        // "what is in force" without reference to the round's own candidate.
+        if (metric === 'ef') { if (rd.effective && !rd.effective.carried) { val = rd.effective.recommended_ef; y = this.efY(val); } }
         else { if (rd.confidence != null) { val = rd.confidence; y = this.confChartY(val); } }
         if (val != null) { cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) }); if (i === hoverIndex) hoverDot = { cx: this.r(x), cy: this.r(y) }; }
         else { if (cur.length) { segs.push(cur); cur = []; } if (metric === 'ef' && rd.effective && rd.effective.recommended_ef != null) carried.push({ cx: this.r(x), cy: this.r(this.efY(rd.effective.recommended_ef)) }); }
@@ -430,6 +469,24 @@ class Component extends DCLogic {
       const path = segs.map((sg) => sg.map((p, j) => (j ? 'L' : 'M') + this.r(p[0]) + ' ' + this.r(p[1])).join(' ')).join(' ');
       return { name, color, path, points: pts, carried, hoverDot };
     });
+    // The confidence panel also plots each round's candidate ef, on the same
+    // efY scale the recommended-ef panel uses, so the two charts can be read
+    // across: the lines coincide while rounds approve and separate exactly
+    // when a candidate was tested and held back.
+    // Cohort colour identifies *which* series; dashing identifies *which axis*
+    // — solid is confidence on the left scale, dashed is candidate ef on the
+    // left panel's ef scale.
+    const efSeries = metric === 'conf' ? cohorts.map((name) => {
+      const rounds = this.vis(store[name].rounds, nn);
+      const pts = []; const segs = []; let cur = [];
+      rounds.forEach((rd, i) => {
+        if (rd.recommended_ef == null) { if (cur.length) { segs.push(cur); cur = []; } return; }
+        const x = this.xAt(i, nn); const y = this.efY(rd.recommended_ef);
+        cur.push([x, y]); pts.push({ cx: this.r(x), cy: this.r(y) });
+      });
+      if (cur.length) segs.push(cur);
+      return { name, color: colors[name], path: segs.map((sg) => sg.map((p, j) => (j ? 'L' : 'M') + this.r(p[0]) + ' ' + this.r(p[1])).join(' ')).join(' '), points: pts };
+    }) : [];
     const hLines = [];
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
@@ -447,12 +504,13 @@ class Component extends DCLogic {
       hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(first[first.length - nn + hoverIndex].computed_at);
       readoutRows = cohorts.map((name) => {
         const rd = this.vis(store[name].rounds, nn)[hoverIndex]; let text = '—';
-        if (metric === 'ef') text = (rd.status === 'ok' && this.holdoutApproved(rd) && rd.recommended_ef != null) ? ('ef ' + rd.recommended_ef) : (rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : '')) : 'calibrating');
-        else text = rd.confidence != null ? (Math.round(rd.confidence * 100) + '%') : '—';
+        if (metric === 'ef') text = rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : '')) : 'calibrating';
+        else text = (rd.recommended_ef != null ? ('ef ' + rd.recommended_ef) : 'no candidate')
+          + (rd.confidence != null ? (' · ' + Math.round(rd.confidence * 100) + '%') : '');
         return { name, color: colors[name], text };
       });
     }
-    return { series, hLines, xTicks, hasHover, noHover: !hasHover, hoverX, hoverTime, readoutRows, PX0: this.PX0, PX1: this.PX1 };
+    return { series, efSeries, hLines, xTicks, hasHover, noHover: !hasHover, hoverX, hoverTime, readoutRows, PX0: this.PX0, PX1: this.PX1 };
   }
 
   buildTradeoff(name, store, color, hoverGi) {
@@ -470,7 +528,7 @@ class Component extends DCLogic {
     const recGi = recEf != null ? this.EF.indexOf(recEf) : -1;
     const latColor = 'oklch(0.82 0.1 62)';
     // Hover snaps to the nearest grid position; a solid vertical guide (vs the
-    // dashed calibrated-ef line) plus a readout of that ef's exact values.
+    // dashed recommended-ef line) plus a readout of that ef's exact values.
     let hasHover = false, hoverX = 0, hoverEf = '', readoutRows = [], recallDot = null, latDot = null;
     if (hoverGi != null && hoverGi >= 0 && hoverGi < n) {
       const p = per[hoverGi];
@@ -514,18 +572,28 @@ class Component extends DCLogic {
     const n = Math.max(6, Math.min(total, s.chartRange || 24));
 
     const cards = cohorts.map((name) => {
-      const latest = store[name].latest; const meta = this.statusMeta(latest); const color = colors[name];
+      const latest = store[name].latest; const meta = this.cardStatusMeta(latest); const color = colors[name];
       const selected = name === s.selectedCohort;
       const carried = !!(latest.effective && latest.effective.carried);
-      const confVal = latest.effective ? latest.effective.confidence : latest.confidence;
+      // The card is about the recommendation in force, so its confidence is
+      // that recommendation's own. The round's candidate appears only when it
+      // differs, carrying its own confidence — the two never swap.
+      const confVal = latest.effective ? latest.effective.confidence : null;
+      const effEf = latest.effective ? latest.effective.recommended_ef : null;
+      const candidateEf = latest.recommended_ef;
+      const showCandidate = candidateEf != null && candidateEf !== effEf;
       const spark = this.buildSpark(name, store, n);
       return {
         name, index: latest.index, statusLabel: meta.label, color, efColor: color, selected,
         onSelect: () => this.setState({ selectedCohort: name }),
         cardStyle: 'display:flex;flex-direction:column;gap:15px;padding:22px 24px;border-radius:16px;cursor:pointer;background:oklch(0.212 0.013 258);transition:border-color .15s, box-shadow .15s;border:1px solid ' + (selected ? color : 'oklch(0.29 0.014 258)') + ';box-shadow:' + (selected ? '0 0 0 1px ' + color + ', 0 14px 34px -22px ' + color : '0 8px 24px -20px rgba(0,0,0,0.6)') + ';',
         badgeStyle: "font:600 10.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.09em;padding:5px 9px;border-radius:999px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 16%, transparent);border:1px solid color-mix(in oklab, ' + meta.color + ' 34%, transparent);',
-        efText: latest.effective ? String(latest.effective.recommended_ef) : '—',
-        carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round)) : '',
+        efText: effEf != null ? String(effEf) : '—',
+        carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round) + ' · ' + this.carriedReason(latest)) : '',
+        showCandidate, candidateColor: this.CANDIDATE,
+        candidateNote: showCandidate
+          ? ('candidate ef ' + candidateEf + (latest.confidence != null ? ' · ' + Math.round(latest.confidence * 100) + '%' : ''))
+          : '',
         confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
         confBarW: confVal != null ? Math.round(confVal * 100) : 0,
         targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round(latest.target.confidence * 100) + ' · k=' + latest.target.k,
@@ -576,13 +644,16 @@ class Component extends DCLogic {
     const hlimit = n;
     const selColor = colors[s.selectedCohort];
     const history = store[s.selectedCohort].rounds.slice().reverse().slice(0, hlimit).map((rd) => {
-      const meta = this.statusMeta(rd); const id = rd.computed_at; const expanded = !!s.expanded[id];
-      const recEf = rd.effective ? rd.effective.recommended_ef : null;
+      const meta = this.roundStatusMeta(rd); const id = rd.computed_at; const expanded = !!s.expanded[id];
+      // History is candidate-subject: the master row's ef and confidence both
+      // describe what this round tested, so they go null together on a round
+      // that never selected. The recommendation in force is a detail row.
+      const candidateEf = rd.recommended_ef;
       const w = rd.window; const c = rd.coverage; const sm = rd.samples;
       const metrics = [
         { label: 'Window', value: this.hm(w.start) + ' → ' + this.hm(w.end) + ' · ' + Math.round(w.duration_seconds / 60) + 'm' },
-        { label: 'Round candidate ef', value: rd.recommended_ef != null ? String(rd.recommended_ef) : '—' },
-        { label: 'Effective ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
+        { label: 'Candidate ef', value: candidateEf != null ? String(candidateEf) : '—' },
+        { label: 'Recommended ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Unique samples', value: sm.unique.toLocaleString() },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
@@ -600,13 +671,13 @@ class Component extends DCLogic {
       ];
       const perEf = rd.per_ef.map((p) => ({
         ef: p.ef, q: p.quantile_recall.toFixed(3), mean: p.mean_recall.toFixed(3), lat: p.latency_p50_ms.toFixed(1),
-        rowStyle: "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:6px 10px;border-radius:7px;font:500 12.5px/1.2 'IBM Plex Mono',monospace;" + (p.ef === recEf ? 'background:color-mix(in oklab, ' + selColor + ' 16%, transparent);color:oklch(0.96 0.004 258);' : 'color:oklch(0.7 0.012 258);'),
+        rowStyle: "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;padding:6px 10px;border-radius:7px;font:500 12.5px/1.2 'IBM Plex Mono',monospace;" + (p.ef === candidateEf ? 'background:color-mix(in oklab, ' + selColor + ' 16%, transparent);color:oklch(0.96 0.004 258);' : 'color:oklch(0.7 0.012 258);'),
       }));
       return {
         id, expanded, onToggle: () => this.setState((st) => ({ expanded: Object.assign({}, st.expanded, { [id]: !st.expanded[id] }) })),
         timeText: this.hms(id), statusLabel: meta.label,
         badgeStyle: "font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.08em;padding:4px 8px;border-radius:6px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 15%, transparent);',
-        efText: recEf != null ? String(recEf) : '—',
+        efText: candidateEf != null ? String(candidateEf) : '—',
         confText: rd.confidence != null ? Math.round(rd.confidence * 100) + '%' : '—',
         uniqueText: sm.unique.toLocaleString(), chevron: expanded ? '▾' : '▸',
         rowStyle: 'display:flex;align-items:center;gap:14px;padding:14px 16px;cursor:pointer;',
