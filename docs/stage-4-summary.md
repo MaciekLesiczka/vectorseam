@@ -28,12 +28,12 @@
 - `serde-saphyr` is pinned to `0.0.11`, the newest release verified to compile
   on Rust 1.85; newer releases use language and library features beyond the
   workspace MSRV.
-- Every round publishes the current `effective` state. Approved candidates
-  replace it, inconclusive candidates carry it, rejected lower challengers are
-  discarded, and rejection of the active ef backs off one grid step.
-  `target_unmet` remains a protective maximum-grid signal.
+- Every round publishes the current `effective` state. An `ok` candidate whose
+  holdout confidence meets the target becomes effective. Insufficient-sample
+  rounds, `target_unmet` rounds, and `ok` candidates below the holdout target
+  carry the prior effective recommendation.
 - E1–E5 run without PostgreSQL and cover history/latest publication,
-  idempotent carry, target-unmet precedence, restart survival, fingerprint
+  idempotent carry, target-unmet carry, restart survival, fingerprint
   invalidation, silent bootstrap, malformed-state warnings, and
   transient carry-source GET failure without publication or chain loss.
 

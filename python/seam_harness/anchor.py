@@ -6,7 +6,7 @@ import argparse
 import math
 import pathlib
 import sys
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import psycopg
@@ -75,35 +75,6 @@ def _split_query_ids(
     return train, test
 
 
-def _run_calibration_with_hash_split(
-    analyze: Any,
-    rows: list[dict[str, Any]],
-    train_ids: set[int],
-    test_ids: set[int],
-) -> dict[str, Any]:
-    original_datasets = analyze.DATASETS
-    original_split: Callable[..., Any] = analyze._split_query_ids
-    original_target_recall = analyze.TARGET_RECALL
-
-    def fixture_split(
-        unused_rows: list[dict[str, Any]], unused_dataset: str
-    ) -> tuple[set[int], set[int]]:
-        return train_ids, test_ids
-
-    try:
-        analyze.DATASETS = (_DATASET,)
-        analyze._split_query_ids = fixture_split
-        analyze.TARGET_RECALL = _VALUE
-        calibration = analyze._calibration_rows(rows)
-    finally:
-        analyze.DATASETS = original_datasets
-        analyze._split_query_ids = original_split
-        analyze.TARGET_RECALL = original_target_recall
-    if len(calibration) != 1:
-        raise RuntimeError("anchor calibration must emit exactly one dataset")
-    return calibration[0]
-
-
 def _compliance_confidence(n: int, m: int) -> float:
     """Returns the integer-shape Beta survival probability without SciPy."""
     log_terms = []
@@ -144,12 +115,16 @@ def _product_calibration(
         train_confidences[ef_search] = _compliance_confidence(
             len(recalls), successes
         )
-    clearing = [
-        ef_search
-        for ef_search, confidence in train_confidences.items()
-        if confidence >= _CONFIDENCE
-    ]
-    selected_ef = min(clearing) if clearing else max(_EF_GRID)
+    maximum_ef = max(_EF_GRID)
+    if train_confidences[maximum_ef] < _CONFIDENCE:
+        selected_ef = maximum_ef
+    else:
+        clearing = [
+            ef_search
+            for ef_search, confidence in train_confidences.items()
+            if confidence >= _CONFIDENCE
+        ]
+        selected_ef = min(clearing)
     test_recalls = recalls_for(selected_ef, test_ids)
     test_successes = sum(recall >= _VALUE for recall in test_recalls)
     confidence = _compliance_confidence(len(test_recalls), test_successes)
@@ -217,9 +192,6 @@ def run_anchor(
     vector_hashes = _vector_hashes(query_embeddings)
     train_ids, test_ids = _split_query_ids(query_ids, vector_hashes)
     summary_rows = analyze._summary_rows(rows)
-    blog_calibration = _run_calibration_with_hash_split(
-        analyze, rows, train_ids, test_ids
-    )
     calibration = _product_calibration(analyze, rows, train_ids, test_ids)
     per_ef = []
     for summary in summary_rows:
@@ -256,7 +228,6 @@ def run_anchor(
         "confidence": float(calibration["confidence"]),
         "test_quantile_recall": float(calibration["test_quantile_recall"]),
         "holdout_approved": bool(calibration["holdout_approved"]),
-        "blog_recommended_ef": int(blog_calibration["selected_ef"]),
     }
     common.write_json(output_path, comparison)
 

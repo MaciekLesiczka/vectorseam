@@ -434,7 +434,7 @@ class Component extends DCLogic {
     if (metric === 'ef') {
       this.EF.forEach((ef) => hLines.push({ y: this.r(this.efY(ef)), label: [10, 40, 100, 200, 400].indexOf(ef) >= 0 ? String(ef) : '', stroke: 'oklch(0.27 0.013 258)', dash: '0', labelFill: 'oklch(0.52 0.014 258)' }));
     } else {
-      const refs = cohorts.map((name) => store[name].latest.target.confidence ?? 0.95);
+      const refs = cohorts.map((name) => store[name].latest.target.confidence);
       const ticks = [1, 0.75, 0.5, 0.25, 0].concat(refs)
         .filter((v, i, values) => values.findIndex((x) => Math.abs(x - v) < 1e-9) === i)
         .sort((a, b) => b - a);
@@ -517,7 +517,7 @@ class Component extends DCLogic {
       const latest = store[name].latest; const meta = this.statusMeta(latest); const color = colors[name];
       const selected = name === s.selectedCohort;
       const carried = !!(latest.effective && latest.effective.carried);
-      const confVal = latest.confidence != null ? latest.confidence : (latest.effective ? latest.effective.confidence : null);
+      const confVal = latest.effective ? latest.effective.confidence : latest.confidence;
       const spark = this.buildSpark(name, store, n);
       return {
         name, index: latest.index, statusLabel: meta.label, color, efColor: color, selected,
@@ -528,7 +528,7 @@ class Component extends DCLogic {
         carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round)) : '',
         confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
         confBarW: confVal != null ? Math.round(confVal * 100) : 0,
-        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round((latest.target.confidence ?? 0.95) * 100) + ' · k=' + latest.target.k,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · c' + Math.round(latest.target.confidence * 100) + ' · k=' + latest.target.k,
         gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
         uniqueText: latest.samples.unique.toLocaleString(),
         sparkPath: spark.path, sparkDot: spark.dot,
@@ -591,7 +591,7 @@ class Component extends DCLogic {
         { label: 'Dropped frames', value: (rd.dropped_frame_fraction * 100).toFixed(2) + '%' },
         { label: 'Parts used', value: rd.parts_used + ' · ' + rd.incompatible_parts + ' incompat.' },
         { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
-        { label: 'Assurance target', value: Math.round((rd.target.confidence ?? 0.95) * 100) + '%' },
+        { label: 'Assurance target', value: Math.round(rd.target.confidence * 100) + '%' },
         { label: 'Train confidence @ ef', value: rd.train_confidence != null ? (rd.train_confidence * 100).toFixed(1) + '%' : '—' },
         { label: 'Train recall @ ef', value: rd.train_quantile_recall != null ? rd.train_quantile_recall.toFixed(3) : '—' },
         { label: 'Holdout compliance', value: rd.test_compliance != null ? (rd.test_compliance * 100).toFixed(1) + '%' : '—' },

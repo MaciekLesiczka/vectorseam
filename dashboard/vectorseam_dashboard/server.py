@@ -1,6 +1,6 @@
 """Static server for the VectorSeam calibration dashboard.
 
-The ashboard is configured entirely through environment variables:
+The dashboard is configured entirely through environment variables:
 
     VECTORSEAM_DASHBOARD_HOST     bind host (default 0.0.0.0)
     VECTORSEAM_DASHBOARD_PORT     bind port (default 8080)
@@ -70,7 +70,7 @@ def build_rounds_manifest(cohort_dir: Path, max_rounds: int) -> dict[str, object
     """Concatenates round-*.json documents into a history manifest.
 
     Rounds sort by filename, which the tuner names with a UTC timestamp, so
-    lexical order is chronological. Unreadable or malformed files are skipped. 
+    lexical order is chronological. Unreadable or malformed files are skipped.
     """
     rounds: list[object] = []
     for path in sorted(cohort_dir.glob("round-*.json")):

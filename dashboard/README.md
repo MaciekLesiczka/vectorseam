@@ -4,8 +4,7 @@ A self-contained web dashboard for the VectorSeam tuner's calibration output.
 It renders, per cohort, the train-selected and currently effective
 `ef_search`, training and holdout confidence, recall-vs-latency tradeoff,
 metrics-over-time charts, and an expandable round-by-round history. A hollow
-ef marker means the current candidate was inconclusive or rejected and the
-prior setting remains effective, or that a higher ef is acting protectively.
+ef marker means the round carried a prior effective recommendation.
 
 
 ## What it reads

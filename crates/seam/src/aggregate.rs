@@ -338,7 +338,8 @@ fn unique_intermediates(
 
 pub(crate) fn is_compatible(config: &AggregationConfig, part: &IntermediatePart) -> bool {
     let metadata = &part.metadata;
-    metadata.k == config.k
+    metadata.format_version == 1
+        && metadata.k == config.k
         && metadata.index == config.index
         && metadata.table == config.table
         && metadata.column == config.column

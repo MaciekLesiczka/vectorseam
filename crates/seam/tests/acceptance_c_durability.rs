@@ -101,6 +101,24 @@ fn c3_config_fingerprint_k_change_ignores_incompatible_intermediate() {
 }
 
 #[test]
+fn c3_unknown_intermediate_format_version_is_incompatible() {
+    let mut input = aggregation_input(Vec::new());
+    input.intermediates = vec![IntermediatePart {
+        metadata: IntermediateMetadata {
+            format_version: 2,
+            ..metadata(1)
+        },
+        samples: Vec::new(),
+    }];
+
+    let observed = aggregate(&input).unwrap();
+
+    assert_eq!(observed.incompatible_parts, 1);
+    assert_eq!(observed.parts_used, 0);
+    assert_eq!(observed.samples.measured, 0);
+}
+
+#[test]
 fn c4_empty_round_reports_insufficient_samples_and_full_gap() {
     let mut input = aggregation_input(Vec::new());
     input.listed_parts.clear();

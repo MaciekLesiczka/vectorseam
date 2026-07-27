@@ -350,9 +350,13 @@ selected = min(clearing)             → status "ok"
 - If the highest ef misses the assurance target, the round reports
   `recommended_ef = max(grid)` and `status = "target_unmet"`. Training and
   holdout confidence, compliance, and quantiles are populated at that ef.
-  These measurements let an operator distinguish a grid that needs resizing
-  from a target that needs adjustment. The effective recommendation carries
-  its prior value as defined below.
+  A lower ef that clears in the same sweep does not override this result: a
+  failing grid maximum contradicts the expected non-decreasing recall curve,
+  so the tuner reports the maximum's diagnostic measurements instead of
+  trusting an isolated lower clearing point. These measurements let an
+  operator distinguish a grid that needs resizing from a target that needs
+  adjustment. The effective recommendation carries its prior value as
+  defined below.
 
 #### Sample sufficiency
 
