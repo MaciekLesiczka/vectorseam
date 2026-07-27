@@ -102,11 +102,7 @@ services:
     environment:
       VECTORSEAM_DASHBOARD_STORE: /data/store
       VECTORSEAM_DASHBOARD_PORT: "8080"
-      # Only the superuser cohort has live calibrations in this demo. The
-      # component's live path is all-or-nothing per load, so listing cohorts
-      # without data would drop the whole view to sample data — keep it to the
-      # one that publishes.
-      VECTORSEAM_DASHBOARD_COHORTS: superuser
+      VECTORSEAM_DASHBOARD_COHORTS: superuser,reddit
     ports:
       - "8080:8080"
     volumes:

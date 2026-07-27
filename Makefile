@@ -1,4 +1,4 @@
-.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency demo demo-dirs demo-images demo-postgres-up demo-postgres-down demo-load-data demo-down demo-clean seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
+.PHONY: setup postgres ann-recall-latency-download ann-recall-latency-load ann-recall-latency-embed ann-recall-latency-pg-load ann-recall-latency-ground-truth ann-recall-latency-sweep ann-recall-latency-analyze all-ann-recall-latency demo demo-dirs demo-images demo-postgres-up demo-postgres-down demo-load-data demo-driver demo-down demo-clean seam-postgres-up seam-postgres-down seam-f-pg-fixture seam-f-pg-tests seam-anchor seam-anchor-tests seam-f-pg-harness test-seam-f-agg bench-seam-phase-b build-rust test-rust test-rust-msrv lint-rust doc-rust test-python bench-python bench-python-frame bench-python-vector-capture bench-python-report bench-python-frame-report bench-python-vector-capture-report test fmt clean
 
 CARGO  ?= cargo
 UV     ?= uv
@@ -23,6 +23,9 @@ DEMO_UID ?= $(shell id -u)
 DEMO_GID ?= $(shell id -g)
 API_LOGS ?= 0
 DETACHED ?= 0
+DEMO_API_URL ?= http://127.0.0.1:8000
+DEMO_DRIVER_QPS ?= 5
+DEMO_DRIVER_SEED ?= 7
 DEMO_TRUE_VALUES := 1 true yes on
 DEMO_UP_FLAGS := \
 	$(if $(filter $(DEMO_TRUE_VALUES),$(DETACHED)),--detach) \
@@ -90,6 +93,13 @@ demo-postgres-down: demo-down
 
 demo-load-data: setup demo-postgres-up
 	$(UV) run python demo/scripts/load_data.py
+
+demo-driver:
+	PYTHONPATH=demo $(UV) run python -m driver \
+		--queries superuser demo/data/queries.txt \
+		--queries reddit demo/data/queries_reddit.txt \
+		--url $(DEMO_API_URL) --qps $(DEMO_DRIVER_QPS) \
+		--seed $(DEMO_DRIVER_SEED)
 
 demo-down:
 	$(DEMO_DOCKER_COMPOSE) down

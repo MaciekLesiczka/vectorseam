@@ -1,10 +1,11 @@
-"""FastAPI search service for the VectorSeam M1 demo."""
+"""FastAPI search service for the VectorSeam demo."""
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import Enum
 import os
 import time
 from typing import Any
@@ -17,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
 from vectorseam import (
-    ProbabilitySampler,
     VectorCaptureProducer,
     VectorSocketSender,
     capture_vector,
@@ -28,8 +28,20 @@ MODEL_NAME = "BAAI/bge-small-en-v1.5"
 MODEL_REVISION = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 EMBEDDING_DIMENSION = 384
 MODEL_BATCH_SIZE = 256
-COHORT_NAME = "superuser"
 DEFAULT_DATABASE_URL = "postgresql://postgres:password@127.0.0.1:5432/postgres"
+
+
+class CohortName(str, Enum):
+    """Demo cohorts accepted at the API boundary."""
+
+    SUPERUSER = "superuser"
+    REDDIT = "reddit"
+
+
+COHORT_TABLES = {
+    CohortName.SUPERUSER: "docs_superuser",
+    CohortName.REDDIT: "docs_reddit",
+}
 
 
 @dataclass(frozen=True)
@@ -80,6 +92,7 @@ class SearchRequest(BaseModel):
 
     query: str = Field(min_length=1)
     k: int = Field(default=10, ge=1)
+    cohort: CohortName = CohortName.SUPERUSER
 
 
 class SearchResult(BaseModel):
@@ -96,6 +109,7 @@ class SearchResponse(BaseModel):
     results: list[SearchResult]
     latency_ms: float
     ef_search: int
+    cohort: CohortName
 
 
 def _parse_environment_int(
@@ -147,15 +161,18 @@ def _search_database(
     settings: Settings,
     vector: np.ndarray,
     k: int,
+    cohort: CohortName,
 ) -> tuple[list[SearchResult], float]:
     """Runs one HNSW search transaction and returns its query latency."""
     vector_literal = _format_vector(vector)
-    statement = """
+    statement = sql.SQL(
+        """
         SELECT doc_id, body, embedding <=> %s::vector AS distance
-        FROM docs_superuser
+        FROM {}
         ORDER BY embedding <=> %s::vector
         LIMIT %s;
-    """
+        """
+    ).format(sql.Identifier(COHORT_TABLES[cohort]))
 
     with psycopg.connect(settings.database_url) as connection:
         with connection.transaction():
@@ -207,7 +224,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sender.stop()
 
 
-app = FastAPI(title="VectorSeam M1 demo", lifespan=lifespan)
+app = FastAPI(title="VectorSeam demo", lifespan=lifespan)
 
 
 @app.post("/search", response_model=SearchResponse)
@@ -215,7 +232,7 @@ def search(payload: SearchRequest, request: Request) -> SearchResponse:
     """Embeds, captures, and searches for one query."""
     vector = _embed_query(request.app.state.model, payload.query)
     capture_vector(
-        COHORT_NAME,
+        payload.cohort.value,
         vector,
         producer=request.app.state.producer,
     )
@@ -223,9 +240,11 @@ def search(payload: SearchRequest, request: Request) -> SearchResponse:
         request.app.state.settings,
         vector,
         payload.k,
+        payload.cohort,
     )
     return SearchResponse(
         results=results,
         latency_ms=latency_ms,
         ef_search=request.app.state.settings.ef_search,
+        cohort=payload.cohort,
     )

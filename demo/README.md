@@ -1,8 +1,8 @@
 # VectorSeam M1 demo
 
-This demo runs one SuperUser cohort end to end. PostgreSQL, the collector, the
-API, the tuner, and the dashboard run in Docker Compose; the query driver runs
-on the host:
+This demo runs SuperUser and Reddit TLDR cohorts end to end. PostgreSQL, the
+collector, the API, the tuner, and the dashboard run in Docker Compose; one
+multi-cohort query driver runs on the host:
 
 ```
 live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json -> dashboard
@@ -10,7 +10,7 @@ live query -> FastAPI -> Python SDK -> collector -> tuner -> latest.json -> dash
 ```
 
 Once the stack is up, the dashboard is served at http://localhost:8080. It
-reads the tuner's calibration output live (the `superuser` cohort) and renders
+reads the tuner's calibration output live for both cohorts and renders
 recommended `ef_search`, holdout confidence, the recall/latency tradeoff, and
 round history. See [../dashboard/README.md](../dashboard/README.md) for the
 component and its configuration.
@@ -21,13 +21,16 @@ component and its configuration.
 - DuckDB's CLI for the optional sweep sanity query.
 - Network access when a new API container first loads the pinned
   `BAAI/bge-small-en-v1.5` model.
-- The three existing benchmark artifacts below. The demo never downloads data
+- The six existing benchmark artifacts below. The demo never downloads data
   and reports the missing path if any input is absent.
 
 ```
 python/ann-recall-latency/data/processed/stackexchange/docs.parquet
 python/ann-recall-latency/data/processed/stackexchange/queries.parquet
 python/ann-recall-latency/data/embeddings/stackexchange/BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/docs.parquet
+python/ann-recall-latency/data/processed/reddit/docs.parquet
+python/ann-recall-latency/data/processed/reddit/queries.parquet
+python/ann-recall-latency/data/embeddings/reddit/BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/docs.parquet
 ```
 
 Run every command below from the repository root. First install the Python
@@ -38,10 +41,11 @@ uv sync
 make demo-load-data
 ```
 
-The loader recreates `docs_superuser`, writes `demo/data/queries.txt`, and
-prints the 300,000-row count and HNSW build time. PostgreSQL data lives in the
-gitignored host directory `demo/data/postgres`, so `make demo-down` and later
-Compose runs preserve the loaded table and index.
+The loader recreates `docs_superuser` and `docs_reddit`, writes
+`demo/data/queries.txt` and `demo/data/queries_reddit.txt`, and prints each
+300,000-row count and HNSW build time. PostgreSQL data lives in the gitignored
+host directory `demo/data/postgres`, so `make demo-down` and later Compose runs
+preserve both tables and indexes.
 
 
 ## Run the pipeline
@@ -58,14 +62,18 @@ wait until `docker compose -f demo/docker-compose.yml ps` reports the API as
 healthy, then run the driver on the host:
 
 ```sh
-PYTHONPATH=demo uv run python -m driver \
-  --queries demo/data/queries.txt \
-  --url http://127.0.0.1:8000 \
-  --qps 5 \
-  --seed 7
+make demo-driver
 ```
 
-Optional paremeters
+The driver loads both query pools and randomly selects a cohort for every
+request. Its default 5 qps is shared across both cohorts, rather than applied
+to each cohort separately. Override the total rate and seed with
+`DEMO_DRIVER_QPS` and `DEMO_DRIVER_SEED`.
+
+The dashboard switches from sample data to the live view after both cohorts
+have published their first `latest.json`.
+
+Optional parameters
 
 `API_LOGS=1` includes API startup and request logs in an attached run.
 `DETACHED=1` starts the stack in the background, where Compose does not stream
@@ -76,10 +84,12 @@ The PostgreSQL data, collector segments, and tuner measurements/calibrations
 are bind-mounted under `demo/data`. They remain visible on the host and
 survive container replacement and `make demo-down`. The API is stateless.
 
-The API embeds and captures every query. Capture is best-effort, so searches
-continue normally while the collector is unavailable. The driver shuffles the
-2,000-query pool once and repeats it forever; tuner deduplication therefore
-caps `samples.unique` at 2,000.
+The API embeds and captures every query under the selected cohort, then
+searches that cohort's table. Capture is best-effort, so searches continue
+normally while the collector is unavailable. The driver shuffles each
+2,000-query pool once, randomly interleaves them, and repeats each pool
+forever; tuner deduplication therefore caps `samples.unique` at 2,000 per
+cohort.
 
 ## Verify
 
@@ -87,25 +97,32 @@ After the next minute boundary and collector flush, a segment proves the SDK
 to-storage path:
 
 ```sh
-find demo/data/store/cohorts/superuser -name 'part-*.vseam'
+find demo/data/store/cohorts \
+  \( -path '*/superuser/*' -o -path '*/reddit/*' \) \
+  -name 'part-*.vseam'
 ```
 
 Collector logs should show received records with approximately zero drops.
 After the tuner processes a closed window, these files prove Phase A:
 
 ```sh
-find demo/data/store/measurements/superuser \
+find demo/data/store/measurements \
   \( -name '*.truth.parquet' -o -name '*.sweep.parquet' \)
 ```
 
-Use DuckDB to compare the sweep with the published benchmark. On the full
-corpus, mean recall around 0.94 at `ef = 40` is the important sanity check:
+Use DuckDB to compare both sweeps with the published benchmark. On the full
+corpora, mean recall at `ef = 40` should be around 0.94 for SuperUser and 0.87
+for Reddit:
 
 ```sh
 duckdb -c "
-SELECT ef, avg(recall), quantile_cont(recall, 0.10)
-FROM 'demo/data/store/measurements/superuser/**/*.sweep.parquet'
-GROUP BY ef ORDER BY ef;
+SELECT regexp_extract(filename, 'measurements/([^/]+)/', 1) AS cohort,
+       ef, avg(recall), quantile_cont(recall, 0.10)
+FROM read_parquet(
+  'demo/data/store/measurements/*/**/*.sweep.parquet',
+  filename = true
+)
+GROUP BY cohort, ef ORDER BY cohort, ef;
 "
 ```
 
@@ -113,11 +130,12 @@ Round JSON first appears with honest `insufficient_samples` counts. The
 expected final artifact is:
 
 ```sh
-jq '{
-  status, recommended_ef, train_confidence, test_compliance,
-  confidence, effective, samples, ground_truth_latency_mean_ms
-}' \
-  demo/data/store/calibrations/superuser/latest.json
+for cohort in superuser reddit; do
+  jq '{
+    cohort, status, recommended_ef, train_confidence, test_compliance,
+    confidence, effective, samples, ground_truth_latency_mean_ms
+  }' "demo/data/store/calibrations/$cohort/latest.json"
+done
 ```
 
 The round reports `insufficient_samples` until each realized split can attain
@@ -137,23 +155,24 @@ same true compliance its confidence is lower than the train split's —
 selecting at 0.90 would keep proposing ef values the holdout cannot confirm.
 The 0.98 selection gate spends that margin deliberately: a slightly higher ef
 that gets approved beats the smallest ef that never does. Expect the first
-recommendation to be conservative and to settle near `recommended_ef: 60` as
-evidence accumulates. M1 displays the effective value but does not apply it;
-recommendation consumption remains milestone 2.
+recommendation to be conservative and to settle near `recommended_ef: 60` for
+SuperUser and `recommended_ef: 200` for Reddit as evidence accumulates. M1
+displays the effective value but does not apply it; recommendation consumption
+remains milestone 2.
 
-Typical timings at 5 qps are up to two minutes for the first `.vseam`, three
-to four minutes for the first Parquet pair, and six to ten minutes for the
-first successful calibration. If artifacts take more than twice that long,
-check collector counters, then `samples.failed` for statement timeouts, then
-closed-window alignment.
+At 5 shared qps, allow up to two minutes for the first `.vseam`. The tuner
+processes cohorts sequentially, so Parquet and successful-calibration timing
+depends on both database scans and the randomly realized per-cohort request
+rate. If artifacts stall, check collector counters, then `samples.failed` for
+statement timeouts, then closed-window alignment.
 
 For a continuously refreshed view, use:
 
 ```sh
-watch -n 5 "jq '{
-  status, recommended_ef, train_confidence, test_compliance,
-  confidence, effective, samples, ground_truth_latency_mean_ms
-}' demo/data/store/calibrations/superuser/latest.json"
+watch -n 5 'for cohort in superuser reddit; do
+  jq "{cohort, status, recommended_ef, confidence, effective, samples}" \
+    "demo/data/store/calibrations/$cohort/latest.json"
+done'
 ```
 
 Stop the stack without deleting its data:

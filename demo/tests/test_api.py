@@ -1,8 +1,11 @@
 """Tests for the demo search API helpers."""
 
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import numpy as np
+from pydantic import ValidationError
 
 from demo.api import app
 
@@ -60,6 +63,51 @@ class ApiTest(unittest.TestCase):
             ValueError, "DEMO_EF_SEARCH must be between"
         ):
             app.Settings.from_environment({"DEMO_EF_SEARCH": "0"})
+
+    def test_search_request_selects_supported_cohort(self) -> None:
+        default_request = app.SearchRequest(query="disk recovery")
+        reddit_request = app.SearchRequest(
+            query="today I learned", cohort="reddit"
+        )
+
+        self.assertEqual(app.CohortName.SUPERUSER, default_request.cohort)
+        self.assertEqual(app.CohortName.REDDIT, reddit_request.cohort)
+        self.assertEqual(
+            "docs_reddit", app.COHORT_TABLES[reddit_request.cohort]
+        )
+
+    def test_search_request_rejects_unknown_cohort(self) -> None:
+        with self.assertRaises(ValidationError):
+            app.SearchRequest(query="query", cohort="unknown")
+
+    def test_search_captures_and_queries_selected_cohort(self) -> None:
+        settings = app.Settings.from_environment({})
+        producer = object()
+        request = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    model=_FakeModel(),
+                    producer=producer,
+                    settings=settings,
+                )
+            )
+        )
+        payload = app.SearchRequest(query="today I learned", cohort="reddit")
+        with (
+            mock.patch.object(app, "capture_vector") as capture_vector,
+            mock.patch.object(
+                app, "_search_database", return_value=([], 1.25)
+            ) as search_database,
+        ):
+            response = app.search(payload, request)
+
+        captured_args = capture_vector.call_args
+        self.assertEqual("reddit", captured_args.args[0])
+        self.assertIs(producer, captured_args.kwargs["producer"])
+        self.assertEqual(
+            app.CohortName.REDDIT, search_database.call_args.args[3]
+        )
+        self.assertEqual(app.CohortName.REDDIT, response.cohort)
 
 
 if __name__ == "__main__":

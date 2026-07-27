@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import pathlib
 import tempfile
 import unittest
@@ -37,6 +38,28 @@ class DriverTest(unittest.TestCase):
             driver._search_url("http://127.0.0.1:8000/"),
         )
 
+    def test_parse_args_accepts_multiple_cohort_query_files(self) -> None:
+        args = driver._parse_args(
+            [
+                "--queries",
+                "superuser",
+                "superuser.txt",
+                "--queries",
+                "reddit",
+                "reddit.txt",
+                "--url",
+                "http://127.0.0.1:8000",
+            ]
+        )
+
+        self.assertEqual(
+            {
+                "superuser": pathlib.Path("superuser.txt"),
+                "reddit": pathlib.Path("reddit.txt"),
+            },
+            args.queries,
+        )
+
     @mock.patch("demo.driver.__main__.urllib.request.urlopen")
     def test_send_query_returns_http_error_body(
         self, urlopen: mock.Mock
@@ -52,6 +75,7 @@ class DriverTest(unittest.TestCase):
         status, error = driver._send_query(
             "http://127.0.0.1:8000/search",
             "query",
+            "reddit",
             1.0,
         )
 
@@ -59,6 +83,11 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(
             'HTTP 500 Internal Server Error: {"detail":"database unavailable"}',
             error,
+        )
+        sent_request = urlopen.call_args.args[0]
+        self.assertEqual(
+            {"query": "query", "k": 10, "cohort": "reddit"},
+            json.loads(sent_request.data),
         )
 
     @mock.patch("demo.driver.__main__.time.sleep")
@@ -79,7 +108,10 @@ class DriverTest(unittest.TestCase):
             output
         ):
             driver.replay(
-                queries=["query"],
+                queries_by_cohort={
+                    "superuser": ["superuser query"],
+                    "reddit": ["reddit query"],
+                },
                 url="http://127.0.0.1:8000",
                 qps=5.0,
                 seed=7,
@@ -95,6 +127,34 @@ class DriverTest(unittest.TestCase):
         )
         self.assertIn("requests=4 errors=2", lines[1])
         self.assertIn("last_error=None", lines[1])
+
+    @mock.patch("demo.driver.__main__.time.sleep")
+    @mock.patch("demo.driver.__main__._send_query")
+    def test_replay_randomly_interleaves_cohort_queries_at_shared_rate(
+        self, send_query: mock.Mock, unused_sleep: mock.Mock
+    ) -> None:
+        send_query.side_effect = [(200, None)] * 20 + [KeyboardInterrupt()]
+
+        with self.assertRaises(KeyboardInterrupt):
+            driver.replay(
+                queries_by_cohort={
+                    "superuser": ["superuser one", "superuser two"],
+                    "reddit": ["reddit one", "reddit two"],
+                },
+                url="http://127.0.0.1:8000",
+                qps=5.0,
+                seed=7,
+                log_every=100,
+                timeout_seconds=1.0,
+            )
+
+        successful_calls = send_query.call_args_list[:20]
+        cohorts = {call.args[2] for call in successful_calls}
+        self.assertEqual({"superuser", "reddit"}, cohorts)
+        for call in successful_calls:
+            cohort = call.args[2]
+            query = call.args[1]
+            self.assertTrue(query.startswith(cohort))
 
 
 if __name__ == "__main__":
