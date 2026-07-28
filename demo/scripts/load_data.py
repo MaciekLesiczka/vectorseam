@@ -1,4 +1,4 @@
-"""Load the SuperUser demo corpus into Postgres and emit query text."""
+"""Load the SuperUser and Reddit TLDR demo corpora into Postgres."""
 
 from __future__ import annotations
 
@@ -32,10 +32,30 @@ DEFAULT_EMBEDDINGS_PATH = (
     / "BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
     / "docs.parquet"
 )
-DEFAULT_QUERY_OUTPUT = REPO_ROOT / "demo" / "data" / "queries.txt"
+DEFAULT_QUERY_OUTPUT = (
+    REPO_ROOT / "demo" / "data" / "queries_superuser.txt"
+)
+DEFAULT_REDDIT_DOCS_PATH = (
+    BENCHMARK_DATA / "processed" / "reddit" / "docs.parquet"
+)
+DEFAULT_REDDIT_QUERIES_PATH = (
+    BENCHMARK_DATA / "processed" / "reddit" / "queries.parquet"
+)
+DEFAULT_REDDIT_EMBEDDINGS_PATH = (
+    BENCHMARK_DATA
+    / "embeddings"
+    / "reddit"
+    / "BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+    / "docs.parquet"
+)
+DEFAULT_REDDIT_QUERY_OUTPUT = (
+    REPO_ROOT / "demo" / "data" / "queries_reddit.txt"
+)
 DEFAULT_DSN = "postgresql://postgres:password@127.0.0.1:5432/postgres"
-TABLE_NAME = "docs_superuser"
-INDEX_NAME = "docs_superuser_embedding_hnsw_idx"
+SUPERUSER_TABLE_NAME = "docs_superuser"
+SUPERUSER_INDEX_NAME = "docs_superuser_embedding_hnsw_idx"
+REDDIT_TABLE_NAME = "docs_reddit"
+REDDIT_INDEX_NAME = "docs_reddit_embedding_hnsw_idx"
 EMBEDDING_DIMENSION = 384
 COPY_BATCH_ROWS = 1000
 PROGRESS_ROWS = 10_000
@@ -132,12 +152,14 @@ def _validate_embedding_schema(
         )
 
 
-def _create_table(connection: psycopg.Connection[Any]) -> None:
+def _create_table(
+    connection: psycopg.Connection[Any], table_name: str
+) -> None:
     """Drops and recreates the idempotent demo table."""
     with connection.cursor() as cursor:
         cursor.execute(
             sql.SQL("DROP TABLE IF EXISTS {} CASCADE;").format(
-                sql.Identifier(TABLE_NAME)
+                sql.Identifier(table_name)
             )
         )
         cursor.execute(
@@ -150,7 +172,7 @@ def _create_table(connection: psycopg.Connection[Any]) -> None:
                 );
                 """
             ).format(
-                sql.Identifier(TABLE_NAME),
+                sql.Identifier(table_name),
                 sql.Literal(EMBEDDING_DIMENSION),
             )
         )
@@ -162,6 +184,7 @@ def _copy_documents(
     embeddings_path: pathlib.Path,
     bodies: dict[int, str],
     docs_path: pathlib.Path,
+    table_name: str,
 ) -> int:
     """Joins embeddings to raw bodies by ID and streams them through COPY."""
     parquet_file = pq.ParquetFile(embeddings_path)
@@ -171,7 +194,7 @@ def _copy_documents(
     copy_statement = sql.SQL(
         "COPY {} (doc_id, body, embedding) "
         "FROM STDIN WITH (FORMAT csv, NULL '')"
-    ).format(sql.Identifier(TABLE_NAME))
+    ).format(sql.Identifier(table_name))
 
     with connection.cursor() as cursor:
         with cursor.copy(copy_statement) as copy:
@@ -218,6 +241,8 @@ def _copy_documents(
 def _build_index(
     connection: psycopg.Connection[Any],
     parallel_workers: int,
+    table_name: str,
+    index_name: str,
 ) -> float:
     """Builds and analyzes the benchmark-compatible HNSW index."""
     started_at = time.monotonic()
@@ -236,12 +261,12 @@ def _build_index(
                 WITH (m = 16, ef_construction = 64);
                 """
             ).format(
-                sql.Identifier(INDEX_NAME),
-                sql.Identifier(TABLE_NAME),
+                sql.Identifier(index_name),
+                sql.Identifier(table_name),
             )
         )
         cursor.execute(
-            sql.SQL("ANALYZE {};").format(sql.Identifier(TABLE_NAME))
+            sql.SQL("ANALYZE {};").format(sql.Identifier(table_name))
         )
     connection.commit()
     return time.monotonic() - started_at
@@ -253,6 +278,8 @@ def _load_database(
     docs_path: pathlib.Path,
     embeddings_path: pathlib.Path,
     parallel_workers: int,
+    table_name: str,
+    index_name: str,
 ) -> tuple[int, float]:
     """Loads the joined corpus and returns row count and index build time."""
     bodies = _load_document_bodies(docs_path)
@@ -260,18 +287,24 @@ def _load_database(
         with connection.cursor() as cursor:
             cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         connection.commit()
-        _create_table(connection)
+        _create_table(connection, table_name)
         try:
             row_count = _copy_documents(
                 connection,
                 embeddings_path,
                 bodies,
                 docs_path,
+                table_name,
             )
         except Exception:
             connection.rollback()
             raise
-        index_seconds = _build_index(connection, parallel_workers)
+        index_seconds = _build_index(
+            connection,
+            parallel_workers,
+            table_name,
+            index_name,
+        )
     return row_count, index_seconds
 
 
@@ -293,6 +326,26 @@ def _parse_args() -> argparse.Namespace:
         default=DEFAULT_QUERY_OUTPUT,
     )
     parser.add_argument(
+        "--reddit-docs",
+        type=pathlib.Path,
+        default=DEFAULT_REDDIT_DOCS_PATH,
+    )
+    parser.add_argument(
+        "--reddit-queries",
+        type=pathlib.Path,
+        default=DEFAULT_REDDIT_QUERIES_PATH,
+    )
+    parser.add_argument(
+        "--reddit-embeddings",
+        type=pathlib.Path,
+        default=DEFAULT_REDDIT_EMBEDDINGS_PATH,
+    )
+    parser.add_argument(
+        "--reddit-queries-output",
+        type=pathlib.Path,
+        default=DEFAULT_REDDIT_QUERY_OUTPUT,
+    )
+    parser.add_argument(
         "--dsn",
         default=os.environ.get("DATABASE_URL", DEFAULT_DSN),
         help="Postgres connection string.",
@@ -312,31 +365,69 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Writes query text, loads documents, and builds the HNSW index."""
+    """Writes query text and loads both cohort tables and HNSW indexes."""
     args = _parse_args()
     try:
-        for path in (args.docs, args.queries, args.embeddings):
+        for path in (
+            args.docs,
+            args.queries,
+            args.embeddings,
+            args.reddit_docs,
+            args.reddit_queries,
+            args.reddit_embeddings,
+        ):
             _require_file(path)
-        query_count = _write_queries(args.queries, args.queries_output)
-        print(
-            f"wrote {query_count:,} queries to {args.queries_output}",
-            flush=True,
+        corpora = (
+            (
+                "superuser",
+                args.docs,
+                args.queries,
+                args.embeddings,
+                args.queries_output,
+                SUPERUSER_TABLE_NAME,
+                SUPERUSER_INDEX_NAME,
+            ),
+            (
+                "reddit",
+                args.reddit_docs,
+                args.reddit_queries,
+                args.reddit_embeddings,
+                args.reddit_queries_output,
+                REDDIT_TABLE_NAME,
+                REDDIT_INDEX_NAME,
+            ),
         )
-        row_count, index_seconds = _load_database(
-            dsn=args.dsn,
-            docs_path=args.docs,
-            embeddings_path=args.embeddings,
-            parallel_workers=args.parallel_workers,
-        )
+        for (
+            cohort,
+            docs_path,
+            queries_path,
+            embeddings_path,
+            queries_output,
+            table_name,
+            index_name,
+        ) in corpora:
+            query_count = _write_queries(queries_path, queries_output)
+            print(
+                f"{cohort}: wrote {query_count:,} queries to "
+                f"{queries_output}",
+                flush=True,
+            )
+            row_count, index_seconds = _load_database(
+                dsn=args.dsn,
+                docs_path=docs_path,
+                embeddings_path=embeddings_path,
+                parallel_workers=args.parallel_workers,
+                table_name=table_name,
+                index_name=index_name,
+            )
+            print(
+                f"{cohort}: loaded {row_count:,} rows into {table_name}; "
+                f"HNSW index built in {index_seconds:.1f}s",
+                flush=True,
+            )
     except (DemoDataError, OSError, psycopg.Error) as error:
         print(f"load_data.py: error: {error}", file=sys.stderr)
         return 1
-
-    print(
-        f"loaded {row_count:,} rows into {TABLE_NAME}; "
-        f"HNSW index built in {index_seconds:.1f}s",
-        flush=True,
-    )
     return 0
 
 

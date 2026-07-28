@@ -24,6 +24,11 @@ indexes:
     table: docs_superuser
     key: doc_id
     column: embedding
+  reddit:
+    data_source: demo
+    table: docs_reddit
+    key: doc_id
+    column: embedding
 
 targets:
   demo_recall:
@@ -37,4 +42,7 @@ targets:
 cohorts:
   superuser:
     index: superuser
+    target: demo_recall
+  reddit:
+    index: reddit
     target: demo_recall

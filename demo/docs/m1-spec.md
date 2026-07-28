@@ -26,11 +26,11 @@ demo/
     Dockerfile
   driver/              # query replay script
   scripts/
-    load_data.py       # loads postgres + emits queries.txt
+    load_data.py       # loads postgres + emits queries_superuser.txt
   config/
     seam.yaml          # tuner demo config
   data/                # gitignored
-    queries.txt        # produced by load_data.py
+    queries_superuser.txt  # produced by load_data.py
     postgres/          # persistent postgres bind mount
     store/             # object store root (collector writes, tuner reads/writes)
 ```
@@ -60,7 +60,8 @@ HNSW, `m = 16`, `ef_construction = 64`, cosine (`vector_cosine_ops`), 384 dims.
 Self-contained script. Does two things:
 
 1. Reads raw `queries.parquet` and writes query texts to
-   `demo/data/queries.txt`, one query per line, in file order. No embeddings —
+   `demo/data/queries_superuser.txt`, one query per line, in file order. No
+   embeddings —
    the API embeds live; that is the pipeline under test.
 2. Loads the documents table: joins raw `docs.parquet` (text) with the
    embeddings `docs.parquet` by document id and writes one table:
@@ -125,8 +126,9 @@ Sampling: capture every query. Do not use the adaptive sampler in M1.
 Script, argparse:
 
 ```
-python -m driver --queries demo/data/queries.txt --url http://127.0.0.1:8000 \
-                 --qps 5 --seed 7
+python -m driver \
+  --queries superuser demo/data/queries_superuser.txt \
+  --url http://127.0.0.1:8000 --qps 5 --seed 7
 ```
 
 - Reads all lines, shuffles once with the seed, loops forever over the

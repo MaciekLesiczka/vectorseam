@@ -1,4 +1,4 @@
-"""Replay demo queries against the search API at a fixed rate."""
+"""Replay multiple demo cohorts against the search API at a fixed rate."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ DEFAULT_QPS = 5.0
 DEFAULT_SEED = 7
 DEFAULT_LOG_EVERY = 100
 DEFAULT_TIMEOUT_SECONDS = 30.0
+COHORTS = ("superuser", "reddit")
 
 
 def _positive_float(value: str) -> float:
@@ -51,10 +52,12 @@ def _load_queries(path: pathlib.Path) -> list[str]:
 
 
 def _send_query(
-    url: str, query: str, timeout_seconds: float
+    url: str, query: str, cohort: str, timeout_seconds: float
 ) -> tuple[int, str | None]:
     """Sends one query and returns its status and optional HTTP error."""
-    body = json.dumps({"query": query, "k": 10}).encode("utf-8")
+    body = json.dumps(
+        {"query": query, "k": 10, "cohort": cohort}
+    ).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=body,
@@ -87,33 +90,42 @@ def _search_url(base_url: str) -> str:
 
 def replay(
     *,
-    queries: list[str],
+    queries_by_cohort: dict[str, list[str]],
     url: str,
     qps: float,
     seed: int,
     log_every: int,
     timeout_seconds: float,
 ) -> None:
-    """Replays a shuffled query pool forever."""
-    shuffled_queries = list(queries)
-    random.Random(seed).shuffle(shuffled_queries)
+    """Randomly interleaves shuffled cohort query pools at one total QPS."""
+    random_source = random.Random(seed)
+    cohort_names = tuple(queries_by_cohort)
+    shuffled_queries: dict[str, list[str]] = {}
+    query_indexes: dict[str, int] = {}
+    for cohort, queries in queries_by_cohort.items():
+        shuffled_queries[cohort] = list(queries)
+        random_source.shuffle(shuffled_queries[cohort])
+        query_indexes[cohort] = 0
+
     search_url = _search_url(url)
     request_interval = 1.0 / qps
     latencies_ms: deque[float] = deque(maxlen=log_every)
     request_count = 0
     error_count = 0
     last_error: str | None = None
-    query_index = 0
     next_request_at = time.monotonic()
 
     while True:
-        query = shuffled_queries[query_index]
-        query_index = (query_index + 1) % len(shuffled_queries)
+        cohort = random_source.choice(cohort_names)
+        cohort_queries = shuffled_queries[cohort]
+        query_index = query_indexes[cohort]
+        query = cohort_queries[query_index]
+        query_indexes[cohort] = (query_index + 1) % len(cohort_queries)
         started_at = time.monotonic()
         request_count += 1
         try:
             status, http_error = _send_query(
-                search_url, query, timeout_seconds
+                search_url, query, cohort, timeout_seconds
             )
             if not 200 <= status < 300:
                 error_count += 1
@@ -141,14 +153,19 @@ def replay(
             next_request_at = time.monotonic()
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(arguments: list[str] | None = None) -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--queries",
-        type=pathlib.Path,
+        action="append",
+        nargs=2,
+        metavar=("COHORT", "PATH"),
         required=True,
-        help="Path to the one-query-per-line input file.",
+        help=(
+            "Cohort and one-query-per-line input path. Repeat for each "
+            "cohort."
+        ),
     )
     parser.add_argument(
         "--url",
@@ -185,26 +202,44 @@ def _parse_args() -> argparse.Namespace:
             f"Defaults to {DEFAULT_TIMEOUT_SECONDS:g}."
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args(arguments)
+    query_files: dict[str, pathlib.Path] = {}
+    for cohort, raw_path in args.queries:
+        if cohort not in COHORTS:
+            parser.error(
+                f"--queries cohort must be one of: {', '.join(COHORTS)}"
+            )
+        if cohort in query_files:
+            parser.error(f"duplicate --queries cohort: {cohort}")
+        query_files[cohort] = pathlib.Path(raw_path)
+    args.queries = query_files
+    return args
 
 
 def main() -> int:
     """Runs the query replay loop."""
     args = _parse_args()
     try:
-        queries = _load_queries(args.queries)
+        queries_by_cohort = {
+            cohort: _load_queries(path)
+            for cohort, path in args.queries.items()
+        }
     except ValueError as error:
         print(f"driver: error: {error}", file=sys.stderr)
         return 1
 
+    query_counts = ", ".join(
+        f"{cohort}={len(queries):,}"
+        for cohort, queries in queries_by_cohort.items()
+    )
     print(
-        f"loaded {len(queries):,} queries; replaying at {args.qps:g} qps "
-        f"with seed {args.seed}",
+        f"loaded queries ({query_counts}); replaying at {args.qps:g} shared "
+        f"qps with seed {args.seed}",
         flush=True,
     )
     try:
         replay(
-            queries=queries,
+            queries_by_cohort=queries_by_cohort,
             url=args.url,
             qps=args.qps,
             seed=args.seed,
