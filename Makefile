@@ -96,7 +96,7 @@ demo-load-data: setup demo-postgres-up
 
 demo-driver:
 	PYTHONPATH=demo $(UV) run python -m driver \
-		--queries superuser demo/data/queries.txt \
+		--queries superuser demo/data/queries_superuser.txt \
 		--queries reddit demo/data/queries_reddit.txt \
 		--url $(DEMO_API_URL) --qps $(DEMO_DRIVER_QPS) \
 		--seed $(DEMO_DRIVER_SEED)

@@ -19,7 +19,7 @@ class LoadDataTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
             input_path = root / "queries.parquet"
-            output_path = root / "data" / "queries.txt"
+            output_path = root / "data" / "queries_superuser.txt"
             table = pa.table({"text": ["query two", "query one"]})
             pq.write_table(table, input_path)
 
@@ -45,7 +45,7 @@ class LoadDataTest(unittest.TestCase):
             docs=pathlib.Path("superuser-docs.parquet"),
             queries=pathlib.Path("superuser-queries.parquet"),
             embeddings=pathlib.Path("superuser-embeddings.parquet"),
-            queries_output=pathlib.Path("queries.txt"),
+            queries_output=pathlib.Path("queries_superuser.txt"),
             reddit_docs=pathlib.Path("reddit-docs.parquet"),
             reddit_queries=pathlib.Path("reddit-queries.parquet"),
             reddit_embeddings=pathlib.Path("reddit-embeddings.parquet"),

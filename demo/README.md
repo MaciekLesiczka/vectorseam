@@ -42,10 +42,10 @@ make demo-load-data
 ```
 
 The loader recreates `docs_superuser` and `docs_reddit`, writes
-`demo/data/queries.txt` and `demo/data/queries_reddit.txt`, and prints each
-300,000-row count and HNSW build time. PostgreSQL data lives in the gitignored
-host directory `demo/data/postgres`, so `make demo-down` and later Compose runs
-preserve both tables and indexes.
+`demo/data/queries_superuser.txt` and `demo/data/queries_reddit.txt`, and prints
+each 300,000-row count and HNSW build time. PostgreSQL data lives in the
+gitignored host directory `demo/data/postgres`, so `make demo-down` and later
+Compose runs preserve both tables and indexes.
 
 
 ## Run the pipeline

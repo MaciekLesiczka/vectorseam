@@ -17,7 +17,9 @@ class DriverTest(unittest.TestCase):
 
     def test_load_queries_preserves_file_order_and_text(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            path = pathlib.Path(temporary_directory) / "queries.txt"
+            path = (
+                pathlib.Path(temporary_directory) / "queries_superuser.txt"
+            )
             path.write_text("first query\nsecond query\n", encoding="utf-8")
 
             queries = driver._load_queries(path)
@@ -26,7 +28,9 @@ class DriverTest(unittest.TestCase):
 
     def test_load_queries_rejects_empty_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
-            path = pathlib.Path(temporary_directory) / "queries.txt"
+            path = (
+                pathlib.Path(temporary_directory) / "queries_superuser.txt"
+            )
             path.touch()
 
             with self.assertRaisesRegex(ValueError, "queries file is empty"):

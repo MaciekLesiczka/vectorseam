@@ -32,7 +32,9 @@ DEFAULT_EMBEDDINGS_PATH = (
     / "BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
     / "docs.parquet"
 )
-DEFAULT_QUERY_OUTPUT = REPO_ROOT / "demo" / "data" / "queries.txt"
+DEFAULT_QUERY_OUTPUT = (
+    REPO_ROOT / "demo" / "data" / "queries_superuser.txt"
+)
 DEFAULT_REDDIT_DOCS_PATH = (
     BENCHMARK_DATA / "processed" / "reddit" / "docs.parquet"
 )
