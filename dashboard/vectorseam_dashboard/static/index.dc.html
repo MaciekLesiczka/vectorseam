@@ -405,6 +405,9 @@ class Component extends DCLogic {
 
   colorFor(name, i) { return this.COLORS[name] || this.PALETTE[i % this.PALETTE.length]; }
   r(x) { return Math.round(x * 100) / 100; }
+  percentValue(value) { return Math.floor(value * 1000) / 10; }
+  fmtPercentNumber(value) { return this.percentValue(value).toFixed(1); }
+  fmtPercent(value) { return value != null ? this.fmtPercentNumber(value) + '%' : '—'; }
   xAt(i, n) { return this.PX0 + (n <= 1 ? 0 : (i / (n - 1))) * (this.PX1 - this.PX0); }
   // The ef grid is per-cohort configuration and is published in every round
   // record, so the axis is derived from the data rather than assumed. A
@@ -504,15 +507,24 @@ class Component extends DCLogic {
     return 'not approved';
   }
   vis(rounds, n) { return rounds.slice(Math.max(0, rounds.length - n)); }
+  timelineFor(cohorts, store) {
+    const times = new Set();
+    cohorts.forEach((name) => store[name].rounds.forEach((rd) => times.add(rd.computed_at)));
+    return [...times].sort();
+  }
 
-  buildTimeChart(metric, cohorts, store, colors, n, hoverIndex, efGrid) {
-    const first = store[cohorts[0]].rounds;
-    const nn = Math.min(n, first.length);
+  buildTimeChart(metric, cohorts, store, colors, timeline, hoverIndex, efGrid) {
+    const nn = timeline.length;
+    const roundMaps = {};
+    cohorts.forEach((name) => {
+      roundMaps[name] = new Map(store[name].rounds.map((rd) => [rd.computed_at, rd]));
+    });
     const series = cohorts.map((name) => {
       const color = colors[name];
-      const rounds = this.vis(store[name].rounds, nn);
       const pts = []; const segs = []; const carried = []; let cur = []; let hoverDot = null;
-      rounds.forEach((rd, i) => {
+      timeline.forEach((time, i) => {
+        const rd = roundMaps[name].get(time);
+        if (!rd) return;
         const x = this.xAt(i, nn);
         let y = null, val = null;
         // Solid = the round published a fresh recommendation; hollow = it kept
@@ -535,9 +547,10 @@ class Component extends DCLogic {
     // — solid is confidence on the left scale, dashed is candidate ef on the
     // left panel's ef scale.
     const efSeries = metric === 'conf' ? cohorts.map((name) => {
-      const rounds = this.vis(store[name].rounds, nn);
       const pts = []; const segs = []; let cur = [];
-      rounds.forEach((rd, i) => {
+      timeline.forEach((time, i) => {
+        const rd = roundMaps[name].get(time);
+        if (!rd) return;
         const y = rd.recommended_ef == null ? null : this.efY(rd.recommended_ef, efGrid);
         if (y == null) { if (cur.length) { segs.push(cur); cur = []; } return; }
         const x = this.xAt(i, nn);
@@ -561,15 +574,16 @@ class Component extends DCLogic {
       ticks.forEach((v) => { const ref = refs.some((x) => Math.abs(x - v) < 1e-9); hLines.push({ y: this.r(this.confChartY(v)), label: v.toFixed(2), stroke: ref ? 'oklch(0.5 0.09 158)' : 'oklch(0.27 0.013 258)', dash: ref ? '5 4' : '0', labelFill: ref ? 'oklch(0.8 0.14 158)' : 'oklch(0.52 0.014 258)' }); });
     }
     const xTicks = []; const count = Math.min(6, nn);
-    for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(first[first.length - nn + i].computed_at) }); }
+    for (let k = 0; k < count; k++) { const i = count <= 1 ? 0 : Math.round(k * (nn - 1) / (count - 1)); xTicks.push({ x: this.r(this.xAt(i, nn)), label: this.hm(timeline[i]) }); }
     let hasHover = false, hoverX = 0, hoverTime = '', readoutRows = [];
     if (hoverIndex != null && hoverIndex < nn) {
-      hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(first[first.length - nn + hoverIndex].computed_at);
+      const hoverRound = timeline[hoverIndex];
+      hasHover = true; hoverX = this.r(this.xAt(hoverIndex, nn)); hoverTime = this.hm(hoverRound);
       readoutRows = cohorts.map((name) => {
-        const rd = this.vis(store[name].rounds, nn)[hoverIndex]; let text = '—';
-        if (metric === 'ef') text = rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : '')) : 'calibrating';
-        else text = (rd.recommended_ef != null ? ('ef ' + rd.recommended_ef) : 'no candidate')
-          + (rd.confidence != null ? (' · ' + Math.round(rd.confidence * 100) + '%') : '');
+        const rd = roundMaps[name].get(hoverRound); let text = '—';
+        if (rd && metric === 'ef') text = rd.effective ? ('ef ' + rd.effective.recommended_ef + (rd.effective.carried ? ' · carried' : '')) : 'calibrating';
+        else if (rd) text = (rd.recommended_ef != null ? ('ef ' + rd.recommended_ef) : 'no candidate')
+          + (rd.confidence != null ? (' · ' + this.fmtPercent(rd.confidence)) : '');
         return { name, color: colors[name], text };
       });
     }
@@ -630,9 +644,14 @@ class Component extends DCLogic {
     if (s.error) return { loading: false, ready: false, error: s.error };
     const cohorts = s.cohorts; const store = s.store;
     const colors = {}; cohorts.forEach((nm, i) => { colors[nm] = this.colorFor(nm, i); });
-    const total = store[cohorts[0]].rounds.length;
-    const refNow = store[cohorts[0]].latest.computed_at;
-    const n = Math.max(6, Math.min(total, s.chartRange || 24));
+    // Cohorts may publish at different times or skip rounds. A shared timestamp
+    // domain keeps their points and hover readouts aligned without assuming
+    // that every cohort has the same number of records.
+    const fullTimeline = this.timelineFor(cohorts, store);
+    const total = fullTimeline.length;
+    const refNow = fullTimeline[total - 1];
+    const n = Math.min(total, Math.max(6, s.chartRange || 24));
+    const timeline = fullTimeline.slice(-n);
     const efGrid = this.efGridFor(cohorts, store);
 
     const cards = cohorts.map((name) => {
@@ -656,11 +675,11 @@ class Component extends DCLogic {
         carried, carriedNote: carried ? ('carried from ' + this.hm(latest.effective.source_round) + ' · ' + this.carriedReason(latest)) : '',
         showCandidate, candidateColor: this.CANDIDATE,
         candidateNote: showCandidate
-          ? ('candidate ef ' + candidateEf + (latest.confidence != null ? ' · ' + Math.round(latest.confidence * 100) + '%' : ''))
+          ? ('candidate ef ' + candidateEf + (latest.confidence != null ? ' · ' + this.fmtPercent(latest.confidence) : ''))
           : '',
-        confPct: confVal != null ? Math.round(confVal * 100) + '%' : '—',
-        confBarW: confVal != null ? Math.round(confVal * 100) : 0,
-        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + Math.round(latest.target.percentile * 100) + ' · sel ' + Math.round(latest.target.selection_confidence * 100) + '/app ' + Math.round(latest.target.approval_confidence * 100) + ' · k=' + latest.target.k,
+        confPct: this.fmtPercent(confVal),
+        confBarW: confVal != null ? this.percentValue(confVal) : 0,
+        targetText: 'recall ≥ ' + latest.target.value.toFixed(2) + ' · p' + this.fmtPercentNumber(latest.target.percentile) + ' · sel ' + this.fmtPercentNumber(latest.target.selection_confidence) + '/app ' + this.fmtPercentNumber(latest.target.approval_confidence) + ' · k=' + latest.target.k,
         gtText: latest.ground_truth_latency_mean_ms != null ? Math.round(latest.ground_truth_latency_mean_ms) + ' ms' : '—',
         uniqueText: latest.samples.unique.toLocaleString(),
         sparkPath: spark.path, sparkDot: spark.dot,
@@ -680,8 +699,8 @@ class Component extends DCLogic {
         fg: active ? 'oklch(0.9 0.09 195)' : 'oklch(0.62 0.012 258)' };
     });
 
-    const efChart = this.buildTimeChart('ef', cohorts, store, colors, n, s.hoverIndex, efGrid);
-    const confChart = this.buildTimeChart('conf', cohorts, store, colors, n, s.hoverIndex, efGrid);
+    const efChart = this.buildTimeChart('ef', cohorts, store, colors, timeline, s.hoverIndex, efGrid);
+    const confChart = this.buildTimeChart('conf', cohorts, store, colors, timeline, s.hoverIndex, efGrid);
     const onHoverMove = (e) => {
       const rect = e.currentTarget.getBoundingClientRect();
       const vx = (e.clientX - rect.left) / rect.width * this.CW;
@@ -714,7 +733,6 @@ class Component extends DCLogic {
       // that never selected. The recommendation in force is a detail row.
       const candidateEf = rd.recommended_ef;
       const w = rd.window; const c = rd.coverage; const sm = rd.samples;
-      const pct = (v) => v != null ? (v * 100).toFixed(1) + '%' : '—';
       const num = (v) => v != null ? v.toFixed(3) : '—';
       // The grid is exactly two columns, so consecutive pairs sit side by side.
       // Train metrics take the left column and holdout the right; the gates head
@@ -727,20 +745,20 @@ class Component extends DCLogic {
         { label: 'Recommended ef', value: rd.effective ? String(rd.effective.recommended_ef) + (rd.effective.carried ? ' · carried' : '') : '—' },
         { label: 'Window', value: this.fmtWindow(w) },
         { label: 'Unique samples', value: sm.unique.toLocaleString() },
-        { label: 'Selection gate', value: Math.round(rd.target.selection_confidence * 100) + '%' },
-        { label: 'Approval gate', value: Math.round(rd.target.approval_confidence * 100) + '%' },
+        { label: 'Selection gate', value: this.fmtPercent(rd.target.selection_confidence) },
+        { label: 'Approval gate', value: this.fmtPercent(rd.target.approval_confidence) },
         { label: 'Train samples', value: sm.train.toLocaleString() },
         { label: 'Holdout samples', value: sm.test.toLocaleString() },
         { label: 'Train recall', value: num(rd.train_quantile_recall) },
         { label: 'Holdout recall', value: num(rd.test_quantile_recall) },
-        { label: 'Train compliance', value: pct(rd.train_compliance) },
-        { label: 'Holdout compliance', value: pct(rd.test_compliance) },
-        { label: 'Train confidence', value: pct(rd.train_confidence) },
-        { label: 'Holdout confidence', value: pct(rd.confidence) },
+        { label: 'Train compliance', value: this.fmtPercent(rd.train_compliance) },
+        { label: 'Holdout compliance', value: this.fmtPercent(rd.test_compliance) },
+        { label: 'Train confidence', value: this.fmtPercent(rd.train_confidence) },
+        { label: 'Holdout confidence', value: this.fmtPercent(rd.confidence) },
         { label: 'Measured', value: sm.measured.toLocaleString() },
         { label: 'Failed', value: sm.failed.toLocaleString() },
-        { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + Math.round(c.empty_window_fraction * 100) + '% empty' },
-        { label: 'Dropped frames', value: (rd.dropped_frame_fraction * 100).toFixed(2) + '%' },
+        { label: 'Window coverage', value: c.windows_with_parts + '/' + c.windows_in_scope + ' · ' + this.fmtPercent(c.empty_window_fraction) + ' empty' },
+        { label: 'Dropped frames', value: this.fmtPercent(rd.dropped_frame_fraction) },
         { label: 'Parts used', value: rd.parts_used + ' · ' + rd.incompatible_parts + ' incompat.' },
         { label: 'Exact-scan latency', value: rd.ground_truth_latency_mean_ms != null ? rd.ground_truth_latency_mean_ms.toFixed(1) + ' ms' : '—' },
       ];
@@ -753,7 +771,7 @@ class Component extends DCLogic {
         timeText: this.hms(id), statusLabel: meta.label,
         badgeStyle: "font:600 9.5px/1 'IBM Plex Sans',sans-serif;letter-spacing:.08em;padding:4px 8px;border-radius:6px;white-space:nowrap;color:" + meta.color + ';background:color-mix(in oklab, ' + meta.color + ' 15%, transparent);',
         efText: candidateEf != null ? String(candidateEf) : '—',
-        confText: rd.confidence != null ? Math.round(rd.confidence * 100) + '%' : '—',
+        confText: this.fmtPercent(rd.confidence),
         uniqueText: sm.unique.toLocaleString(), chevron: expanded ? '▾' : '▸',
         rowStyle: 'display:flex;align-items:center;gap:14px;padding:14px 16px;cursor:pointer;',
         metrics, perEf, error: rd.error,
@@ -771,7 +789,7 @@ class Component extends DCLogic {
       cards, legend, rangeOptions, efChart, confChart, onHoverMove, onHoverLeave,
       showTradeoff, tradeoff, onTradeoffMove, onTradeoffLeave,
       selectedName: s.selectedCohort, history,
-      historyCountText: history.length + ' of ' + total + ' rounds',
+      historyCountText: history.length + ' of ' + store[s.selectedCohort].rounds.length + ' rounds',
     };
   }
 
