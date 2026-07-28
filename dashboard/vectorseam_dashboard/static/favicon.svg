@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <title>VectorSeam</title>
+  <defs>
+    <filter id="rough" x="-15%" y="-15%" width="130%" height="130%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves="2" seed="7" result="n"/>
+      <feDisplacementMap in="SourceGraphic" in2="n" scale="1.4" xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="17" fill="oklch(0.83 0.11 195)"/>
+  <g transform="translate(6.7 6.7) scale(2.108)" fill="none" stroke="oklch(0.17 0.02 258)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" filter="url(#rough)">
+    <path d="M2.7 6.6 C7 6 11 7.3 14.8 6.4 C17.4 5.8 19.6 6.6 21.3 6"/>
+    <path d="M2.6 17.4 C6.9 18.1 10.7 16.9 14.4 17.7 C17.2 18.3 19.4 17.4 21.3 18.1"/>
+    <path d="M5.2 18 C6.4 14.1 7.6 10.2 9 6.3 C10.3 10.2 11.5 14.1 12.8 17.9 C13.8 14 15 10 16.3 6.2 C17.4 10.2 18.6 14.1 19.7 17.8"/>
+  </g>
+</svg>
