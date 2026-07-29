@@ -86,7 +86,7 @@ counted instead of silently hidden.
 
 ## Local Variant
 
-The local variant is the SDK implementation for the current milestone.
+The local variant is what the SDK implements today.
 
 Each SDK process independently estimates query rate per cohort and computes its
 own probability. This requires no backend coordination and no collector-to-SDK
@@ -104,20 +104,21 @@ capture hot path.
 
 ## Central Variant
 
-The central variant is deferred until after the collector and tuner milestones.
+The central variant is not implemented yet.
 
-The tuner will know how many samples it needs per cohort per calibration cycle
-because it determines that through holdout validation. It also sees aggregate
-arrival rates across all SDK instances. That makes the tuner the natural place
-to compute a cohort-level probability for the whole deployment.
+The tuner knows how many samples it needs per cohort per calibration round
+(its sample-sufficiency rule, `tuner-spec.md` §2.2) and sees aggregate
+arrival rates across all SDK instances. That makes the tuner the natural
+place to compute a cohort-level probability for the whole deployment.
 
-The existing result-object path can carry this directive later: the sidecar
-already polls for calibrated `ef`, and the same object can include sampling
-instructions. That closes the loop so sample volume adapts to calibration needs
-and avoids the `N * target` multiplication of the local variant.
+The existing result-object path can carry this directive later: the tuner
+already publishes per-cohort calibration output (`latest.json`), and the same
+object can include sampling instructions once a feedback path to the SDK
+exists. That closes the loop so sample volume adapts to calibration needs and
+avoids the `N * target` multiplication of the local variant.
 
-The central variant requires a collector or sidecar feedback path back to the
-SDK, so it is out of scope for the initial SDK and collector work.
+The central variant requires a feedback path from tuner output back to the
+SDK, which does not exist yet, so it remains future work.
 
 ## SDK Design
 

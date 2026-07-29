@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vectorseam"
 version = "0.1.0"
-description = "Vector search benchmarks and retrieval experiments."
+description = "Monitor and tune vector index parameters from live query traffic."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"

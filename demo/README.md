@@ -1,4 +1,4 @@
-# VectorSeam M1 demo
+# VectorSeam demo
 
 This demo runs SuperUser and Reddit TLDR cohorts end to end. PostgreSQL, the
 collector, the API, the tuner, and the dashboard run in Docker Compose; one
@@ -33,6 +33,18 @@ python/ann-recall-latency/data/processed/reddit/queries.parquet
 python/ann-recall-latency/data/embeddings/reddit/BAAI_bge-small-en-v1.5__5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/docs.parquet
 ```
 
+Today these artifacts are produced by the benchmark pipeline
+([../python/ann-recall-latency/README.md](../python/ann-recall-latency/README.md)):
+
+```sh
+make ann-recall-latency-download
+make ann-recall-latency-load
+make ann-recall-latency-embed
+```
+
+The embedding stage is the slow one — budget several hours on a laptop. It
+runs once; every later demo run reuses the cached files.
+
 Run every command below from the repository root. First install the Python
 environment, start pgvector, and load the data:
 
@@ -56,6 +68,10 @@ Start the service stack in one terminal:
 make demo
 ```
 
+The first run builds the three local images (the API image bundles PyTorch
+and sentence-transformers), which takes a few minutes; later builds are
+cached.
+
 This is an attached Compose run. Collector and tuner logs stay in the
 foreground; PostgreSQL and API logs are suppressed. From another terminal,
 wait until `docker compose -f demo/docker-compose.yml ps` reports the API as
@@ -73,12 +89,12 @@ to each cohort separately. Override the total rate and seed with
 The dashboard switches from sample data to the live view after both cohorts
 have published their first `latest.json`.
 
-Optional parameters
+Optional parameters:
 
-`API_LOGS=1` includes API startup and request logs in an attached run.
-`DETACHED=1` starts the stack in the background, where Compose does not stream
-any service logs. Follow operational logs afterward with
-`docker compose -f demo/docker-compose.yml logs -f collector tuner api`.
+- `API_LOGS=1` includes API startup and request logs in an attached run.
+- `DETACHED=1` starts the stack in the background, where Compose does not
+  stream any service logs. Follow operational logs afterward with
+  `docker compose -f demo/docker-compose.yml logs -f collector tuner api`.
 
 The PostgreSQL data, collector segments, and tuner measurements/calibrations
 are bind-mounted under `demo/data`. They remain visible on the host and
@@ -156,9 +172,10 @@ selecting at 0.90 would keep proposing ef values the holdout cannot confirm.
 The 0.98 selection gate spends that margin deliberately: a slightly higher ef
 that gets approved beats the smallest ef that never does. Expect the first
 recommendation to be conservative and to settle near `recommended_ef: 60` for
-SuperUser and `recommended_ef: 200` for Reddit as evidence accumulates. M1
-displays the effective value but does not apply it; recommendation consumption
-remains milestone 2.
+SuperUser and `recommended_ef: 200` for Reddit as evidence accumulates. The
+demo displays the effective value but does not apply it — the API serves
+every search with a fixed `ef_search` (`DEMO_EF_SEARCH`, default 100).
+Automatic consumption of recommendations is future work.
 
 At 5 shared qps, allow up to two minutes for the first `.vseam`. The tuner
 processes cohorts sequentially, so Parquet and successful-calibration timing

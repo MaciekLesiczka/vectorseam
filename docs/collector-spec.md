@@ -1,8 +1,9 @@
-# Collection and tuning: design
+# VectorSeam Collector — Specification
 
-Status: accepted for collector MVP
-Scope: collector (Rust), segment format, storage layout, cohort naming,
-tuner consumer contract
+Status: implemented
+Scope: the collector component (Rust) — runtime, cohort naming, segment
+format, storage layout, and the storage contract consumers rely on. The
+tuner that consumes these segments is specified in `tuner-spec.md`.
 
 ## Overview
 
@@ -12,7 +13,8 @@ files into an object store on a fixed window schedule. The production listener
 is TCP so the collector can run as its own pod or service and receive traffic
 from many application pods. A Unix-domain socket listener remains available
 for same-host demos and simple local test setups. The tuner later reads these
-segments, computes ground truth, sweeps `ef`, and publishes a recommendation.
+segments, computes ground truth, sweeps `ef`, and publishes a recommendation
+(`tuner-spec.md`).
 
 Everything is best effort. The collector must never block the application's
 network writes and must never grow without bound. When it cannot keep up, it
@@ -70,9 +72,9 @@ Enforcement:
   lies about which interval the data belongs to; the header says how much of
   the interval was actually observed.
 - Window duration is a config value with a 10-minute default, not an
-  operator-facing knob to tune. The calibration window is decided by the
-  tuner, which reads as many recent segments as it needs — storage windows
-  only set slicing granularity.
+  operator-facing knob to tune. The calibration window is the tuner's
+  concern — a configured rolling window spanning many storage windows
+  (`tuner-spec.md` §2.2) — so storage windows only set slicing granularity.
 
 ## Storage layout
 
@@ -193,8 +195,8 @@ readers.
   256 MiB frame-byte budget, a 512 MiB container limit is a more realistic
   starting point than 256 MiB.
 - Flush failures (storage errors or PUT timeouts) are logged and counted; the
-  collector keeps running. Losing samples is acceptable, crashing the sidecar
-  is not.
+  collector keeps running. Losing samples is acceptable, crashing the
+  collector is not.
 - Graceful shutdown (SIGTERM/SIGINT): stop accepting, drain connection tasks,
   close the writer channel, flush all open buffers, and exit. Shutdown waits
   with finite deadlines and aborts remaining tasks as a forced fallback. The
@@ -217,35 +219,38 @@ making oversized streams cheap; a full default handoff channel therefore
 accounts for about 64 MiB of the global budget. The default per-cohort buffer
 is 32 MiB, so hot cohorts spill early instead of monopolizing memory. The
 default global budget is 256 MiB, a reasonable minimum for a production
-sidecar while still leaving room for queued frames, multiple cohorts, and the
-fixed flush reserve.
+collector while still leaving room for queued frames, multiple cohorts, and
+the fixed flush reserve.
 
-## Tuner requirements (consumer contract)
+## Consumer contract
 
-Collector's output is Tuners input, so the contract is fixed here:
+Storage is the only interface between the collector and its consumers; there
+is no push API. The collector's side of the contract is:
 
-- The tuner lists `cohorts/<cohort>/` prefixes and reads windows newest
-  first until it has the sample count it needs. The effective calibration
-  window is therefore emergent — a result of traffic and required samples,
-  not a configured value.
-- The tuner determines the required sample count itself via holdout
-  validation (random train/test split over the pooled samples). A failed
-  holdout within pooled windows means insufficient samples; distribution
-  change is observed only across successive calibration cycles.
-- Per-window coverage (kept/received) tells the tuner when drops may have
-  biased a window; it can skip such windows.
-- Ground truth requires access to the corpus, so the tuner runs with
-  database connectivity (exact scan plus `ef` sweep against the live index
-  or a replica). The corpus is never exported through this pipeline.
-- The tuner publishes its result as a small object (recommended `ef`, target
-  percentile, sample count used, windows used) that the sidecar polls and
-  serves to the application. The same object later carries the sampling
-  directive for the central variant of adaptive sampling (see
-  `adaptive-sampling.md`).
+- Segment parts are immutable once written, appear only under their aligned
+  window prefix, and land in a single atomic PUT — a consumer never observes
+  a torn or growing segment.
+- A window is safe to consume only after it has closed
+  (`window_start + window_seconds` has passed) plus flush latency. Late
+  parts (memory-pressure spills, crash recovery) can still appear after a
+  consumer's first listing, so consumers must re-list rather than assume a
+  window's part set is final.
+- Per-part headers carry `received_frame_count` and `record_count`, so a
+  consumer can compute per-window coverage
+  (`sum(record_count) / sum(received_frame_count)`) and decide when drops
+  may have biased a window. Zero-record parts make attributed drops with no
+  kept frames explicit rather than invisible.
+
+How the tuner consumes these segments — rolling-window membership,
+deduplication, sample sufficiency, and the published
+`calibrations/<cohort>/round-<ts>.json` and `latest.json` outputs — is
+specified in `tuner-spec.md`. The published result object is also the
+intended carrier for the sampling directive of the central variant of
+adaptive sampling (see `adaptive-sampling.md`).
 
 ## Out of scope for the collector MVP
 
-- Tuner logic and the result/polling path.
+- Tuner logic and outputs (`tuner-spec.md`).
 - Sampling-rate feedback to the SDK.
 - Remote object stores in configuration (the code path is
   `object_store`-generic; only local filesystem is wired up and tested).

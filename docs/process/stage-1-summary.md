@@ -8,7 +8,7 @@
   ignored-until-implementation Rust tests whose names contain their criterion
   IDs and whose assertions preserve the spec's literal values and tolerances.
   C7 is deferred with owner approval to the Gate 3 transaction-construction
-  review in `docs/REVIEW_MAP.md`.
+  review in `docs/process/REVIEW_MAP.md`.
 - Three database-free F-agg harness tests pass: exact parquet schemas and
   metadata with zstd, `.vseam` segment-header round trip through
   `vectorseam-core`, and a truth-only crash state.
@@ -31,9 +31,9 @@
   canonical fixture and reused Python anchor both reran successfully.
 - A1–A5, B1–B12, C1–C6, C8, and D1–D3 are intentionally ignored because Stage 1
   contains no tuner implementation. Their exact status is in
-  `docs/acceptance-map.md`.
+  `docs/process/acceptance-map.md`.
 - C7 is intentionally not machine-gated. Its deferral and manual Gate 3
-  checklist are recorded in `docs/acceptance-map.md` and `docs/REVIEW_MAP.md`.
+  checklist are recorded in `docs/process/acceptance-map.md` and `docs/process/REVIEW_MAP.md`.
 - The new Linux CI job has not run in this local workspace. Its isolated
   Compose service became healthy locally, but this host's Colima instance did
   not dynamically forward the newly published port 55432. The same complete

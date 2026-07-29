@@ -1,6 +1,8 @@
 # VectorSeam demo — Milestone 1 spec
 
-Status: draft
+Status: delivered — kept as the M1 milestone record. The demo has since
+grown past this scope (second cohort, dashboard); `demo/README.md` describes
+the current demo.
 Scope: minimal end-to-end run proving SDK → collector → storage → tuner →
 `latest.json` works on one cohort, one index, one data source. No dashboard,
 no Kubernetes, no HuggingFace sourcing.
