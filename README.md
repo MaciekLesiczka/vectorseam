@@ -69,6 +69,14 @@ agent in your database, nothing installed server-side.
 
 ## See it running
 
+<p align="center">
+  <img src="docs/images/dashboard.png" width="780"
+       alt="VectorSeam dashboard: two live-calibrated cohorts, recommended ef_search 60 for superuser and 200 for reddit, with confidence, trend charts, and round history">
+</p>
+
+<p align="center"><em>Live output from a demo run: the same recall target
+needs <code>ef_search</code> 60 on one corpus and 200 on the other.</em></p>
+
 The repository ships a Docker Compose demo that runs the whole pipeline on
 two real corpora (Super User questions and Reddit TL;DR, 300k documents
 each): live queries, collection, tuning, and the dashboard at
