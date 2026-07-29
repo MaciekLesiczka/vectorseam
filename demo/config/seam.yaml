@@ -37,7 +37,7 @@ targets:
     percentile: 0.90
     selection_confidence: 0.98
     approval_confidence: 0.90
-    window: 600s
+    window: 24h
 
 cohorts:
   superuser:

@@ -1,16 +1,17 @@
 # VectorSeam Tuner (`seam`) — Specification
 
-Status: draft for review
+Status: implemented — all machine-gated acceptance criteria below pass;
+`process/acceptance-map.md` traces each criterion to its test
 Scope: the tuner component only — inputs, estimator semantics, configuration,
 storage contract, resource budgets, and acceptance criteria. Implementation
-methodology lives in `docs/methodology.md` and is out of scope here.
+methodology is documented separately and is out of scope here.
 
 ## 1. Context
 
 The tuner is the third VectorSeam component. The SDK samples query vectors,
 the collector persists them as immutable `.vseam` segment parts under
 `cohorts/<cohort>/window=<ts>/part-<ulid>.vseam` (see
-`collection-and-tuning.md`). The tuner continuously runs the same pipeline as
+`collector-spec.md`). The tuner continuously runs the same pipeline as
 the published `ann-recall-latency` benchmark — exact ground truth, `ef_search`
 sweep, tail-percentile calibration, holdout transfer check — and publishes,
 per cohort, the recommended `hnsw.ef_search` and a confidence number back to

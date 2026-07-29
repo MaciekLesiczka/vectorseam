@@ -9,7 +9,7 @@ loaded. Suite A is executed by
 All database-backed tests are marked `#[ignore]` in ordinary `cargo test`;
 their Docker targets explicitly run ignored tests with `SEAM_REQUIRE_F_PG=1`,
 which the tests assert. C7 is the owner-approved manual-review exception
-recorded in `docs/REVIEW_MAP.md`.
+recorded in `docs/process/REVIEW_MAP.md`.
 
 | Criterion | Test path and name | Status |
 |---|---|---|
@@ -36,7 +36,7 @@ recorded in `docs/REVIEW_MAP.md`.
 | C4 | `crates/seam/tests/acceptance_c_durability.rs::c4_empty_round_reports_insufficient_samples_and_full_gap` | passing |
 | C5 | `crates/seam/tests/acceptance_c_durability.rs::c5_config_validation_distinct_errors_and_password_env_guidance`; `crates/seam/src/config.rs::tests::c5_missing_password_env_is_rejected_only_when_configured`; `crates/seam/src/config.rs::tests::c5_duplicate_data_source_pair_is_rejected`; `crates/seam/src/config.rs::tests::rejects_zero_client_timeout` | passing |
 | C6 | `crates/seam/tests/acceptance_c_durability.rs::c6_phase_a_abort_forces_insufficient_despite_cached_population`; `crates/seam/src/pipeline.rs::tests::c6_table_smaller_than_k_stops_after_first_scan_despite_cached_population`; `crates/seam/src/tuner.rs::tests::c6_f_pg_table_smaller_stops_after_one_exact_and_other_cohort_continues` (F-pg) | passing |
-| C7 | Manual Gate 3 checklist: `docs/REVIEW_MAP.md`, “C7 deferred manual review” | deferred-with-my-approval — owner completed and approved the manual transaction review on 2026-07-17 |
+| C7 | Manual Gate 3 checklist: `docs/process/REVIEW_MAP.md`, “C7 deferred manual review” | deferred-with-my-approval — owner completed and approved the manual transaction review on 2026-07-17 |
 | C8 | `crates/seam/tests/acceptance_c_durability.rs::c8_phase_b_reproducible_except_computed_at` | passing |
 | D1 | `crates/seam/src/pacer.rs::tests::d1_duty_cycle_20_percent_wall_time_bound` | passing |
 | D2 | No test — criterion and `max_concurrent_queries` were removed by owner decision | deferred-with-my-approval — removal approved 2026-07-17; row retained as the required sign-off record |

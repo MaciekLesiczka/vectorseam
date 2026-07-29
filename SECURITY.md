@@ -1,6 +1,6 @@
 # Security Policy
 
-Vectorseam is an early-stage project. Please do not report security issues in
+VectorSeam is an early-stage project. Please do not report security issues in
 public GitHub issues.
 
 To report a vulnerability, email the repository owner or use GitHub private

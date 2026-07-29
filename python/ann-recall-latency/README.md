@@ -43,7 +43,8 @@ ANN implementation:
 
 Outputs are written under [`results/`](results/). The file
 [`results/calibration_transfer.csv`](results/calibration_transfer.csv) contains
-the tuning-validation results.
+the tuning-validation results. Result files are checked in intentionally so
+external writeups can reference stable artifacts.
 
 ## Reproduce
 

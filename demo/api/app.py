@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sentence_transformers import SentenceTransformer
 
 from vectorseam import (
+    AdaptiveSampler,
     VectorCaptureProducer,
     VectorSocketSender,
     capture_vector,
@@ -206,7 +207,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Owns the model, always-capture producer, and sender lifecycle."""
     settings = Settings.from_environment()
     model = SentenceTransformer(MODEL_NAME, revision=MODEL_REVISION)
-    producer = VectorCaptureProducer()
+    producer = VectorCaptureProducer(sampler=AdaptiveSampler(target_samples_per_second=0.5))
     sender = VectorSocketSender(
         host=settings.collector_host,
         port=settings.collector_port,

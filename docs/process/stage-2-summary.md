@@ -48,7 +48,7 @@
   statement-count, and other-cohort continuation path is still ignored; its
   Phase B forced-insufficient path is green.
 - C7 remains the owner-approved manual deferral. Its transaction-construction
-  checklist and pending Gate 3 sign-off are retained in `docs/REVIEW_MAP.md`.
+  checklist and pending Gate 3 sign-off are retained in `docs/process/REVIEW_MAP.md`.
 
 ## Open questions
 

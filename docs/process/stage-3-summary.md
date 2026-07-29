@@ -25,7 +25,7 @@
 
 - A1–A5 remain blocked until Stage 4 anchor reproduction and wire-up.
 - C7 is deferred from machine gating with owner approval; the explicit manual
-  transaction checklist in `docs/REVIEW_MAP.md` was completed and approved
+  transaction checklist in `docs/process/REVIEW_MAP.md` was completed and approved
   on 2026-07-17.
 - D2 remains recorded as the owner-approved removed criterion.
 
