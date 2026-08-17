@@ -35,6 +35,8 @@ services:
       - vectorseam-collector
       - --listen
       - 0.0.0.0:7737
+      - --recommendation-listen
+      - 0.0.0.0:7738
       - --storage-root
       - /data/store
       - --window-seconds
@@ -43,6 +45,7 @@ services:
       RUST_LOG: info
     ports:
       - "7737:7737"
+      - "7738:7738"
     volumes:
       - ${DEMO_STORE:-./data/store}:/data/store
     stop_grace_period: 35s

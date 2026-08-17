@@ -12,12 +12,18 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 use tokio::sync::{mpsc, watch};
-use tokio::task::{JoinError, JoinHandle, JoinSet};
+use tokio::task::{JoinError, JoinSet};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use vectorseam_recommendation_server::Server as RecommendationServer;
+use vectorseam_runtime::{
+    await_task_shutdown, await_unit_task_shutdown, unexpected_task_result,
+    unexpected_unit_task_result,
+};
 
 pub use crate::config::Config;
 use crate::config::{ReaderConfig, WriterConfig, live_memory_bytes, validate_config};
@@ -61,8 +67,19 @@ pub async fn run_with_store<S>(
 where
     S: Future<Output = ()> + Send,
 {
+    validate_config(&config)?;
+    let recommendation_server = if config.recommendation_enabled {
+        Some(
+            RecommendationServer::bind(config.recommendation_server.server_config(), store.clone())
+                .await
+                .context("starting recommendation HTTP server")?,
+        )
+    } else {
+        info!("recommendation HTTP server disabled");
+        None
+    };
     let listener = BoundListener::bind(&config).await?;
-    run_with_listener(config, store, shutdown, listener).await
+    run_with_listener(config, store, shutdown, listener, recommendation_server).await
 }
 
 trait ConnectionListener {
@@ -85,12 +102,12 @@ async fn run_with_listener<S, L>(
     store: Arc<dyn ObjectStore>,
     shutdown: S,
     listener: L,
+    recommendation_server: Option<RecommendationServer>,
 ) -> Result<()>
 where
     S: Future<Output = ()> + Send,
     L: ConnectionListener + Sync,
 {
-    validate_config(&config)?;
     let live_memory_bytes = live_memory_bytes(&config)?;
 
     let counters = Arc::new(CollectorCounters::default());
@@ -108,11 +125,27 @@ where
     let mut writer_handle = tokio::spawn(writer.run(writer_rx));
     let mut writer_result = None;
 
+    let recommendation_shutdown_timeout = Duration::from_secs(
+        config
+            .recommendation_server
+            .shutdown_drain_timeout_seconds
+            .saturating_add(1),
+    );
+    let (recommendation_shutdown, mut recommendation_handle) = match recommendation_server {
+        Some(server) => {
+            let shutdown = CancellationToken::new();
+            let handle = server.spawn(shutdown.clone());
+            (Some(shutdown), Some(handle))
+        }
+        None => (None, None),
+    };
+    let mut recommendation_result = None;
+
     let summary_counters = counters.clone();
     let summary_shutdown = shutdown_rx.clone();
     let summary_handle = tokio::spawn(async move {
         summary_loop(summary_counters, summary_shutdown).await;
-        Ok(())
+        Ok::<(), anyhow::Error>(())
     });
     let reader_config = ReaderConfig {
         max_frame_size: config.max_frame_size,
@@ -134,11 +167,20 @@ where
                     handle_connection_join(joined);
                 }
                 joined = &mut writer_handle => {
-                    let result = writer_runtime_result(joined);
+                    let result = unexpected_task_result(joined, "writer");
                     if let Err(error) = &result {
                         error!(%error, "writer task stopped; shutting down collector");
                     }
                     writer_result = Some(result);
+                    break;
+                }
+                joined = join_optional_unit_task(&mut recommendation_handle) => {
+                    let result = unexpected_unit_task_result(
+                        joined.expect("disabled recommendation task cannot complete"),
+                        "recommendation server",
+                    );
+                    recommendation_handle = None;
+                    recommendation_result = Some(result);
                     break;
                 }
             }
@@ -151,11 +193,20 @@ where
                 break;
             }
             joined = &mut writer_handle => {
-                let result = writer_runtime_result(joined);
+                let result = unexpected_task_result(joined, "writer");
                 if let Err(error) = &result {
                     error!(%error, "writer task stopped; shutting down collector");
                 }
                 writer_result = Some(result);
+                break;
+            }
+            joined = join_optional_unit_task(&mut recommendation_handle) => {
+                let result = unexpected_unit_task_result(
+                    joined.expect("disabled recommendation task cannot complete"),
+                    "recommendation server",
+                );
+                recommendation_handle = None;
+                recommendation_result = Some(result);
                 break;
             }
             accept_result = listener.accept() => {
@@ -186,6 +237,9 @@ where
         }
     }
 
+    if let Some(shutdown) = &recommendation_shutdown {
+        shutdown.cancel();
+    }
     drain_connections(&mut connections, &shutdown_tx).await;
     drop(writer_tx);
 
@@ -195,18 +249,38 @@ where
     };
     let summary_result =
         await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await;
+    let recommendation_result = match (recommendation_result, recommendation_handle) {
+        (Some(result), _) => result,
+        (None, Some(handle)) => {
+            await_unit_task_shutdown(
+                handle,
+                "recommendation server",
+                recommendation_shutdown_timeout,
+            )
+            .await
+        }
+        (None, None) => Ok(()),
+    };
     listener.cleanup();
 
+    if let Err(error) = &summary_result {
+        error!(%error, "summary task shutdown failed");
+    }
+    if let Err(error) = &recommendation_result {
+        error!(%error, "recommendation server task failed");
+    }
     writer_result?;
     summary_result?;
+    recommendation_result?;
     Ok(())
 }
 
-fn writer_runtime_result(joined: Result<Result<()>, JoinError>) -> Result<()> {
-    match joined {
-        Ok(Ok(())) => Err(anyhow!("writer task exited unexpectedly")),
-        Ok(Err(error)) => Err(error.context("writer task failed")),
-        Err(error) => Err(anyhow!("writer task failed: {error}")),
+async fn join_optional_unit_task(
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Option<Result<(), JoinError>> {
+    match handle {
+        Some(handle) => Some(handle.await),
+        None => std::future::pending().await,
     }
 }
 
@@ -220,32 +294,6 @@ async fn handle_accept_error(error: io::Error, counters: &CollectorCounters) {
         "accept failed"
     );
     tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
-}
-
-async fn await_task_shutdown(
-    mut handle: JoinHandle<Result<()>>,
-    task_name: &'static str,
-    timeout: Duration,
-) -> Result<()> {
-    match tokio::time::timeout(timeout, &mut handle).await {
-        Ok(joined) => joined.map_err(|error| anyhow!("{task_name} task failed: {error}"))?,
-        Err(_elapsed) => {
-            error!(
-                task = task_name,
-                timeout_seconds = timeout.as_secs_f64(),
-                "task shutdown timed out; aborting task"
-            );
-            handle.abort();
-            match handle.await {
-                Ok(result) => result,
-                Err(error) if error.is_cancelled() => {
-                    warn!(task = task_name, "task aborted after shutdown timeout");
-                    Ok(())
-                }
-                Err(error) => Err(anyhow!("{task_name} task failed after abort: {error}")),
-            }
-        }
-    }
 }
 
 fn spawn_connection(
@@ -354,6 +402,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use object_store::memory::InMemory;
+    use vectorseam_recommendation_server::RecommendationServerOptions;
 
     #[tokio::test]
     async fn accept_error_handler_counts_and_returns() {
@@ -388,6 +437,14 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 },
                 listener,
+                Some(
+                    RecommendationServer::bind(
+                        test_config().recommendation_server.server_config(),
+                        Arc::new(InMemory::new()),
+                    )
+                    .await
+                    .unwrap(),
+                ),
             ),
         )
         .await
@@ -422,6 +479,11 @@ mod tests {
     fn test_config() -> Config {
         Config {
             listen: "127.0.0.1:0".parse().unwrap(),
+            recommendation_enabled: true,
+            recommendation_server: RecommendationServerOptions {
+                listen_addr: "127.0.0.1:0".parse().unwrap(),
+                ..RecommendationServerOptions::default()
+            },
             unix_socket: None,
             storage_root: PathBuf::from("/unused"),
             window_seconds: 60,

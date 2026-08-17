@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use thiserror::Error;
+use vectorseam_core::recommendation::MAX_EF_SEARCH;
 use vectorseam_core::window::{WindowError, format_window_timestamp};
 
 use crate::accounting::{
@@ -366,11 +367,11 @@ fn validate_aggregation_config(config: &AggregationConfig) -> Result<(), Aggrega
     if config.ef_grid.is_empty()
         || config.ef_grid.windows(2).any(|pair| pair[0] >= pair[1])
         || config.ef_grid[0] < i32::try_from(config.k).unwrap_or(i32::MAX)
-        || config.ef_grid.iter().any(|ef| *ef > 1000)
+        || config.ef_grid.iter().any(|ef| *ef > MAX_EF_SEARCH)
     {
-        return Err(AggregateError::InvalidConfig(
-            "ef_grid must be non-empty, strictly increasing, >= k, and <= 1000".to_owned(),
-        ));
+        return Err(AggregateError::InvalidConfig(format!(
+            "ef_grid must be non-empty, strictly increasing, >= k, and <= {MAX_EF_SEARCH}"
+        )));
     }
     split_threshold(config.train_fraction)?;
     Ok(())
