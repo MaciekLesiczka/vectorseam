@@ -1,9 +1,9 @@
 //! Small HTTP server for effective VectorSeam recommendations.
 //!
 //! The server reads `calibrations/<cohort>/latest.json` from an object store
-//! and exposes only `effective.recommended_ef`. Successful lookups, including
-//! the absence of an effective recommendation, are cached by cohort. Storage
-//! and malformed-artifact failures are not cached.
+//! and exposes only `effective.recommended_ef`. Positive recommendations and
+//! artifact defects are cached separately so arbitrary missing cohorts cannot
+//! evict valid recommendations. Transient storage failures are not cached.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -16,6 +16,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use clap::Args;
+use hyper::server::conn::http1;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use moka::future::Cache;
 use object_store::path::Path;
 use object_store::{ObjectStore, ObjectStoreExt};
@@ -23,21 +26,31 @@ use serde::Deserialize;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use vectorseam_core::cohort::CohortName;
+use vectorseam_core::recommendation::{MAX_EF_SEARCH, MIN_EF_SEARCH};
 
 const LATEST_JSON_MAX_BYTES: u64 = 256 * 1024;
+const HTTP1_MAX_BUFFER_BYTES: usize = 16 * 1024;
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7738";
+const DEFAULT_MAX_CONNECTIONS: usize = 100;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 100;
+const DEFAULT_LOOKUP_TIMEOUT_SECONDS: u64 = 3;
+const DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS: u64 = 5;
+const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_SECONDS: u64 = 5;
 const DEFAULT_CACHE_TTL_SECONDS: u64 = 60;
 const DEFAULT_MAX_CACHED_COHORTS: u64 = 10_000;
+const DEFAULT_MAX_CACHED_NEGATIVE_COHORTS: u64 = 256;
 
-/// CLI and environment options for hosting the recommendation server.
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+const LOAD_COALESCING_TTL: Duration = Duration::from_millis(10);
+
+/// CLI and environment options for a host running the recommendation server.
 #[derive(Args, Clone, Debug, PartialEq, Eq)]
-pub struct ServerOptions {
+pub struct RecommendationServerOptions {
     /// TCP address for the effective-recommendation HTTP server.
     #[arg(
         long = "recommendation-listen",
@@ -46,6 +59,14 @@ pub struct ServerOptions {
         value_name = "ADDR"
     )]
     pub listen_addr: SocketAddr,
+    /// Maximum accepted recommendation HTTP connections.
+    #[arg(
+        id = "recommendation_max_connections",
+        long = "recommendation-max-connections",
+        env = "VECTORSEAM_RECOMMENDATION_MAX_CONNECTIONS",
+        default_value_t = DEFAULT_MAX_CONNECTIONS
+    )]
+    pub max_connections: usize,
     /// Maximum concurrently handled recommendation HTTP requests.
     #[arg(
         long = "recommendation-max-concurrent-requests",
@@ -53,43 +74,80 @@ pub struct ServerOptions {
         default_value_t = DEFAULT_MAX_CONCURRENT_REQUESTS
     )]
     pub max_concurrent_requests: usize,
-    /// Successful recommendation lookup cache TTL in seconds.
+    /// Object-store recommendation lookup deadline in seconds.
+    #[arg(
+        long = "recommendation-lookup-timeout-seconds",
+        env = "VECTORSEAM_RECOMMENDATION_LOOKUP_TIMEOUT_SECONDS",
+        default_value_t = DEFAULT_LOOKUP_TIMEOUT_SECONDS
+    )]
+    pub lookup_timeout_seconds: u64,
+    /// HTTP/1 request-head deadline in seconds.
+    #[arg(
+        long = "recommendation-request-head-timeout-seconds",
+        env = "VECTORSEAM_RECOMMENDATION_REQUEST_HEAD_TIMEOUT_SECONDS",
+        default_value_t = DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS
+    )]
+    pub request_head_timeout_seconds: u64,
+    /// Graceful connection-drain deadline in seconds.
+    #[arg(
+        long = "recommendation-shutdown-drain-timeout-seconds",
+        env = "VECTORSEAM_RECOMMENDATION_SHUTDOWN_DRAIN_TIMEOUT_SECONDS",
+        default_value_t = DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_SECONDS
+    )]
+    pub shutdown_drain_timeout_seconds: u64,
+    /// Recommendation cache TTL in seconds.
     #[arg(
         long = "recommendation-cache-ttl-seconds",
         env = "VECTORSEAM_RECOMMENDATION_CACHE_TTL_SECONDS",
         default_value_t = DEFAULT_CACHE_TTL_SECONDS
     )]
     pub cache_ttl_seconds: u64,
-    /// Maximum cohort entries retained by the recommendation cache.
+    /// Maximum positive cohort entries retained by the cache.
     #[arg(
         long = "recommendation-max-cached-cohorts",
         env = "VECTORSEAM_RECOMMENDATION_MAX_CACHED_COHORTS",
         default_value_t = DEFAULT_MAX_CACHED_COHORTS
     )]
     pub max_cached_cohorts: u64,
+    /// Maximum missing or defective cohort entries retained by the cache.
+    #[arg(
+        long = "recommendation-max-cached-negative-cohorts",
+        env = "VECTORSEAM_RECOMMENDATION_MAX_CACHED_NEGATIVE_COHORTS",
+        default_value_t = DEFAULT_MAX_CACHED_NEGATIVE_COHORTS
+    )]
+    pub max_cached_negative_cohorts: u64,
 }
 
-impl Default for ServerOptions {
+impl Default for RecommendationServerOptions {
     fn default() -> Self {
+        let config = Config::default();
         Self {
-            listen_addr: DEFAULT_LISTEN_ADDR
-                .parse()
-                .expect("default recommendation listen address must be valid"),
-            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
-            cache_ttl_seconds: DEFAULT_CACHE_TTL_SECONDS,
-            max_cached_cohorts: DEFAULT_MAX_CACHED_COHORTS,
+            listen_addr: config.listen_addr,
+            max_connections: config.max_connections,
+            max_concurrent_requests: config.max_concurrent_requests,
+            lookup_timeout_seconds: config.lookup_timeout.as_secs(),
+            request_head_timeout_seconds: config.request_head_timeout.as_secs(),
+            shutdown_drain_timeout_seconds: config.shutdown_drain_timeout.as_secs(),
+            cache_ttl_seconds: config.cache_ttl.as_secs(),
+            max_cached_cohorts: config.max_cached_cohorts,
+            max_cached_negative_cohorts: config.max_cached_negative_cohorts,
         }
     }
 }
 
-impl ServerOptions {
-    /// Converts host-facing options into recommendation server configuration.
+impl RecommendationServerOptions {
+    /// Converts host-facing options into server configuration.
     pub fn server_config(&self) -> Config {
         Config {
             listen_addr: self.listen_addr,
+            max_connections: self.max_connections,
             max_concurrent_requests: self.max_concurrent_requests,
+            lookup_timeout: Duration::from_secs(self.lookup_timeout_seconds),
+            request_head_timeout: Duration::from_secs(self.request_head_timeout_seconds),
+            shutdown_drain_timeout: Duration::from_secs(self.shutdown_drain_timeout_seconds),
             cache_ttl: Duration::from_secs(self.cache_ttl_seconds),
             max_cached_cohorts: self.max_cached_cohorts,
+            max_cached_negative_cohorts: self.max_cached_negative_cohorts,
         }
     }
 }
@@ -99,21 +157,43 @@ impl ServerOptions {
 pub struct Config {
     /// TCP address on which the HTTP server listens.
     pub listen_addr: SocketAddr,
+    /// Maximum number of accepted HTTP connections and connection tasks.
+    pub max_connections: usize,
     /// Maximum number of request handlers allowed to run concurrently.
     pub max_concurrent_requests: usize,
+    /// Total deadline for one object-store recommendation lookup.
+    pub lookup_timeout: Duration,
+    /// Maximum time allowed to receive each HTTP/1 request head.
+    pub request_head_timeout: Duration,
+    /// Maximum time allowed for active HTTP connections to drain on shutdown.
+    pub shutdown_drain_timeout: Duration,
     /// Time-to-live for successful per-cohort cache entries.
     pub cache_ttl: Duration,
-    /// Maximum number of per-cohort entries retained in memory.
+    /// Maximum number of positive per-cohort entries retained in memory.
     pub max_cached_cohorts: u64,
+    /// Maximum number of missing or defective cohort entries retained in memory.
+    pub max_cached_negative_cohorts: u64,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        ServerOptions::default().server_config()
+        Self {
+            listen_addr: DEFAULT_LISTEN_ADDR
+                .parse()
+                .expect("default recommendation listen address must be valid"),
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
+            lookup_timeout: Duration::from_secs(DEFAULT_LOOKUP_TIMEOUT_SECONDS),
+            request_head_timeout: Duration::from_secs(DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS),
+            shutdown_drain_timeout: Duration::from_secs(DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_SECONDS),
+            cache_ttl: Duration::from_secs(DEFAULT_CACHE_TTL_SECONDS),
+            max_cached_cohorts: DEFAULT_MAX_CACHED_COHORTS,
+            max_cached_negative_cohorts: DEFAULT_MAX_CACHED_NEGATIVE_COHORTS,
+        }
     }
 }
 
-/// Startup or runtime failure of the recommendation server.
+/// Startup failure of the recommendation server.
 #[derive(Debug, Error)]
 pub enum ServerError {
     /// Server configuration is invalid.
@@ -128,15 +208,15 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
-    /// The HTTP server stopped with an I/O error.
-    #[error("recommendation HTTP server failed: {0}")]
-    Serve(#[source] std::io::Error),
 }
 
 /// A bound recommendation server that can be hosted by any Tokio process.
 pub struct Server {
     listener: TcpListener,
     router: Router,
+    max_connections: usize,
+    request_head_timeout: Duration,
+    shutdown_drain_timeout: Duration,
 }
 
 impl Server {
@@ -149,19 +229,36 @@ impl Server {
                 address: config.listen_addr,
                 source,
             })?;
-        let cache = Cache::builder()
+        let recommendations = Cache::builder()
             .max_capacity(config.max_cached_cohorts)
             .time_to_live(config.cache_ttl)
             .build();
+        let negative_recommendations = Cache::builder()
+            .max_capacity(config.max_cached_negative_cohorts)
+            .time_to_live(config.cache_ttl)
+            .build();
+        let coalesced_loads = Cache::builder()
+            .max_capacity(config.max_concurrent_requests as u64)
+            .time_to_live(config.cache_ttl.min(LOAD_COALESCING_TTL))
+            .build();
         let state = AppState {
             store,
-            cache,
+            recommendations,
+            negative_recommendations,
+            coalesced_loads,
             request_permits: Arc::new(Semaphore::new(config.max_concurrent_requests)),
+            lookup_timeout: config.lookup_timeout,
         };
         let router = Router::new()
             .route("/v1/ef-search/{*cohort}", get(get_ef_search))
             .with_state(state);
-        Ok(Self { listener, router })
+        Ok(Self {
+            listener,
+            router,
+            max_connections: config.max_connections,
+            request_head_timeout: config.request_head_timeout,
+            shutdown_drain_timeout: config.shutdown_drain_timeout,
+        })
     }
 
     /// Returns the bound listener address, including an assigned ephemeral port.
@@ -170,29 +267,174 @@ impl Server {
     }
 
     /// Serves requests until `shutdown` completes, then drains active requests.
-    pub async fn serve<S>(self, shutdown: S) -> Result<(), ServerError>
+    ///
+    /// Accepted connections and their tasks are capped by `Config::max_connections`.
+    /// Remaining connection tasks are aborted and joined after
+    /// `Config::shutdown_drain_timeout`.
+    pub async fn serve<S>(self, shutdown: S)
     where
-        S: Future<Output = ()> + Send + 'static,
+        S: Future<Output = ()> + Send,
     {
-        let address = self.listener.local_addr().ok();
+        let Self {
+            listener,
+            router,
+            max_connections,
+            request_head_timeout,
+            shutdown_drain_timeout,
+        } = self;
+        let address = listener.local_addr().ok();
         info!(?address, "recommendation HTTP server started");
-        axum::serve(self.listener, self.router)
-            .with_graceful_shutdown(shutdown)
-            .await
-            .map_err(ServerError::Serve)
+        let connection_shutdown = CancellationToken::new();
+        let mut connections = JoinSet::new();
+        tokio::pin!(shutdown);
+
+        loop {
+            while let Some(joined) = connections.try_join_next() {
+                handle_connection_join(joined);
+            }
+            if connections.len() >= max_connections {
+                tokio::select! {
+                    _ = &mut shutdown => break,
+                    joined = connections.join_next() => {
+                        if let Some(joined) = joined {
+                            handle_connection_join(joined);
+                        }
+                    }
+                }
+                continue;
+            }
+
+            tokio::select! {
+                _ = &mut shutdown => break,
+                joined = connections.join_next(), if !connections.is_empty() => {
+                    if let Some(joined) = joined {
+                        handle_connection_join(joined);
+                    }
+                }
+                accepted = listener.accept() => {
+                    match accepted {
+                        Ok((stream, peer)) => {
+                            let connection_router = router.clone();
+                            let task_shutdown = connection_shutdown.clone();
+                            connections.spawn(async move {
+                                serve_connection(
+                                    stream,
+                                    connection_router,
+                                    task_shutdown,
+                                    request_head_timeout,
+                                )
+                                .await
+                                .map_err(|error| (peer, error))
+                            });
+                        }
+                        Err(error) => {
+                            warn!(%error, "recommendation HTTP accept failed; retrying");
+                            tokio::select! {
+                                _ = &mut shutdown => break,
+                                _ = tokio::time::sleep(ACCEPT_ERROR_BACKOFF) => {}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        connection_shutdown.cancel();
+        drain_connections(&mut connections, shutdown_drain_timeout).await;
+        info!("recommendation HTTP server stopped");
     }
 
     /// Spawns the bound server with cancellation-driven graceful shutdown.
-    pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<Result<(), ServerError>> {
+    pub fn spawn(self, shutdown: CancellationToken) -> JoinHandle<()> {
         tokio::spawn(self.serve(shutdown.cancelled_owned()))
+    }
+}
+
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    router: Router,
+    shutdown: CancellationToken,
+    request_head_timeout: Duration,
+) -> Result<(), hyper::Error> {
+    let mut builder = http1::Builder::new();
+    builder
+        .timer(TokioTimer::new())
+        .header_read_timeout(request_head_timeout)
+        .max_buf_size(HTTP1_MAX_BUFFER_BYTES);
+    let connection =
+        builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(router));
+    tokio::pin!(connection);
+    tokio::select! {
+        result = &mut connection => result,
+        _ = shutdown.cancelled() => {
+            connection.as_mut().graceful_shutdown();
+            connection.await
+        }
+    }
+}
+
+fn handle_connection_join(joined: Result<Result<(), (SocketAddr, hyper::Error)>, JoinError>) {
+    match joined {
+        Ok(Ok(())) => {}
+        Ok(Err((peer, error))) => {
+            tracing::debug!(%peer, %error, "recommendation HTTP connection closed with error");
+        }
+        Err(error) if error.is_cancelled() => {
+            tracing::debug!(%error, "recommendation HTTP connection task cancelled");
+        }
+        Err(error) => warn!(%error, "recommendation HTTP connection task failed"),
+    }
+}
+
+async fn drain_connections(
+    connections: &mut JoinSet<Result<(), (SocketAddr, hyper::Error)>>,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    while !connections.is_empty() {
+        tokio::select! {
+            joined = connections.join_next() => {
+                if let Some(joined) = joined {
+                    handle_connection_join(joined);
+                }
+            }
+            _ = &mut deadline => {
+                warn!(
+                    remaining_connections = connections.len(),
+                    timeout_seconds = timeout.as_secs_f64(),
+                    "recommendation HTTP connection drain timed out; aborting connections"
+                );
+                connections.abort_all();
+                break;
+            }
+        }
+    }
+    while let Some(joined) = connections.join_next().await {
+        handle_connection_join(joined);
     }
 }
 
 #[derive(Clone)]
 struct AppState {
     store: Arc<dyn ObjectStore>,
-    cache: Cache<CohortName, Option<i32>>,
+    recommendations: Cache<CohortName, i32>,
+    negative_recommendations: Cache<CohortName, NegativeLookup>,
+    coalesced_loads: Cache<CohortName, CachedLookup>,
     request_permits: Arc<Semaphore>,
+    lookup_timeout: Duration,
+}
+
+#[derive(Clone, Debug)]
+enum CachedLookup {
+    Found(i32),
+    Negative(NegativeLookup),
+}
+
+#[derive(Clone, Debug)]
+enum NegativeLookup {
+    Missing,
+    Defect(Arc<PermanentDefect>),
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,7 +450,7 @@ struct EffectiveRecommendation {
 }
 
 #[derive(Debug, Error)]
-enum LookupError {
+enum TransientLookupError {
     #[error("GET {path} failed: {source}")]
     Get {
         path: String,
@@ -221,14 +463,16 @@ enum LookupError {
         #[source]
         source: object_store::Error,
     },
+    #[error("recommendation lookup {path} exceeded {timeout_seconds} seconds")]
+    Timeout { path: String, timeout_seconds: f64 },
+}
+
+#[derive(Clone, Debug, Error)]
+enum PermanentDefect {
     #[error("{path} is {actual_bytes} bytes; maximum is {LATEST_JSON_MAX_BYTES}")]
     TooLarge { path: String, actual_bytes: u64 },
-    #[error("{path} is malformed: {source}")]
-    Malformed {
-        path: String,
-        #[source]
-        source: serde_json::Error,
-    },
+    #[error("{path} is malformed: {reason}")]
+    Malformed { path: String, reason: String },
     #[error("{path} has unsupported format_version {format_version}")]
     UnsupportedFormat { path: String, format_version: u32 },
     #[error("{path} contains cohort {actual:?}, expected {expected:?}")]
@@ -253,83 +497,176 @@ async fn get_ef_search(
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
     };
 
+    if let Some(ef_search) = state.recommendations.get(&cohort).await {
+        return ef_search.to_string().into_response();
+    }
+    if let Some(negative) = state.negative_recommendations.get(&cohort).await {
+        return negative_response(&negative);
+    }
+
     let loader_store = state.store.clone();
     let loader_cohort = cohort.clone();
-    match state
-        .cache
+    let lookup_timeout = state.lookup_timeout;
+    let loaded = state
+        .coalesced_loads
         .try_get_with(cohort.clone(), async move {
-            load_effective_ef(&loader_store, &loader_cohort).await
+            let result = load_with_timeout(&loader_store, &loader_cohort, lookup_timeout).await;
+            match &result {
+                Ok(CachedLookup::Negative(NegativeLookup::Defect(error))) => {
+                    warn!(cohort = %loader_cohort, error = %error, "recommendation artifact rejected");
+                }
+                Err(error) => {
+                    warn!(cohort = %loader_cohort, error = %error, "recommendation lookup failed");
+                }
+                _ => {}
+            }
+            result
         })
-        .await
-    {
-        Ok(Some(ef_search)) => ef_search.to_string().into_response(),
-        Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(error) => {
-            warn!(cohort = %cohort, error = %error, "recommendation lookup failed");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        .await;
+    match loaded {
+        Ok(CachedLookup::Found(ef_search)) => {
+            state.recommendations.insert(cohort, ef_search).await;
+            ef_search.to_string().into_response()
         }
+        Ok(CachedLookup::Negative(negative)) => {
+            state
+                .negative_recommendations
+                .insert(cohort, negative.clone())
+                .await;
+            negative_response(&negative)
+        }
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
+fn negative_response(negative: &NegativeLookup) -> Response {
+    match negative {
+        NegativeLookup::Missing => StatusCode::NOT_FOUND.into_response(),
+        NegativeLookup::Defect(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn load_with_timeout(
+    store: &Arc<dyn ObjectStore>,
+    cohort: &CohortName,
+    timeout: Duration,
+) -> Result<CachedLookup, TransientLookupError> {
+    match tokio::time::timeout(timeout, load_effective_ef(store, cohort)).await {
+        Ok(result) => result,
+        Err(_) => Err(TransientLookupError::Timeout {
+            path: latest_path(cohort).to_string(),
+            timeout_seconds: timeout.as_secs_f64(),
+        }),
     }
 }
 
 async fn load_effective_ef(
     store: &Arc<dyn ObjectStore>,
     cohort: &CohortName,
-) -> Result<Option<i32>, LookupError> {
-    let path = Path::from(format!("calibrations/{cohort}/latest.json"));
+) -> Result<CachedLookup, TransientLookupError> {
+    let path = latest_path(cohort);
     let result = match store.get(&path).await {
         Ok(result) => result,
-        Err(object_store::Error::NotFound { .. }) => return Ok(None),
+        Err(object_store::Error::NotFound { .. }) => {
+            return Ok(CachedLookup::Negative(NegativeLookup::Missing));
+        }
         Err(source) => {
-            return Err(LookupError::Get {
+            return Err(TransientLookupError::Get {
                 path: path.to_string(),
                 source,
             });
         }
     };
     if result.meta.size > LATEST_JSON_MAX_BYTES {
-        return Err(LookupError::TooLarge {
-            path: path.to_string(),
-            actual_bytes: result.meta.size,
-        });
+        return Ok(CachedLookup::Negative(NegativeLookup::Defect(Arc::new(
+            PermanentDefect::TooLarge {
+                path: path.to_string(),
+                actual_bytes: result.meta.size,
+            },
+        ))));
     }
-    let bytes = result.bytes().await.map_err(|source| LookupError::Body {
-        path: path.to_string(),
-        source,
-    })?;
-    let latest: LatestRound =
-        serde_json::from_slice(&bytes).map_err(|source| LookupError::Malformed {
+    let bytes = result
+        .bytes()
+        .await
+        .map_err(|source| TransientLookupError::Body {
             path: path.to_string(),
             source,
         })?;
+    let latest: LatestRound = match serde_json::from_slice(&bytes) {
+        Ok(latest) => latest,
+        Err(error) => {
+            return Ok(CachedLookup::Negative(NegativeLookup::Defect(Arc::new(
+                PermanentDefect::Malformed {
+                    path: path.to_string(),
+                    reason: error.to_string(),
+                },
+            ))));
+        }
+    };
     if latest.format_version != 1 {
-        return Err(LookupError::UnsupportedFormat {
-            path: path.to_string(),
-            format_version: latest.format_version,
-        });
+        return Ok(CachedLookup::Negative(NegativeLookup::Defect(Arc::new(
+            PermanentDefect::UnsupportedFormat {
+                path: path.to_string(),
+                format_version: latest.format_version,
+            },
+        ))));
     }
     if latest.cohort != cohort.as_str() {
-        return Err(LookupError::CohortMismatch {
-            path: path.to_string(),
-            expected: cohort.to_string(),
-            actual: latest.cohort,
-        });
+        return Ok(CachedLookup::Negative(NegativeLookup::Defect(Arc::new(
+            PermanentDefect::CohortMismatch {
+                path: path.to_string(),
+                expected: cohort.to_string(),
+                actual: latest.cohort,
+            },
+        ))));
     }
     let Some(effective) = latest.effective else {
-        return Ok(None);
+        return Ok(CachedLookup::Negative(NegativeLookup::Missing));
     };
-    if !(1..=1_000).contains(&effective.recommended_ef) {
-        return Err(LookupError::InvalidEf {
-            path: path.to_string(),
-            ef: effective.recommended_ef,
-        });
+    if !(MIN_EF_SEARCH..=MAX_EF_SEARCH).contains(&effective.recommended_ef) {
+        return Ok(CachedLookup::Negative(NegativeLookup::Defect(Arc::new(
+            PermanentDefect::InvalidEf {
+                path: path.to_string(),
+                ef: effective.recommended_ef,
+            },
+        ))));
     }
-    Ok(Some(effective.recommended_ef))
+    Ok(CachedLookup::Found(effective.recommended_ef))
+}
+
+fn latest_path(cohort: &CohortName) -> Path {
+    Path::from(format!("calibrations/{cohort}/latest.json"))
 }
 
 fn validate_config(config: &Config) -> Result<(), ServerError> {
+    if config.max_connections == 0 {
+        return Err(ServerError::InvalidConfig(
+            "max_connections must be greater than zero",
+        ));
+    }
     if config.max_concurrent_requests == 0 {
         return Err(ServerError::InvalidConfig(
             "max_concurrent_requests must be greater than zero",
+        ));
+    }
+    if config.lookup_timeout.is_zero() {
+        return Err(ServerError::InvalidConfig(
+            "lookup_timeout must be greater than zero",
+        ));
+    }
+    if config.request_head_timeout.is_zero() {
+        return Err(ServerError::InvalidConfig(
+            "request_head_timeout must be greater than zero",
+        ));
+    }
+    if config.shutdown_drain_timeout.is_zero() {
+        return Err(ServerError::InvalidConfig(
+            "shutdown_drain_timeout must be greater than zero",
+        ));
+    }
+    if config.lookup_timeout >= config.shutdown_drain_timeout {
+        return Err(ServerError::InvalidConfig(
+            "lookup_timeout must be less than shutdown_drain_timeout",
         ));
     }
     if config.cache_ttl.is_zero() {
@@ -342,6 +679,11 @@ fn validate_config(config: &Config) -> Result<(), ServerError> {
             "max_cached_cohorts must be greater than zero",
         ));
     }
+    if config.max_cached_negative_cohorts == 0 {
+        return Err(ServerError::InvalidConfig(
+            "max_cached_negative_cohorts must be greater than zero",
+        ));
+    }
     Ok(())
 }
 
@@ -349,92 +691,126 @@ fn validate_config(config: &Config) -> Result<(), ServerError> {
 mod tests {
     use super::*;
 
+    use std::fmt;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
     use bytes::Bytes;
     use clap::Parser;
-    use object_store::PutPayload;
+    use futures_util::stream::BoxStream;
     use object_store::memory::InMemory;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as StoreResult,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    #[derive(Parser)]
-    struct TestCli {
+    #[derive(Debug, Parser)]
+    struct OptionsHarness {
         #[command(flatten)]
-        recommendation: ServerOptions,
+        recommendation_server: RecommendationServerOptions,
     }
 
     #[test]
-    fn host_options_supply_defaults_and_parse_overrides() {
-        let defaults = TestCli::try_parse_from(["test"]).unwrap().recommendation;
-        assert_eq!(
-            defaults.listen_addr,
-            DEFAULT_LISTEN_ADDR.parse::<SocketAddr>().unwrap()
-        );
-        assert_eq!(
-            defaults.max_concurrent_requests,
-            DEFAULT_MAX_CONCURRENT_REQUESTS
-        );
-        assert_eq!(defaults.cache_ttl_seconds, DEFAULT_CACHE_TTL_SECONDS);
-        assert_eq!(defaults.max_cached_cohorts, DEFAULT_MAX_CACHED_COHORTS);
-
-        let overridden = TestCli::try_parse_from([
-            "test",
+    fn recommendation_server_options_parse_overrides() {
+        let options = OptionsHarness::try_parse_from([
+            "test-host",
             "--recommendation-listen",
             "127.0.0.1:9000",
+            "--recommendation-max-connections",
+            "6",
             "--recommendation-max-concurrent-requests",
             "7",
-            "--recommendation-cache-ttl-seconds",
+            "--recommendation-lookup-timeout-seconds",
             "8",
-            "--recommendation-max-cached-cohorts",
+            "--recommendation-request-head-timeout-seconds",
             "9",
+            "--recommendation-shutdown-drain-timeout-seconds",
+            "10",
+            "--recommendation-cache-ttl-seconds",
+            "11",
+            "--recommendation-max-cached-cohorts",
+            "12",
+            "--recommendation-max-cached-negative-cohorts",
+            "13",
         ])
         .unwrap()
-        .recommendation;
-        assert_eq!(overridden.listen_addr.port(), 9000);
-        assert_eq!(overridden.max_concurrent_requests, 7);
-        assert_eq!(overridden.cache_ttl_seconds, 8);
-        assert_eq!(overridden.max_cached_cohorts, 9);
+        .recommendation_server;
+
+        assert_eq!(options.listen_addr.port(), 9000);
+        assert_eq!(options.max_connections, 6);
+        assert_eq!(options.max_concurrent_requests, 7);
+        assert_eq!(options.lookup_timeout_seconds, 8);
+        assert_eq!(options.request_head_timeout_seconds, 9);
+        assert_eq!(options.shutdown_drain_timeout_seconds, 10);
+        assert_eq!(options.cache_ttl_seconds, 11);
+        assert_eq!(options.max_cached_cohorts, 12);
+        assert_eq!(options.max_cached_negative_cohorts, 13);
     }
 
     #[test]
     fn rejects_zero_resource_limits() {
         let config = Config {
+            max_connections: 0,
+            ..Config::default()
+        };
+        assert_invalid(config, "max_connections");
+
+        let config = Config {
             max_concurrent_requests: 0,
             ..Config::default()
         };
-        assert!(
-            validate_config(&config)
-                .unwrap_err()
-                .to_string()
-                .contains("max_concurrent_requests")
-        );
+        assert_invalid(config, "max_concurrent_requests");
+
+        let config = Config {
+            lookup_timeout: Duration::ZERO,
+            ..Config::default()
+        };
+        assert_invalid(config, "lookup_timeout");
+
+        let config = Config {
+            lookup_timeout: Duration::from_secs(5),
+            shutdown_drain_timeout: Duration::from_secs(5),
+            ..Config::default()
+        };
+        assert_invalid(config, "lookup_timeout");
+
+        let config = Config {
+            request_head_timeout: Duration::ZERO,
+            ..Config::default()
+        };
+        assert_invalid(config, "request_head_timeout");
+
+        let config = Config {
+            shutdown_drain_timeout: Duration::ZERO,
+            ..Config::default()
+        };
+        assert_invalid(config, "shutdown_drain_timeout");
 
         let config = Config {
             cache_ttl: Duration::ZERO,
             ..Config::default()
         };
-        assert!(
-            validate_config(&config)
-                .unwrap_err()
-                .to_string()
-                .contains("cache_ttl")
-        );
+        assert_invalid(config, "cache_ttl");
 
         let config = Config {
             max_cached_cohorts: 0,
             ..Config::default()
         };
-        assert!(
-            validate_config(&config)
-                .unwrap_err()
-                .to_string()
-                .contains("max_cached_cohorts")
-        );
+        assert_invalid(config, "max_cached_cohorts");
+
+        let config = Config {
+            max_cached_negative_cohorts: 0,
+            ..Config::default()
+        };
+        assert_invalid(config, "max_cached_negative_cohorts");
     }
 
     #[tokio::test]
     async fn serves_effective_ef_as_plain_text_for_hierarchical_cohort() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         put_latest(&store, "prod/tenant-a/products", Some(60)).await;
-        let harness = Harness::start(store, Config::default().cache_ttl).await;
+        let harness = Harness::start(store, Config::default()).await;
 
         let response = get(harness.address, "/v1/ef-search/prod/tenant-a/products").await;
 
@@ -447,7 +823,7 @@ mod tests {
     async fn returns_not_found_without_an_effective_recommendation() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         put_latest(&store, "prod", None).await;
-        let harness = Harness::start(store, Config::default().cache_ttl).await;
+        let harness = Harness::start(store, Config::default()).await;
 
         let response = get(harness.address, "/v1/ef-search/prod").await;
 
@@ -463,7 +839,14 @@ mod tests {
     async fn caches_successful_lookup_until_ttl_expires() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
         put_latest(&store, "prod", Some(20)).await;
-        let harness = Harness::start(store.clone(), Duration::from_millis(30)).await;
+        let harness = Harness::start(
+            store.clone(),
+            Config {
+                cache_ttl: Duration::from_millis(30),
+                ..Config::default()
+            },
+        )
+        .await;
 
         let first = get(harness.address, "/v1/ef-search/prod").await;
         put_latest(&store, "prod", Some(40)).await;
@@ -480,7 +863,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_invalid_cohort_without_reading_storage() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let harness = Harness::start(store, Config::default().cache_ttl).await;
+        let harness = Harness::start(store, Config::default()).await;
 
         let response = get(harness.address, "/v1/ef-search/prod%20tenant").await;
 
@@ -492,21 +875,217 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_request_when_concurrency_limit_is_in_use() {
-        let state = AppState {
-            store: Arc::new(InMemory::new()),
-            cache: Cache::builder()
-                .max_capacity(1)
-                .time_to_live(Config::default().cache_ttl)
-                .build(),
-            request_permits: Arc::new(Semaphore::new(1)),
-        };
-        let permit = state.request_permits.clone().acquire_owned().await.unwrap();
+    async fn lookup_timeout_releases_request_capacity_and_recovers() {
+        let store = Arc::new(TestStore::with_delay(Duration::from_millis(200)));
+        let trait_store: Arc<dyn ObjectStore> = store.clone();
+        put_latest(&trait_store, "prod", Some(20)).await;
+        let harness = Harness::start(
+            trait_store,
+            Config {
+                max_concurrent_requests: 1,
+                lookup_timeout: Duration::from_millis(50),
+                shutdown_drain_timeout: Duration::from_millis(200),
+                ..Config::default()
+            },
+        )
+        .await;
 
-        let response = get_ef_search(State(state), AxumPath("prod".to_owned())).await;
+        let first_address = harness.address;
+        let first = tokio::spawn(async move { get(first_address, "/v1/ef-search/prod").await });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let overloaded = get(harness.address, "/v1/ef-search/prod").await;
+        let timed_out = first.await.unwrap();
+        store.set_delay(Duration::ZERO);
+        let recovered = get(harness.address, "/v1/ef-search/prod").await;
 
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        drop(permit);
+        assert!(overloaded.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(timed_out.starts_with("HTTP/1.1 503 Service Unavailable"));
+        assert!(recovered.ends_with("\r\n\r\n20"), "{recovered}");
+        assert_eq!(store.get_count(), 2);
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn caches_permanent_artifact_defects_as_internal_errors() {
+        let store = Arc::new(TestStore::default());
+        let trait_store: Arc<dyn ObjectStore> = store.clone();
+        put_raw(&trait_store, "prod", b"not json").await;
+        let harness = Harness::start(trait_store, Config::default()).await;
+
+        let first = get(harness.address, "/v1/ef-search/prod").await;
+        let cached = get(harness.address, "/v1/ef-search/prod").await;
+
+        assert!(first.starts_with("HTTP/1.1 500 Internal Server Error"));
+        assert!(cached.starts_with("HTTP/1.1 500 Internal Server Error"));
+        assert_eq!(store.get_count(), 1);
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn negative_cache_churn_does_not_evict_positive_recommendations() {
+        let store = Arc::new(TestStore::default());
+        let trait_store: Arc<dyn ObjectStore> = store.clone();
+        put_latest(&trait_store, "prod", Some(20)).await;
+        let harness = Harness::start(
+            trait_store,
+            Config {
+                max_cached_cohorts: 1,
+                max_cached_negative_cohorts: 1,
+                cache_ttl: Duration::from_secs(1),
+                ..Config::default()
+            },
+        )
+        .await;
+
+        let initial = get(harness.address, "/v1/ef-search/prod").await;
+        for index in 0..8 {
+            let response = get(harness.address, &format!("/v1/ef-search/junk-{index}")).await;
+            assert!(response.starts_with("HTTP/1.1 404 Not Found"));
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let cached = get(harness.address, "/v1/ef-search/prod").await;
+
+        assert!(initial.ends_with("\r\n\r\n20"));
+        assert!(cached.ends_with("\r\n\r\n20"));
+        assert_eq!(store.get_count(), 9);
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_share_one_object_store_lookup() {
+        let store = Arc::new(TestStore::with_delay(Duration::from_millis(50)));
+        let trait_store: Arc<dyn ObjectStore> = store.clone();
+        put_latest(&trait_store, "prod", Some(20)).await;
+        let harness = Harness::start(
+            trait_store,
+            Config {
+                max_connections: 10,
+                max_concurrent_requests: 10,
+                lookup_timeout: Duration::from_millis(200),
+                shutdown_drain_timeout: Duration::from_millis(300),
+                ..Config::default()
+            },
+        )
+        .await;
+
+        let mut requests = JoinSet::new();
+        for _ in 0..10 {
+            let address = harness.address;
+            requests.spawn(async move { get(address, "/v1/ef-search/prod").await });
+        }
+        while let Some(joined) = requests.join_next().await {
+            assert!(joined.unwrap().ends_with("\r\n\r\n20"));
+        }
+
+        assert_eq!(store.get_count(), 1);
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn connection_cap_blocks_accepting_more_connection_tasks() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let harness = Harness::start(
+            store,
+            Config {
+                max_connections: 1,
+                request_head_timeout: Duration::from_secs(1),
+                ..Config::default()
+            },
+        )
+        .await;
+        let mut parked = tokio::net::TcpStream::connect(harness.address)
+            .await
+            .unwrap();
+        parked
+            .write_all(b"GET /v1/ef-search/prod HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+        let mut queued = tokio::net::TcpStream::connect(harness.address)
+            .await
+            .unwrap();
+        queued
+            .write_all(
+                b"GET /v1/ef-search/prod HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), queued.read_to_end(&mut response))
+                .await
+                .is_err()
+        );
+        drop(parked);
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            queued.read_to_end(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 404 Not Found")
+        );
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn partial_request_head_cannot_block_server_shutdown() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let harness = Harness::start(
+            store,
+            Config {
+                request_head_timeout: Duration::from_secs(10),
+                shutdown_drain_timeout: Duration::from_millis(30),
+                lookup_timeout: Duration::from_millis(10),
+                ..Config::default()
+            },
+        )
+        .await;
+        let mut parked = tokio::net::TcpStream::connect(harness.address)
+            .await
+            .unwrap();
+        parked
+            .write_all(b"GET /v1/ef-search/prod HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_millis(300), harness.shutdown())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_head_timeout_closes_partial_requests() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let harness = Harness::start(
+            store,
+            Config {
+                request_head_timeout: Duration::from_millis(30),
+                ..Config::default()
+            },
+        )
+        .await;
+        let mut stream = tokio::net::TcpStream::connect(harness.address)
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /v1/ef-search/prod HTTP/1.1\r\nHost: localhost\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+
+        tokio::time::timeout(
+            Duration::from_millis(300),
+            stream.read_to_end(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        harness.shutdown().await;
     }
 
     async fn put_latest(store: &Arc<dyn ObjectStore>, cohort: &str, ef: Option<i32>) {
@@ -534,18 +1113,36 @@ mod tests {
             .unwrap();
     }
 
+    async fn put_raw(store: &Arc<dyn ObjectStore>, cohort: &str, body: &[u8]) {
+        store
+            .put(
+                &latest_path(&CohortName::try_from(cohort).unwrap()),
+                PutPayload::from(Bytes::copy_from_slice(body)),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn assert_invalid(config: Config, field: &str) {
+        assert!(
+            validate_config(&config)
+                .unwrap_err()
+                .to_string()
+                .contains(field)
+        );
+    }
+
     struct Harness {
         address: SocketAddr,
         shutdown: CancellationToken,
-        task: tokio::task::JoinHandle<Result<(), ServerError>>,
+        task: tokio::task::JoinHandle<()>,
     }
 
     impl Harness {
-        async fn start(store: Arc<dyn ObjectStore>, cache_ttl: Duration) -> Self {
+        async fn start(store: Arc<dyn ObjectStore>, config: Config) -> Self {
             let config = Config {
                 listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-                cache_ttl,
-                ..Config::default()
+                ..config
             };
             let server = Server::bind(config, store).await.unwrap();
             let address = server.local_addr().unwrap();
@@ -560,7 +1157,7 @@ mod tests {
 
         async fn shutdown(self) {
             self.shutdown.cancel();
-            self.task.await.unwrap().unwrap();
+            self.task.await.unwrap();
         }
     }
 
@@ -572,5 +1169,84 @@ mod tests {
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
         String::from_utf8(response).unwrap()
+    }
+
+    #[derive(Debug, Default)]
+    struct TestStore {
+        inner: InMemory,
+        delay_ms: AtomicU64,
+        gets: AtomicUsize,
+    }
+
+    impl TestStore {
+        fn with_delay(delay: Duration) -> Self {
+            Self {
+                delay_ms: AtomicU64::new(delay.as_millis().try_into().unwrap()),
+                ..Self::default()
+            }
+        }
+
+        fn set_delay(&self, delay: Duration) {
+            self.delay_ms
+                .store(delay.as_millis().try_into().unwrap(), Ordering::Relaxed);
+        }
+
+        fn get_count(&self) -> usize {
+            self.gets.load(Ordering::Relaxed)
+        }
+    }
+
+    impl fmt::Display for TestStore {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("TestStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for TestStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> StoreResult<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            options: PutMultipartOptions,
+        ) -> StoreResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(&self, location: &Path, options: GetOptions) -> StoreResult<GetResult> {
+            self.gets.fetch_add(1, Ordering::Relaxed);
+            let delay = Duration::from_millis(self.delay_ms.load(Ordering::Relaxed));
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, StoreResult<Path>>,
+        ) -> BoxStream<'static, StoreResult<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, StoreResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> StoreResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> StoreResult<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
     }
 }

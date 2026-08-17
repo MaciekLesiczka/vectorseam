@@ -2585,9 +2585,13 @@ dependencies = [
 name = "vectorseam-recommendation-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "clap",
+ "futures-util",
+ "hyper",
+ "hyper-util",
  "moka",
  "object_store",
  "serde",

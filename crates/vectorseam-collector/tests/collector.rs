@@ -23,7 +23,7 @@ use vectorseam_core::frame::{
     FIXED_FRAME_HEADER_LEN, FRAME_MAGIC, FRAME_VERSION, parse_frame_header,
 };
 use vectorseam_core::segment::{Segment, read_segment};
-use vectorseam_recommendation_server::ServerOptions as RecommendationServerOptions;
+use vectorseam_recommendation_server::RecommendationServerOptions;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flushes_valid_frames_and_omits_invalid_frames() {
@@ -196,6 +196,7 @@ async fn writer_failure_stops_collector() {
     let addr = free_tcp_addr();
     let config = Config {
         listen: addr,
+        recommendation_enabled: true,
         recommendation_server: RecommendationServerOptions {
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             ..RecommendationServerOptions::default()
@@ -224,6 +225,90 @@ async fn writer_failure_stops_collector() {
     let error = result.unwrap_err();
 
     assert!(error.to_string().contains("writer task failed"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn enabled_recommendation_bind_failure_prevents_collector_start() {
+    let storage_root = tempfile::tempdir().unwrap();
+    let addr = free_tcp_addr();
+    let occupied = StdTcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let recommendation_addr = occupied.local_addr().unwrap();
+    let config = Config {
+        listen: addr,
+        recommendation_enabled: true,
+        recommendation_server: RecommendationServerOptions {
+            listen_addr: recommendation_addr,
+            ..RecommendationServerOptions::default()
+        },
+        unix_socket: None,
+        storage_root: storage_root.path().to_path_buf(),
+        window_seconds: 60,
+        per_cohort_memory_bytes: 8 * 1024 * 1024,
+        global_memory_bytes: 64 * 1024 * 1024,
+        max_frame_size: 32 * 1024,
+        channel_capacity: 16,
+        max_connections: 16,
+        idle_timeout_seconds: 300,
+        put_timeout_seconds: 60,
+    };
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        run_with_store(config, store, std::future::pending::<()>()),
+    )
+    .await
+    .unwrap();
+
+    let error = result.unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("starting recommendation HTTP server"),
+        "{error}"
+    );
+    assert!(
+        tokio::net::TcpStream::connect(addr).await.is_err(),
+        "collector ingest listener started despite recommendation bind failure"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_recommendation_server_allows_collector_start() {
+    let storage_root = tempfile::tempdir().unwrap();
+    let addr = free_tcp_addr();
+    let recommendation_addr = free_tcp_addr_except(addr);
+    let config = Config {
+        listen: addr,
+        recommendation_enabled: false,
+        recommendation_server: RecommendationServerOptions {
+            listen_addr: recommendation_addr,
+            ..RecommendationServerOptions::default()
+        },
+        unix_socket: None,
+        storage_root: storage_root.path().to_path_buf(),
+        window_seconds: 60,
+        per_cohort_memory_bytes: 8 * 1024 * 1024,
+        global_memory_bytes: 64 * 1024 * 1024,
+        max_frame_size: 32 * 1024,
+        channel_capacity: 16,
+        max_connections: 16,
+        idle_timeout_seconds: 300,
+        put_timeout_seconds: 60,
+    };
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(run_with_store(config, store, async {
+        let _ = shutdown_rx.await;
+    }));
+
+    wait_for_tcp(addr).await;
+    assert!(TcpStream::connect(recommendation_addr).await.is_err());
+    shutdown_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 }
 
 struct CollectorHarness {
@@ -262,6 +347,7 @@ impl CollectorHarness {
         let recommendation_addr = free_tcp_addr_except(addr);
         let config = Config {
             listen: addr,
+            recommendation_enabled: true,
             recommendation_server: RecommendationServerOptions {
                 listen_addr: recommendation_addr,
                 ..RecommendationServerOptions::default()

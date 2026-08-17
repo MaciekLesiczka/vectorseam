@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use thiserror::Error;
 use vectorseam_core::cohort::CohortName;
+use vectorseam_core::recommendation::{MAX_EF_SEARCH, MIN_EF_SEARCH};
 
 const POSTGRES_IDENTIFIER_MAX_BYTES: usize = 63;
 
@@ -378,8 +379,14 @@ fn validate_calibration(config: &RawCalibrationConfig) -> Result<(), ConfigError
     if config.ef_search.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err(invalid("calibration.ef_search must be strictly increasing"));
     }
-    if config.ef_search.iter().any(|ef| *ef > 1000) {
-        return Err(invalid("calibration.ef_search values must be <= 1000"));
+    if config
+        .ef_search
+        .iter()
+        .any(|ef| !(MIN_EF_SEARCH..=MAX_EF_SEARCH).contains(ef))
+    {
+        return Err(invalid(format!(
+            "calibration.ef_search values must be in {MIN_EF_SEARCH}..={MAX_EF_SEARCH}"
+        )));
     }
     if !(config.train_fraction > 0.0 && config.train_fraction < 1.0) {
         return Err(invalid("calibration.train_fraction must be in (0, 1)"));
@@ -705,6 +712,18 @@ cohorts:
         );
         let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
         assert!(error.contains("empty train/holdout split"));
+    }
+
+    #[test]
+    fn rejects_non_positive_ef_search() {
+        let yaml = VALID_CONFIG.replace(
+            "  ef_search: [20, 40, 80, 160]",
+            "  ef_search: [0, 20, 40, 80]",
+        );
+
+        let error = Config::from_yaml_str(&yaml).unwrap_err().to_string();
+
+        assert!(error.contains("values must be in 1..=1000"), "{error}");
     }
 
     #[test]

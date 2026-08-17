@@ -20,7 +20,7 @@ use tokio::task::{JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use vectorseam_recommendation_server::Server as RecommendationServer;
-use vectorseam_runtime::{await_task_shutdown, unexpected_task_result};
+use vectorseam_runtime::{await_task_shutdown, await_unit_task_shutdown, unexpected_task_result};
 
 pub use crate::config::Config;
 use crate::config::{ReaderConfig, WriterConfig, live_memory_bytes, validate_config};
@@ -34,7 +34,6 @@ const CONNECTION_SHUTDOWN_DRAIN_MS: u64 = 250;
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 const WRITER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
 const SUMMARY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
-const RECOMMENDATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Runs the collector using a local filesystem object store.
 pub async fn run(config: Config) -> Result<()> {
@@ -66,10 +65,16 @@ where
     S: Future<Output = ()> + Send,
 {
     validate_config(&config)?;
-    let recommendation_server =
-        RecommendationServer::bind(config.recommendation_server.server_config(), store.clone())
-            .await
-            .context("starting recommendation HTTP server")?;
+    let recommendation_server = if config.recommendation_enabled {
+        Some(
+            RecommendationServer::bind(config.recommendation_server.server_config(), store.clone())
+                .await
+                .context("starting recommendation HTTP server")?,
+        )
+    } else {
+        info!("recommendation HTTP server disabled");
+        None
+    };
     let listener = BoundListener::bind(&config).await?;
     run_with_listener(config, store, shutdown, listener, recommendation_server).await
 }
@@ -94,7 +99,7 @@ async fn run_with_listener<S, L>(
     store: Arc<dyn ObjectStore>,
     shutdown: S,
     listener: L,
-    recommendation_server: RecommendationServer,
+    recommendation_server: Option<RecommendationServer>,
 ) -> Result<()>
 where
     S: Future<Output = ()> + Send,
@@ -117,9 +122,17 @@ where
     let mut writer_handle = tokio::spawn(writer.run(writer_rx));
     let mut writer_result = None;
 
-    let recommendation_shutdown = CancellationToken::new();
-    let mut recommendation_handle = recommendation_server.spawn(recommendation_shutdown.clone());
-    let mut recommendation_result = None;
+    let recommendation_shutdown_timeout = Duration::from_secs(
+        config
+            .recommendation_server
+            .shutdown_drain_timeout_seconds
+            .saturating_add(1),
+    );
+    let recommendation_runtime = recommendation_server.map(|server| {
+        let shutdown = CancellationToken::new();
+        let handle = server.spawn(shutdown.clone());
+        (shutdown, handle)
+    });
 
     let summary_counters = counters.clone();
     let summary_shutdown = shutdown_rx.clone();
@@ -154,14 +167,6 @@ where
                     writer_result = Some(result);
                     break;
                 }
-                joined = &mut recommendation_handle => {
-                    let result = unexpected_task_result(joined, "recommendation server");
-                    if let Err(error) = &result {
-                        error!(%error, "recommendation server stopped; shutting down collector");
-                    }
-                    recommendation_result = Some(result);
-                    break;
-                }
             }
             continue;
         }
@@ -177,14 +182,6 @@ where
                     error!(%error, "writer task stopped; shutting down collector");
                 }
                 writer_result = Some(result);
-                break;
-            }
-            joined = &mut recommendation_handle => {
-                let result = unexpected_task_result(joined, "recommendation server");
-                if let Err(error) = &result {
-                    error!(%error, "recommendation server stopped; shutting down collector");
-                }
-                recommendation_result = Some(result);
                 break;
             }
             accept_result = listener.accept() => {
@@ -215,7 +212,9 @@ where
         }
     }
 
-    recommendation_shutdown.cancel();
+    if let Some((shutdown, _handle)) = &recommendation_runtime {
+        shutdown.cancel();
+    }
     drain_connections(&mut connections, &shutdown_tx).await;
     drop(writer_tx);
 
@@ -225,22 +224,27 @@ where
     };
     let summary_result =
         await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await;
-    let recommendation_result = match recommendation_result {
-        Some(result) => result,
-        None => {
-            await_task_shutdown(
-                recommendation_handle,
+    let recommendation_result = match recommendation_runtime {
+        Some((_shutdown, handle)) => {
+            await_unit_task_shutdown(
+                handle,
                 "recommendation server",
-                RECOMMENDATION_SHUTDOWN_TIMEOUT,
+                recommendation_shutdown_timeout,
             )
             .await
         }
+        None => Ok(()),
     };
     listener.cleanup();
 
+    if let Err(error) = &summary_result {
+        error!(%error, "summary task shutdown failed");
+    }
+    if let Err(error) = &recommendation_result {
+        warn!(%error, "recommendation server shutdown failed");
+    }
     writer_result?;
     summary_result?;
-    recommendation_result?;
     Ok(())
 }
 
@@ -362,6 +366,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use object_store::memory::InMemory;
+    use vectorseam_recommendation_server::RecommendationServerOptions;
 
     #[tokio::test]
     async fn accept_error_handler_counts_and_returns() {
@@ -396,12 +401,14 @@ mod tests {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 },
                 listener,
-                RecommendationServer::bind(
-                    test_config().recommendation_server.server_config(),
-                    Arc::new(InMemory::new()),
-                )
-                .await
-                .unwrap(),
+                Some(
+                    RecommendationServer::bind(
+                        test_config().recommendation_server.server_config(),
+                        Arc::new(InMemory::new()),
+                    )
+                    .await
+                    .unwrap(),
+                ),
             ),
         )
         .await
@@ -436,9 +443,10 @@ mod tests {
     fn test_config() -> Config {
         Config {
             listen: "127.0.0.1:0".parse().unwrap(),
-            recommendation_server: vectorseam_recommendation_server::ServerOptions {
+            recommendation_enabled: true,
+            recommendation_server: RecommendationServerOptions {
                 listen_addr: "127.0.0.1:0".parse().unwrap(),
-                ..vectorseam_recommendation_server::ServerOptions::default()
+                ..RecommendationServerOptions::default()
             },
             unix_socket: None,
             storage_root: PathBuf::from("/unused"),

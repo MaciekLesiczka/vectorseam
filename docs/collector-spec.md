@@ -200,10 +200,11 @@ readers.
 - Graceful shutdown (SIGTERM/SIGINT): stop accepting, drain connection tasks,
   close the writer channel, flush all open buffers, and exit. Shutdown waits
   with finite deadlines and aborts remaining tasks as a forced fallback. The
-  writer shutdown wait is 20 seconds, keeping the collector's worst-case
-  shutdown budget below Kubernetes' default 30-second termination grace once
-  connection and summary waits are included. A flush still in progress after
-  that may be lost; object-store atomic PUT semantics prevent torn segments.
+  writer shutdown wait is 20 seconds. Including connection drain, summary,
+  and the optional recommendation server, the default collector configuration's
+  sequential worst-case wait remains below Kubernetes' default 30-second
+  termination grace. A flush still in progress after that may be lost;
+  object-store atomic PUT semantics prevent torn segments.
 - Counters (received, records, dropped by reason, flush failures) are logged
   periodically; per-part received and record counts are embedded in segment
   headers. No metrics endpoint in MVP.
@@ -261,20 +262,35 @@ GET /v1/ef-search/<cohort>
 A recommendation returns `200 OK` with only
 `effective.recommended_ef` as a plain-text integer. A missing artifact or null
 `effective` returns `404 Not Found`; an invalid cohort returns `400 Bad
-Request`; overload and storage or artifact failures return `503 Service
-Unavailable`.
+Request`; a malformed, unsupported, mismatched, oversized, or out-of-range
+artifact returns `500 Internal Server Error`; overload, lookup timeout, and
+transient storage failures return `503 Service Unavailable`.
 
-The listener defaults to `127.0.0.1:7738`. At most 100 requests run
-concurrently. Successful positive and negative lookups use a lazy per-cohort
-cache with a 60-second TTL and a 10,000-cohort capacity. Concurrent misses for
-the same cohort share one object-store GET. All limits are collector CLI or
-environment configuration. Their CLI definitions, defaults, conversion, and
-validation belong to the recommendation library; the collector only flattens
-its `ServerOptions`. The library owns no collector state and can serve a
-caller-provided shutdown future or spawn against a cancellation token, so a
-future standalone process can host it by supplying the same `ObjectStore`
-interface. Generic bounded task shutdown and join handling lives separately in
-`vectorseam-runtime` for reuse by either host.
+The listener is enabled by default on `127.0.0.1:7738`; it can be disabled with
+`--recommendation-enabled=false`. When enabled, configuration or bind failure
+prevents the collector from starting; disabling it is the explicit way to run
+ingest without the API. The demo publishes both the ingest port and port 7738.
+The server accepts at most 100 connections and runs at most 100 request
+handlers. Each HTTP/1 request head has a five-second deadline, each complete
+object-store lookup has a three-second deadline, and shutdown drains connection
+tasks for at most five seconds before aborting and joining them. Each HTTP/1
+connection buffer is capped at 16 KiB.
+
+Positive recommendations use a lazy 10,000-cohort cache. Missing and defective
+artifacts use a separate 256-cohort cache so arbitrary missing cohort names
+cannot evict valid recommendations. Both caches have a 60-second TTL.
+Concurrent misses for the same cohort share one object-store GET; transient
+storage failures are not cached. Cache, connection, concurrency, and deadline
+limits are configurable; the small HTTP/1 protocol buffer cap is fixed.
+
+The host-agnostic library owns `RecommendationServerOptions`, including its
+CLI and environment mappings, defaults, conversion to `Config`, validation,
+the accept loop, and bounded shutdown. The collector owns only the decision to
+enable the hosted server and flattens the library's remaining options into its
+CLI. The server can serve a caller-provided shutdown future or spawn against a
+cancellation token, so a future standalone process can reuse the options and
+the same `ObjectStore` interface. Generic bounded task shutdown and join
+handling lives separately in `vectorseam-runtime` for reuse by either host.
 
 ## Out of scope for the collector MVP
 

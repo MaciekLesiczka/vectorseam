@@ -61,6 +61,36 @@ where
     }
 }
 
+/// Awaits a unit-output task during graceful shutdown and aborts it after `timeout`.
+///
+/// This is the unit-output counterpart to [`await_task_shutdown`] for services
+/// whose operational connection failures are handled inside their task.
+pub async fn await_unit_task_shutdown(
+    mut handle: JoinHandle<()>,
+    task_name: &str,
+    timeout: Duration,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(joined) => joined.map_err(|error| anyhow!("{task_name} task failed: {error}")),
+        Err(_elapsed) => {
+            error!(
+                task = task_name,
+                timeout_seconds = timeout.as_secs_f64(),
+                "task shutdown timed out; aborting task"
+            );
+            handle.abort();
+            match handle.await {
+                Ok(()) => Ok(()),
+                Err(error) if error.is_cancelled() => {
+                    warn!(task = task_name, "task aborted after shutdown timeout");
+                    Ok(())
+                }
+                Err(error) => Err(anyhow!("{task_name} task failed after abort: {error}")),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +119,15 @@ mod tests {
         let handle = tokio::spawn(future::pending::<Result<(), TestError>>());
 
         let result = await_task_shutdown(handle, "test", Duration::from_millis(1)).await;
+
+        result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn timeout_aborts_and_joins_unit_task() {
+        let handle = tokio::spawn(future::pending::<()>());
+
+        let result = await_unit_task_shutdown(handle, "test", Duration::from_millis(1)).await;
 
         result.unwrap();
     }

@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use vectorseam_core::frame::FIXED_FRAME_HEADER_LEN;
 use vectorseam_core::segment::MAX_SEGMENT_OVERHEAD_BYTES;
-use vectorseam_recommendation_server::ServerOptions as RecommendationServerOptions;
+use vectorseam_recommendation_server::RecommendationServerOptions;
 
 const DEFAULT_WINDOW_SECONDS: u32 = 600;
 const DEFAULT_PER_COHORT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
@@ -30,6 +30,14 @@ pub struct Config {
         value_name = "ADDR"
     )]
     pub listen: SocketAddr,
+    /// Whether the collector should host the effective-recommendation API.
+    #[arg(
+        long = "recommendation-enabled",
+        env = "VECTORSEAM_RECOMMENDATION_ENABLED",
+        default_value_t = true,
+        action = ArgAction::Set
+    )]
+    pub recommendation_enabled: bool,
     /// Effective-recommendation HTTP server options.
     #[command(flatten)]
     pub recommendation_server: RecommendationServerOptions,
@@ -196,6 +204,7 @@ mod tests {
     fn valid_config() -> Config {
         Config {
             listen: "127.0.0.1:7737".parse().unwrap(),
+            recommendation_enabled: true,
             recommendation_server: RecommendationServerOptions::default(),
             unix_socket: None,
             storage_root: PathBuf::from("/tmp/vseam"),
@@ -208,6 +217,49 @@ mod tests {
             idle_timeout_seconds: DEFAULT_IDLE_TIMEOUT_SECONDS,
             put_timeout_seconds: DEFAULT_PUT_TIMEOUT_SECONDS,
         }
+    }
+
+    #[test]
+    fn parses_recommendation_server_options() {
+        let config = Config::try_parse_from([
+            "vectorseam-collector",
+            "--storage-root",
+            "/tmp/vseam",
+            "--recommendation-enabled=false",
+            "--recommendation-listen",
+            "127.0.0.1:9000",
+            "--recommendation-max-connections",
+            "6",
+            "--recommendation-max-concurrent-requests",
+            "7",
+            "--recommendation-lookup-timeout-seconds",
+            "8",
+            "--recommendation-request-head-timeout-seconds",
+            "9",
+            "--recommendation-shutdown-drain-timeout-seconds",
+            "10",
+            "--recommendation-cache-ttl-seconds",
+            "11",
+            "--recommendation-max-cached-cohorts",
+            "12",
+            "--recommendation-max-cached-negative-cohorts",
+            "13",
+        ])
+        .unwrap();
+
+        assert!(!config.recommendation_enabled);
+        assert_eq!(config.recommendation_server.listen_addr.port(), 9000);
+        assert_eq!(config.recommendation_server.max_connections, 6);
+        assert_eq!(config.recommendation_server.max_concurrent_requests, 7);
+        assert_eq!(config.recommendation_server.lookup_timeout_seconds, 8);
+        assert_eq!(config.recommendation_server.request_head_timeout_seconds, 9);
+        assert_eq!(
+            config.recommendation_server.shutdown_drain_timeout_seconds,
+            10
+        );
+        assert_eq!(config.recommendation_server.cache_ttl_seconds, 11);
+        assert_eq!(config.recommendation_server.max_cached_cohorts, 12);
+        assert_eq!(config.recommendation_server.max_cached_negative_cohorts, 13);
     }
 
     #[test]
