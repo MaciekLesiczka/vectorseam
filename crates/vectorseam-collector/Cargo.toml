@@ -13,10 +13,13 @@ bytes.workspace = true
 clap.workspace = true
 object_store.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ulid.workspace = true
 vectorseam-core = { path = "../vectorseam-core" }
+vectorseam-recommendation-server = { path = "../vectorseam-recommendation-server" }
+vectorseam-runtime = { path = "../vectorseam-runtime" }
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -224,8 +224,8 @@ the fixed flush reserve.
 
 ## Consumer contract
 
-Storage is the only interface between the collector and its consumers; there
-is no push API. The collector's side of the contract is:
+Storage is the only interface between captured segments and their consumers;
+there is no segment push API. The collector's side of the contract is:
 
 - Segment parts are immutable once written, appear only under their aligned
   window prefix, and land in a single atomic PUT — a consumer never observes
@@ -247,6 +247,34 @@ deduplication, sample sufficiency, and the published
 specified in `tuner-spec.md`. The published result object is also the
 intended carrier for the sampling directive of the central variant of
 adaptive sampling (see `adaptive-sampling.md`).
+
+## Effective recommendation HTTP API
+
+The collector hosts the independent `vectorseam-recommendation-server`
+library. It reads the tuner-owned `latest.json` through the collector's object
+store and exposes one endpoint:
+
+```text
+GET /v1/ef-search/<cohort>
+```
+
+A recommendation returns `200 OK` with only
+`effective.recommended_ef` as a plain-text integer. A missing artifact or null
+`effective` returns `404 Not Found`; an invalid cohort returns `400 Bad
+Request`; overload and storage or artifact failures return `503 Service
+Unavailable`.
+
+The listener defaults to `127.0.0.1:7738`. At most 100 requests run
+concurrently. Successful positive and negative lookups use a lazy per-cohort
+cache with a 60-second TTL and a 10,000-cohort capacity. Concurrent misses for
+the same cohort share one object-store GET. All limits are collector CLI or
+environment configuration. Their CLI definitions, defaults, conversion, and
+validation belong to the recommendation library; the collector only flattens
+its `ServerOptions`. The library owns no collector state and can serve a
+caller-provided shutdown future or spawn against a cancellation token, so a
+future standalone process can host it by supplying the same `ObjectStore`
+interface. Generic bounded task shutdown and join handling lives separately in
+`vectorseam-runtime` for reuse by either host.
 
 ## Out of scope for the collector MVP
 

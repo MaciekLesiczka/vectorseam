@@ -23,6 +23,7 @@ use vectorseam_core::frame::{
     FIXED_FRAME_HEADER_LEN, FRAME_MAGIC, FRAME_VERSION, parse_frame_header,
 };
 use vectorseam_core::segment::{Segment, read_segment};
+use vectorseam_recommendation_server::ServerOptions as RecommendationServerOptions;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flushes_valid_frames_and_omits_invalid_frames() {
@@ -165,11 +166,40 @@ async fn graceful_shutdown_flushes_partial_window() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hosts_effective_recommendation_http_server() {
+    let harness = CollectorHarness::start(60, 8 * 1024 * 1024, 64 * 1024 * 1024).await;
+    let cohort_dir = harness
+        .storage_root
+        .path()
+        .join("calibrations/prod/tenant-a/products");
+    std::fs::create_dir_all(&cohort_dir).unwrap();
+    std::fs::write(
+        cohort_dir.join("latest.json"),
+        br#"{"format_version":1,"cohort":"prod/tenant-a/products","recommended_ef":999,"effective":{"recommended_ef":60}}"#,
+    )
+    .unwrap();
+
+    let response = http_get(
+        harness.recommendation_addr,
+        "/v1/ef-search/prod/tenant-a/products",
+    )
+    .await;
+
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+    assert!(response.ends_with("\r\n\r\n60"), "{response}");
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writer_failure_stops_collector() {
     let storage_root = tempfile::tempdir().unwrap();
     let addr = free_tcp_addr();
     let config = Config {
         listen: addr,
+        recommendation_server: RecommendationServerOptions {
+            listen_addr: "127.0.0.1:0".parse().unwrap(),
+            ..RecommendationServerOptions::default()
+        },
         unix_socket: None,
         storage_root: storage_root.path().to_path_buf(),
         window_seconds: 1,
@@ -199,6 +229,7 @@ async fn writer_failure_stops_collector() {
 struct CollectorHarness {
     _tmp: TempDir,
     addr: SocketAddr,
+    recommendation_addr: SocketAddr,
     storage_root: TempDir,
     shutdown_tx: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -228,8 +259,13 @@ impl CollectorHarness {
         let tmp = tempfile::tempdir().unwrap();
         let storage_root = tempfile::tempdir().unwrap();
         let addr = free_tcp_addr();
+        let recommendation_addr = free_tcp_addr_except(addr);
         let config = Config {
             listen: addr,
+            recommendation_server: RecommendationServerOptions {
+                listen_addr: recommendation_addr,
+                ..RecommendationServerOptions::default()
+            },
             unix_socket: None,
             storage_root: storage_root.path().to_path_buf(),
             window_seconds,
@@ -249,9 +285,11 @@ impl CollectorHarness {
         }));
 
         wait_for_tcp(addr).await;
+        wait_for_tcp(recommendation_addr).await;
         Self {
             _tmp: tmp,
             addr,
+            recommendation_addr,
             storage_root,
             shutdown_tx,
             task,
@@ -274,6 +312,15 @@ fn free_tcp_addr() -> SocketAddr {
     listener.local_addr().unwrap()
 }
 
+fn free_tcp_addr_except(excluded: SocketAddr) -> SocketAddr {
+    loop {
+        let address = free_tcp_addr();
+        if address != excluded {
+            return address;
+        }
+    }
+}
+
 async fn wait_for_tcp(addr: SocketAddr) {
     for _ in 0..200 {
         if TcpStream::connect(addr).await.is_ok() {
@@ -282,6 +329,15 @@ async fn wait_for_tcp(addr: SocketAddr) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("collector did not listen on {addr}");
+}
+
+async fn http_get(addr: SocketAddr, path: &str) -> String {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8(response).unwrap()
 }
 
 async fn send_frames(addr: SocketAddr, frames: &[Vec<u8>]) {

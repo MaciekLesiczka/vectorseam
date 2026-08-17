@@ -1,0 +1,22 @@
+[package]
+name = "vectorseam-runtime"
+version = "0.1.0"
+edition = "2024"
+description = "Shared Tokio runtime helpers for VectorSeam services."
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+thiserror.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

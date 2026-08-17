@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use vectorseam_core::frame::FIXED_FRAME_HEADER_LEN;
 use vectorseam_core::segment::MAX_SEGMENT_OVERHEAD_BYTES;
+use vectorseam_recommendation_server::ServerOptions as RecommendationServerOptions;
 
 const DEFAULT_WINDOW_SECONDS: u32 = 600;
 const DEFAULT_PER_COHORT_MEMORY_BYTES: usize = 32 * 1024 * 1024;
@@ -29,6 +30,9 @@ pub struct Config {
         value_name = "ADDR"
     )]
     pub listen: SocketAddr,
+    /// Effective-recommendation HTTP server options.
+    #[command(flatten)]
+    pub recommendation_server: RecommendationServerOptions,
     /// Optional Unix socket path for same-host demos and tests.
     #[arg(
         long = "unix-socket",
@@ -192,6 +196,7 @@ mod tests {
     fn valid_config() -> Config {
         Config {
             listen: "127.0.0.1:7737".parse().unwrap(),
+            recommendation_server: RecommendationServerOptions::default(),
             unix_socket: None,
             storage_root: PathBuf::from("/tmp/vseam"),
             window_seconds: DEFAULT_WINDOW_SECONDS,
