@@ -25,6 +25,14 @@ where
     }
 }
 
+/// Converts an unexpectedly completed critical unit-output task into a host error.
+pub fn unexpected_unit_task_result(joined: Result<(), JoinError>, task_name: &str) -> Result<()> {
+    match joined {
+        Ok(()) => Err(anyhow!("{task_name} exited unexpectedly")),
+        Err(error) => Err(anyhow!("{task_name} task failed: {error}")),
+    }
+}
+
 /// Awaits a task during graceful shutdown and aborts it after `timeout`.
 ///
 /// The task must receive its normal shutdown notification before this function
@@ -137,6 +145,15 @@ mod tests {
         let joined = tokio::spawn(async { Ok::<(), TestError>(()) }).await;
 
         let error = unexpected_task_result(joined, "test").unwrap_err();
+
+        assert_eq!(error.to_string(), "test exited unexpectedly");
+    }
+
+    #[tokio::test]
+    async fn clean_critical_unit_task_exit_is_unexpected() {
+        let joined = tokio::spawn(async {}).await;
+
+        let error = unexpected_unit_task_result(joined, "test").unwrap_err();
 
         assert_eq!(error.to_string(), "test exited unexpectedly");
     }

@@ -29,7 +29,7 @@ use tokio::sync::Semaphore;
 use tokio::task::{JoinError, JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use vectorseam_core::cohort::CohortName;
+use vectorseam_core::cohort::{CohortName, MAX_COHORT_NAME_BYTES};
 use vectorseam_core::recommendation::{MAX_EF_SEARCH, MIN_EF_SEARCH};
 
 const LATEST_JSON_MAX_BYTES: u64 = 256 * 1024;
@@ -39,7 +39,7 @@ const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:7738";
 const DEFAULT_MAX_CONNECTIONS: usize = 100;
 const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 100;
 const DEFAULT_LOOKUP_TIMEOUT_SECONDS: u64 = 3;
-const DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS: u64 = 5;
+const DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS: u64 = 4;
 const DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_SECONDS: u64 = 5;
 const DEFAULT_CACHE_TTL_SECONDS: u64 = 60;
 const DEFAULT_MAX_CACHED_COHORTS: u64 = 10_000;
@@ -67,7 +67,7 @@ pub struct RecommendationServerOptions {
         default_value_t = DEFAULT_MAX_CONNECTIONS
     )]
     pub max_connections: usize,
-    /// Maximum concurrently handled recommendation HTTP requests.
+    /// Maximum recommendation cache misses handled concurrently.
     #[arg(
         long = "recommendation-max-concurrent-requests",
         env = "VECTORSEAM_RECOMMENDATION_MAX_CONCURRENT_REQUESTS",
@@ -120,17 +120,18 @@ pub struct RecommendationServerOptions {
 
 impl Default for RecommendationServerOptions {
     fn default() -> Self {
-        let config = Config::default();
         Self {
-            listen_addr: config.listen_addr,
-            max_connections: config.max_connections,
-            max_concurrent_requests: config.max_concurrent_requests,
-            lookup_timeout_seconds: config.lookup_timeout.as_secs(),
-            request_head_timeout_seconds: config.request_head_timeout.as_secs(),
-            shutdown_drain_timeout_seconds: config.shutdown_drain_timeout.as_secs(),
-            cache_ttl_seconds: config.cache_ttl.as_secs(),
-            max_cached_cohorts: config.max_cached_cohorts,
-            max_cached_negative_cohorts: config.max_cached_negative_cohorts,
+            listen_addr: DEFAULT_LISTEN_ADDR
+                .parse()
+                .expect("default recommendation listen address must be valid"),
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_concurrent_requests: DEFAULT_MAX_CONCURRENT_REQUESTS,
+            lookup_timeout_seconds: DEFAULT_LOOKUP_TIMEOUT_SECONDS,
+            request_head_timeout_seconds: DEFAULT_REQUEST_HEAD_TIMEOUT_SECONDS,
+            shutdown_drain_timeout_seconds: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+            cache_ttl_seconds: DEFAULT_CACHE_TTL_SECONDS,
+            max_cached_cohorts: DEFAULT_MAX_CACHED_COHORTS,
+            max_cached_negative_cohorts: DEFAULT_MAX_CACHED_NEGATIVE_COHORTS,
         }
     }
 }
@@ -159,7 +160,7 @@ pub struct Config {
     pub listen_addr: SocketAddr,
     /// Maximum number of accepted HTTP connections and connection tasks.
     pub max_connections: usize,
-    /// Maximum number of request handlers allowed to run concurrently.
+    /// Maximum number of cache-miss request handlers allowed to run concurrently.
     pub max_concurrent_requests: usize,
     /// Total deadline for one object-store recommendation lookup.
     pub lookup_timeout: Duration,
@@ -246,7 +247,7 @@ impl Server {
             recommendations,
             negative_recommendations,
             coalesced_loads,
-            request_permits: Arc::new(Semaphore::new(config.max_concurrent_requests)),
+            load_permits: Arc::new(Semaphore::new(config.max_concurrent_requests)),
             lookup_timeout: config.lookup_timeout,
         };
         let router = Router::new()
@@ -421,7 +422,7 @@ struct AppState {
     recommendations: Cache<CohortName, i32>,
     negative_recommendations: Cache<CohortName, NegativeLookup>,
     coalesced_loads: Cache<CohortName, CachedLookup>,
-    request_permits: Arc<Semaphore>,
+    load_permits: Arc<Semaphore>,
     lookup_timeout: Duration,
 }
 
@@ -489,9 +490,6 @@ async fn get_ef_search(
     State(state): State<AppState>,
     AxumPath(raw_cohort): AxumPath<String>,
 ) -> Response {
-    let Ok(_permit) = state.request_permits.clone().try_acquire_owned() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
     let cohort = match CohortName::try_from(raw_cohort) {
         Ok(cohort) => cohort,
         Err(_) => return StatusCode::BAD_REQUEST.into_response(),
@@ -503,6 +501,9 @@ async fn get_ef_search(
     if let Some(negative) = state.negative_recommendations.get(&cohort).await {
         return negative_response(&negative);
     }
+    let Ok(_permit) = state.load_permits.clone().try_acquire_owned() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
 
     let loader_store = state.store.clone();
     let loader_cohort = cohort.clone();
@@ -616,7 +617,7 @@ async fn load_effective_ef(
             PermanentDefect::CohortMismatch {
                 path: path.to_string(),
                 expected: cohort.to_string(),
-                actual: latest.cohort,
+                actual: truncate_cohort_diagnostic(latest.cohort),
             },
         ))));
     }
@@ -636,6 +637,18 @@ async fn load_effective_ef(
 
 fn latest_path(cohort: &CohortName) -> Path {
     Path::from(format!("calibrations/{cohort}/latest.json"))
+}
+
+fn truncate_cohort_diagnostic(mut cohort: String) -> String {
+    if cohort.len() <= MAX_COHORT_NAME_BYTES {
+        return cohort;
+    }
+    let mut end = MAX_COHORT_NAME_BYTES;
+    while !cohort.is_char_boundary(end) {
+        end -= 1;
+    }
+    cohort.truncate(end);
+    cohort
 }
 
 fn validate_config(config: &Config) -> Result<(), ServerError> {
@@ -669,6 +682,11 @@ fn validate_config(config: &Config) -> Result<(), ServerError> {
             "lookup_timeout must be less than shutdown_drain_timeout",
         ));
     }
+    if config.request_head_timeout >= config.shutdown_drain_timeout {
+        return Err(ServerError::InvalidConfig(
+            "request_head_timeout must be less than shutdown_drain_timeout",
+        ));
+    }
     if config.cache_ttl.is_zero() {
         return Err(ServerError::InvalidConfig(
             "cache_ttl must be greater than zero",
@@ -692,7 +710,7 @@ mod tests {
     use super::*;
 
     use std::fmt;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -704,6 +722,7 @@ mod tests {
         PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as StoreResult,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::oneshot;
 
     #[derive(Debug, Parser)]
     struct OptionsHarness {
@@ -712,7 +731,14 @@ mod tests {
     }
 
     #[test]
-    fn recommendation_server_options_parse_overrides() {
+    fn recommendation_server_options_supply_defaults_and_parse_overrides() {
+        assert_eq!(
+            OptionsHarness::try_parse_from(["test-host"])
+                .unwrap()
+                .recommendation_server,
+            RecommendationServerOptions::default()
+        );
+
         let options = OptionsHarness::try_parse_from([
             "test-host",
             "--recommendation-listen",
@@ -777,6 +803,13 @@ mod tests {
 
         let config = Config {
             request_head_timeout: Duration::ZERO,
+            ..Config::default()
+        };
+        assert_invalid(config, "request_head_timeout");
+
+        let config = Config {
+            request_head_timeout: Duration::from_secs(5),
+            shutdown_drain_timeout: Duration::from_secs(5),
             ..Config::default()
         };
         assert_invalid(config, "request_head_timeout");
@@ -884,6 +917,7 @@ mod tests {
             Config {
                 max_concurrent_requests: 1,
                 lookup_timeout: Duration::from_millis(50),
+                request_head_timeout: Duration::from_millis(100),
                 shutdown_drain_timeout: Duration::from_millis(200),
                 ..Config::default()
             },
@@ -903,6 +937,51 @@ mod tests {
         assert!(recovered.ends_with("\r\n\r\n20"), "{recovered}");
         assert_eq!(store.get_count(), 2);
         harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn cache_hits_and_invalid_cohorts_bypass_busy_load_capacity() {
+        let store = Arc::new(TestStore::default());
+        let trait_store: Arc<dyn ObjectStore> = store.clone();
+        put_latest(&trait_store, "hot", Some(20)).await;
+        put_latest(&trait_store, "cold", Some(40)).await;
+        let harness = Harness::start(
+            trait_store,
+            Config {
+                max_concurrent_requests: 1,
+                ..Config::default()
+            },
+        )
+        .await;
+
+        let primed = get(harness.address, "/v1/ef-search/hot").await;
+        assert!(primed.ends_with("\r\n\r\n20"), "{primed}");
+        store.set_delay(Duration::from_millis(200));
+        let cold_address = harness.address;
+        let cold = tokio::spawn(async move { get(cold_address, "/v1/ef-search/cold").await });
+        tokio::time::timeout(Duration::from_millis(100), async {
+            while store.get_count() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+
+        let cached = get(harness.address, "/v1/ef-search/hot").await;
+        let invalid = get(harness.address, "/v1/ef-search/not%20valid").await;
+
+        assert!(cached.ends_with("\r\n\r\n20"), "{cached}");
+        assert!(invalid.starts_with("HTTP/1.1 400 Bad Request"), "{invalid}");
+        assert!(cold.await.unwrap().ends_with("\r\n\r\n40"));
+        harness.shutdown().await;
+    }
+
+    #[test]
+    fn truncates_artifact_cohort_diagnostics_on_a_utf8_boundary() {
+        let truncated = truncate_cohort_diagnostic("é".repeat(MAX_COHORT_NAME_BYTES));
+
+        assert!(truncated.len() <= MAX_COHORT_NAME_BYTES);
+        assert_eq!(truncated.chars().count(), MAX_COHORT_NAME_BYTES / 2);
     }
 
     #[tokio::test]
@@ -962,6 +1041,7 @@ mod tests {
                 max_connections: 10,
                 max_concurrent_requests: 10,
                 lookup_timeout: Duration::from_millis(200),
+                request_head_timeout: Duration::from_millis(250),
                 shutdown_drain_timeout: Duration::from_millis(300),
                 ..Config::default()
             },
@@ -1038,8 +1118,8 @@ mod tests {
         let harness = Harness::start(
             store,
             Config {
-                request_head_timeout: Duration::from_secs(10),
-                shutdown_drain_timeout: Duration::from_millis(30),
+                request_head_timeout: Duration::from_millis(50),
+                shutdown_drain_timeout: Duration::from_millis(200),
                 lookup_timeout: Duration::from_millis(10),
                 ..Config::default()
             },
@@ -1056,6 +1136,26 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(300), harness.shutdown())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_drain_aborts_and_joins_tasks_after_deadline() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let task_dropped = dropped.clone();
+        let (started_tx, started_rx) = oneshot::channel();
+        let mut connections = JoinSet::new();
+        connections.spawn(async move {
+            let _drop_flag = DropFlag(task_dropped);
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+            Ok::<(), (SocketAddr, hyper::Error)>(())
+        });
+        started_rx.await.unwrap();
+
+        drain_connections(&mut connections, Duration::from_millis(10)).await;
+
+        assert!(connections.is_empty());
+        assert!(dropped.load(Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -1176,6 +1276,14 @@ mod tests {
         inner: InMemory,
         delay_ms: AtomicU64,
         gets: AtomicUsize,
+    }
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
     }
 
     impl TestStore {

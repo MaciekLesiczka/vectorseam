@@ -270,11 +270,14 @@ The listener is enabled by default on `127.0.0.1:7738`; it can be disabled with
 `--recommendation-enabled=false`. When enabled, configuration or bind failure
 prevents the collector from starting; disabling it is the explicit way to run
 ingest without the API. The demo publishes both the ingest port and port 7738.
-The server accepts at most 100 connections and runs at most 100 request
-handlers. Each HTTP/1 request head has a five-second deadline, each complete
-object-store lookup has a three-second deadline, and shutdown drains connection
-tasks for at most five seconds before aborting and joining them. Each HTTP/1
-connection buffer is capped at 16 KiB.
+The server accepts at most 100 connections, which bounds total request-handler
+concurrency. Independently, at most 100 cache-miss lookups run concurrently;
+cached responses do not consume that limit. Each HTTP/1 request head has a
+four-second deadline, each complete object-store lookup has a three-second
+deadline, and shutdown drains connection tasks for at most five seconds before
+aborting and joining them. Each HTTP/1 connection buffer is capped at 16 KiB.
+Both request-head and lookup deadlines must be strictly shorter than the drain
+deadline.
 
 Positive recommendations use a lazy 10,000-cohort cache. Missing and defective
 artifacts use a separate 256-cohort cache so arbitrary missing cohort names

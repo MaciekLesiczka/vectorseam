@@ -20,7 +20,10 @@ use tokio::task::{JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use vectorseam_recommendation_server::Server as RecommendationServer;
-use vectorseam_runtime::{await_task_shutdown, await_unit_task_shutdown, unexpected_task_result};
+use vectorseam_runtime::{
+    await_task_shutdown, await_unit_task_shutdown, unexpected_task_result,
+    unexpected_unit_task_result,
+};
 
 pub use crate::config::Config;
 use crate::config::{ReaderConfig, WriterConfig, live_memory_bytes, validate_config};
@@ -128,11 +131,15 @@ where
             .shutdown_drain_timeout_seconds
             .saturating_add(1),
     );
-    let recommendation_runtime = recommendation_server.map(|server| {
-        let shutdown = CancellationToken::new();
-        let handle = server.spawn(shutdown.clone());
-        (shutdown, handle)
-    });
+    let (recommendation_shutdown, mut recommendation_handle) = match recommendation_server {
+        Some(server) => {
+            let shutdown = CancellationToken::new();
+            let handle = server.spawn(shutdown.clone());
+            (Some(shutdown), Some(handle))
+        }
+        None => (None, None),
+    };
+    let mut recommendation_result = None;
 
     let summary_counters = counters.clone();
     let summary_shutdown = shutdown_rx.clone();
@@ -167,6 +174,15 @@ where
                     writer_result = Some(result);
                     break;
                 }
+                joined = join_optional_unit_task(&mut recommendation_handle) => {
+                    let result = unexpected_unit_task_result(
+                        joined.expect("disabled recommendation task cannot complete"),
+                        "recommendation server",
+                    );
+                    recommendation_handle = None;
+                    recommendation_result = Some(result);
+                    break;
+                }
             }
             continue;
         }
@@ -182,6 +198,15 @@ where
                     error!(%error, "writer task stopped; shutting down collector");
                 }
                 writer_result = Some(result);
+                break;
+            }
+            joined = join_optional_unit_task(&mut recommendation_handle) => {
+                let result = unexpected_unit_task_result(
+                    joined.expect("disabled recommendation task cannot complete"),
+                    "recommendation server",
+                );
+                recommendation_handle = None;
+                recommendation_result = Some(result);
                 break;
             }
             accept_result = listener.accept() => {
@@ -212,7 +237,7 @@ where
         }
     }
 
-    if let Some((shutdown, _handle)) = &recommendation_runtime {
+    if let Some(shutdown) = &recommendation_shutdown {
         shutdown.cancel();
     }
     drain_connections(&mut connections, &shutdown_tx).await;
@@ -224,8 +249,9 @@ where
     };
     let summary_result =
         await_task_shutdown(summary_handle, "summary", SUMMARY_SHUTDOWN_TIMEOUT).await;
-    let recommendation_result = match recommendation_runtime {
-        Some((_shutdown, handle)) => {
+    let recommendation_result = match (recommendation_result, recommendation_handle) {
+        (Some(result), _) => result,
+        (None, Some(handle)) => {
             await_unit_task_shutdown(
                 handle,
                 "recommendation server",
@@ -233,7 +259,7 @@ where
             )
             .await
         }
-        None => Ok(()),
+        (None, None) => Ok(()),
     };
     listener.cleanup();
 
@@ -241,11 +267,21 @@ where
         error!(%error, "summary task shutdown failed");
     }
     if let Err(error) = &recommendation_result {
-        warn!(%error, "recommendation server shutdown failed");
+        error!(%error, "recommendation server task failed");
     }
     writer_result?;
     summary_result?;
+    recommendation_result?;
     Ok(())
+}
+
+async fn join_optional_unit_task(
+    handle: &mut Option<tokio::task::JoinHandle<()>>,
+) -> Option<Result<(), JoinError>> {
+    match handle {
+        Some(handle) => Some(handle.await),
+        None => std::future::pending().await,
+    }
 }
 
 async fn handle_accept_error(error: io::Error, counters: &CollectorCounters) {
