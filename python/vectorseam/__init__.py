@@ -6,6 +6,7 @@ from vectorseam.frame import (
     encode_vector_frame,
     encode_vector_frame_from_iterable,
 )
+from vectorseam.recommendation import RecommendationClient
 from vectorseam.vector_capture import (
     AdaptiveSampler,
     CaptureResult,
@@ -23,6 +24,7 @@ __all__ = [
     "CaptureResult",
     "DType",
     "ProbabilitySampler",
+    "RecommendationClient",
     "SamplingPolicy",
     "VectorCaptureProducer",
     "VectorSocketSender",

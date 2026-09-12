@@ -88,6 +88,7 @@ class ApiTest(unittest.TestCase):
                 state=SimpleNamespace(
                     model=_FakeModel(),
                     producer=producer,
+                    recommendations=SimpleNamespace(ef_search=lambda cohort: 60),
                     settings=settings,
                 )
             )
@@ -107,7 +108,9 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(
             app.CohortName.REDDIT, search_database.call_args.args[3]
         )
+        self.assertEqual(60, search_database.call_args.args[4])
         self.assertEqual(app.CohortName.REDDIT, response.cohort)
+        self.assertEqual(60, response.ef_search)
 
 
 if __name__ == "__main__":
