@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 
 from vectorseam import (
     AdaptiveSampler,
+    RecommendationClient,
     VectorCaptureProducer,
     VectorSocketSender,
     capture_vector,
@@ -52,6 +53,7 @@ class Settings:
     database_url: str
     collector_host: str
     collector_port: int
+    recommendation_port: int
     ef_search: int
 
     @classmethod
@@ -74,6 +76,12 @@ class Settings:
         if not 1 <= collector_port <= 65535:
             raise ValueError("COLLECTOR_PORT must be between 1 and 65535")
 
+        recommendation_port = _parse_environment_int(
+            environ, "RECOMMENDATION_PORT", 7738
+        )
+        if not 1 <= recommendation_port <= 65535:
+            raise ValueError("RECOMMENDATION_PORT must be between 1 and 65535")
+
         ef_search = _parse_environment_int(environ, "DEMO_EF_SEARCH", 100)
         if not 1 <= ef_search <= 1000:
             raise ValueError("DEMO_EF_SEARCH must be between 1 and 1000")
@@ -82,6 +90,7 @@ class Settings:
             database_url=database_url,
             collector_host=collector_host,
             collector_port=collector_port,
+            recommendation_port=recommendation_port,
             ef_search=ef_search,
         )
 
@@ -163,6 +172,7 @@ def _search_database(
     vector: np.ndarray,
     k: int,
     cohort: CohortName,
+    ef_search: int,
 ) -> tuple[list[SearchResult], float]:
     """Runs one HNSW search transaction and returns its query latency."""
     vector_literal = _format_vector(vector)
@@ -180,7 +190,7 @@ def _search_database(
             with connection.cursor() as cursor:
                 cursor.execute(
                     sql.SQL("SET LOCAL hnsw.ef_search = {};").format(
-                        sql.Literal(settings.ef_search)
+                        sql.Literal(ef_search)
                     )
                 )
                 started_at = time.perf_counter()
@@ -204,7 +214,7 @@ def _search_database(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Owns the model, always-capture producer, and sender lifecycle."""
+    """Owns the model, producer, sender, and recommendation lifecycle."""
     settings = Settings.from_environment()
     model = SentenceTransformer(MODEL_NAME, revision=MODEL_REVISION)
     producer = VectorCaptureProducer(sampler=AdaptiveSampler(target_samples_per_second=0.5))
@@ -215,6 +225,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     app.state.settings = settings
+    app.state.recommendations = RecommendationClient(
+        host=settings.collector_host,
+        port=settings.recommendation_port,
+        default_ef_search=settings.ef_search,
+    )
     app.state.model = model
     app.state.producer = producer
     app.state.sender = sender
@@ -237,15 +252,17 @@ def search(payload: SearchRequest, request: Request) -> SearchResponse:
         vector,
         producer=request.app.state.producer,
     )
+    ef_search = request.app.state.recommendations.ef_search(payload.cohort.value)
     results, latency_ms = _search_database(
         request.app.state.settings,
         vector,
         payload.k,
         payload.cohort,
+        ef_search,
     )
     return SearchResponse(
         results=results,
         latency_ms=latency_ms,
-        ef_search=request.app.state.settings.ef_search,
+        ef_search=ef_search,
         cohort=payload.cohort,
     )

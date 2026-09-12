@@ -173,9 +173,12 @@ The 0.98 selection gate spends that margin deliberately: a slightly higher ef
 that gets approved beats the smallest ef that never does. Expect the first
 recommendation to be conservative and to settle near `recommended_ef: 60` for
 SuperUser and `recommended_ef: 200` for Reddit as evidence accumulates. The
-demo displays the effective value but does not apply it — the API serves
-every search with a fixed `ef_search` (`DEMO_EF_SEARCH`, default 100).
-Automatic consumption of recommendations is future work.
+demo applies the effective value: the API reads `GET /v1/ef-search/<cohort>`
+from the collector through the SDK's `RecommendationClient` and caches each
+cohort for 60 seconds. Until a cohort has an approved recommendation — and
+whenever a lookup fails — searches use the last known value, or
+`DEMO_EF_SEARCH` (default 100) before the first successful read. Each
+`/search` response reports the `ef_search` it applied.
 
 At 5 shared qps, allow up to two minutes for the first `.vseam`. The tuner
 processes cohorts sequentially, so Parquet and successful-calibration timing

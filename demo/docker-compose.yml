@@ -58,6 +58,7 @@ services:
     environment:
       COLLECTOR_HOST: collector
       COLLECTOR_PORT: "7737"
+      RECOMMENDATION_PORT: "7738"
       DATABASE_URL: postgresql://postgres:password@postgres:5432/postgres
       DEMO_EF_SEARCH: "100"
       HOME: /tmp
