@@ -7,20 +7,31 @@
 [![CI](https://github.com/MaciekLesiczka/vectorseam/actions/workflows/ci.yml/badge.svg)](https://github.com/MaciekLesiczka/vectorseam/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Monitor and tune vector index parameters from live query traffic, instead
-of staying blind.**
+# VectorSeam
 
-Approximate indexes trade recall for latency, and the knob that sets the
-trade-off — `hnsw.ef_search` in pgvector — is usually set once and never
-checked against real traffic again. The recall your queries actually get in
-production is invisible: it depends on your corpus and your query
-distribution, and it drifts as both change.
+**Production recall monitoring and automatic HNSW tuning for pgvector.**
 
-VectorSeam turns that into a measured number. It samples the query vectors
-your application really sends, replays them against your own index — exact
-ground truth plus an `ef_search` sweep — and publishes the smallest
-`ef_search` that meets a recall target you declare, together with the
-statistical confidence behind it, validated on held-out queries.
+VectorSeam measures the recall your pgvector HNSW indexes actually achieve
+on live application queries, then finds the smallest `hnsw.ef_search` value
+that meets your target recall.
+
+Instead of choosing `ef_search` once and hoping it remains appropriate,
+VectorSeam continuously evaluates the recall/latency trade-off as your
+data and query distribution change.
+
+## Why VectorSeam?
+
+Choosing `hnsw.ef_search` for pgvector is a recall/latency trade-off.
+The right value depends on your dataset and the queries your users
+actually send, and it can change as both evolve.
+
+VectorSeam lets you:
+
+- measure pgvector HNSW recall using real production query vectors
+- compare approximate results against exact nearest-neighbor ground truth
+- benchmark multiple `hnsw.ef_search` values automatically
+- choose the lowest `ef_search` that satisfies a recall target
+- monitor the recommendation separately for different query cohorts
 
 ## How it works
 
